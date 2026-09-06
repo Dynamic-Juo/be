@@ -52,6 +52,8 @@ class StageStatus:
     status: str
     detail: str | None = None
     elapsed_sec: float | None = None
+    # 실패한 단계는 errors.py의 구조화된 에러(code/message/retryable)를 함께 남긴다.
+    error: dict | None = None
 
 
 @dataclass

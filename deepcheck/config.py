@@ -48,6 +48,8 @@ class Config:
     # --- 모델 ---
     classifier_model: str = "dima806/deepfake_vs_real_image_detection"
     whisper_model_size: str = "small"
+    # VLM은 교체 가능하다(deepcheck/vlm.py). 지금 구현된 제공자는 ollama뿐이다.
+    vlm_provider: str = "ollama"
     ollama_url: str = "http://localhost:11434"
 
     # --- 점수 집계 ---
@@ -86,12 +88,17 @@ class Config:
     max_retained_jobs: int = 200
 
     log_level: str = "INFO"
+    # json으로 두면 로그가 한 줄짜리 JSON으로 나가서 나중에 수집·검색이 쉽다.
+    log_format: str = "text"
+    # 허용할 CORS 오리진. 쉼표로 구분한다. "*"는 자격증명 요청과 함께 쓸 수 없다.
+    cors_origins: str = "*"
 
 
 def load_config() -> Config:
     return Config(
         classifier_model=_env_str("CLASSIFIER_MODEL", Config.classifier_model),
         whisper_model_size=_env_str("WHISPER_MODEL_SIZE", Config.whisper_model_size),
+        vlm_provider=_env_str("VLM_PROVIDER", Config.vlm_provider),
         ollama_url=_env_str("OLLAMA_URL", Config.ollama_url).rstrip("/"),
         frame_mean_weight=_env_float("FRAME_MEAN_WEIGHT", Config.frame_mean_weight),
         frame_peak_weight=_env_float("FRAME_PEAK_WEIGHT", Config.frame_peak_weight),
@@ -119,6 +126,8 @@ def load_config() -> Config:
         backlog=_env_int("BACKLOG", Config.backlog),
         max_retained_jobs=_env_int("MAX_RETAINED_JOBS", Config.max_retained_jobs),
         log_level=_env_str("LOG_LEVEL", Config.log_level).upper(),
+        log_format=_env_str("LOG_FORMAT", Config.log_format).lower(),
+        cors_origins=_env_str("CORS_ORIGINS", Config.cors_origins),
     )
 
 

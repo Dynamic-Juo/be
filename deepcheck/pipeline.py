@@ -21,6 +21,7 @@ from typing import Callable
 
 from . import analyzer, deepfake, downloader, report, transcriber
 from .config import config, default_vlm_model
+from .errors import DeepCheckError, UnsupportedURLError, as_error_dict
 from .report import StageState, StageStatus
 
 logger = logging.getLogger(__name__)
@@ -66,12 +67,14 @@ class StageTracker:
         try:
             yield
         except Exception as e:
+            error = as_error_dict(e, stage=name)
             self.stages[name] = StageStatus(
                 status=StageState.FAILED.value,
-                detail=f"{type(e).__name__}: {e}",
+                detail=error["message"],
                 elapsed_sec=round(time.monotonic() - started, 2),
+                error=error,
             )
-            logger.exception("단계 실패: %s", name)
+            logger.error("단계 실패: %s (%s)", name, error["code"], exc_info=True)
             raise
         else:
             self.stages[name] = StageStatus(
@@ -80,9 +83,9 @@ class StageTracker:
             )
 
     def mark(self, name: str, status: StageState, detail: str | None = None,
-             elapsed_sec: float | None = None) -> None:
+             elapsed_sec: float | None = None, error: dict | None = None) -> None:
         self.stages[name] = StageStatus(status=status.value, detail=detail,
-                                        elapsed_sec=elapsed_sec)
+                                        elapsed_sec=elapsed_sec, error=error)
 
     def as_dict(self) -> dict:
         return {name: stage for name, stage in self.stages.items()}
@@ -98,6 +101,9 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         logger.info("[%3d%%] %s", int(pct * 100), msg)
         if progress_cb:
             progress_cb(pct, msg)
+
+    if not _is_supported_url(url):
+        raise UnsupportedURLError(f"http(s) URL이 아닙니다: {url}", stage="input")
 
     tmp = opts.workdir or tempfile.mkdtemp(prefix="deepcheck_")
     os.makedirs(tmp, exist_ok=True)
@@ -145,9 +151,24 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
             final.media_manipulation.level,
         )
         return final.to_dict()
+    except DeepCheckError:
+        raise
+    except Exception as e:
+        # 예상 못 한 실패도 호출자가 같은 모양으로 다룰 수 있게 감싼다.
+        raise DeepCheckError(f"분석 중 예상하지 못한 오류: {e}", cause=e) from e
     finally:
         if not opts.keep_workdir and not opts.workdir:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _is_supported_url(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 def _extract_frames(media: downloader.VideoMedia, tmp: str, opts: AnalysisOptions,
@@ -159,9 +180,11 @@ def _extract_frames(media: downloader.VideoMedia, tmp: str, opts: AnalysisOption
                                            max_frames=opts.max_frames)
     except Exception as e:
         # 프레임을 못 뽑아도 텍스트 분석은 계속할 수 있으므로 여기서 예외를 흡수한다.
-        tracker.mark("frames", StageState.FAILED, f"{type(e).__name__}: {e}",
-                     round(time.monotonic() - started, 2))
-        logger.exception("프레임 추출 중 예외")
+        # 대신 무엇이 왜 실패했는지는 stages에 구조화해서 남긴다.
+        error = as_error_dict(e, stage="frames")
+        tracker.mark("frames", StageState.FAILED, error["message"],
+                     round(time.monotonic() - started, 2), error=error)
+        logger.error("프레임 추출 실패 (%s)", error["code"], exc_info=True)
         return []
 
     elapsed = round(time.monotonic() - started, 2)
@@ -200,9 +223,12 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
     try:
         result = transcriber.transcribe(source, model_size=opts.model_size)
     except Exception as e:
-        tracker.mark("transcript", StageState.FAILED, f"{type(e).__name__}: {e}",
-                     round(time.monotonic() - started, 2))
-        logger.exception("STT 실패")
+        # STT가 실패해도 영상 분석 결과는 돌려줄 수 있다. 다만 "무음 영상"과
+        # 구분되도록 실패 사실을 stages에 남긴다.
+        error = as_error_dict(e, stage="transcript")
+        tracker.mark("transcript", StageState.FAILED, error["message"],
+                     round(time.monotonic() - started, 2), error=error)
+        logger.error("STT 실패 (%s)", error["code"], exc_info=True)
         return "", None, None
 
     coverage_pct = None

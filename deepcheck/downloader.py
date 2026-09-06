@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import config
+from .errors import DependencyMissingError, DownloadError
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,10 @@ def download(url: str, workdir: str, max_height: int | None = None) -> VideoMedi
     Returns a VideoMedia dataclass. Raises RuntimeError on failure.
     """
     if YoutubeDL is None:
-        raise RuntimeError("yt-dlp is not installed. Run: uv pip install -r requirements.txt")
+        raise DependencyMissingError(
+            "yt-dlp가 설치되어 있지 않습니다. uv pip install -r requirements.txt",
+            stage="download",
+        )
 
     os.makedirs(workdir, exist_ok=True)
     height_cap = max_height if max_height is not None else config.max_video_height
@@ -84,10 +88,16 @@ def download(url: str, workdir: str, max_height: int | None = None) -> VideoMedi
             with YoutubeDL({**base, "format": video_fmt, "outtmpl": video_tmpl}) as ydl:
                 info = ydl.extract_info(url, download=True)
         except Exception as e:
-            raise RuntimeError(f"video download failed: {e}")
+            # 비공개·삭제·지역제한·네트워크 등 대부분 외부 원인이라 재시도 여지가 있다.
+            raise DownloadError(f"영상을 받지 못했습니다: {e}", stage="download", cause=e) from e
 
         video_id = info.get("id")
         video_path = _find(workdir, video_id, marker=".v.")
+        if not video_path:
+            raise DownloadError(
+                "영상 파일을 찾지 못했습니다. 다운로드는 됐지만 저장 경로가 비어 있습니다.",
+                stage="download",
+            )
         logger.info(
             "영상 다운로드 완료: id=%s, 길이=%ss, 파일=%s",
             video_id, info.get("duration"), os.path.basename(video_path or "-"),

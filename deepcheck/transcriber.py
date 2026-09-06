@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass, field
 
 from .config import config
+from .errors import DeepCheckError as DeepCheckErrorBase
+from .errors import DependencyMissingError, TranscriptionError
 
 logger = logging.getLogger(__name__)
 
@@ -77,29 +79,39 @@ def transcribe(audio_or_video: str, model_size: str | None = None,
                language: str | None = None) -> Transcript:
     """Transcribe an audio/video file. Falls back gracefully if model files are missing."""
     if WhisperModel is None:
-        raise RuntimeError("faster-whisper is not installed. Run: uv pip install -r requirements.txt")
+        raise DependencyMissingError(
+            "faster-whisper가 설치되어 있지 않습니다. uv pip install -r requirements.txt",
+            stage="transcript",
+        )
 
     model_size = model_size or config.whisper_model_size
     device, compute_type = _detect_device()
-    model = _get_model(model_size, device, compute_type)
     started = time.monotonic()
-    segments_iter, info = model.transcribe(
-        audio_or_video,
-        language=language,
-        beam_size=5,
-        vad_filter=True,
-        word_timestamps=False,
-    )
+    try:
+        model = _get_model(model_size, device, compute_type)
+        segments_iter, info = model.transcribe(
+            audio_or_video,
+            language=language,
+            beam_size=5,
+            vad_filter=True,
+            word_timestamps=False,
+        )
 
-    segments = []
-    for seg in segments_iter:
-        segments.append(
+        # faster-whisper는 지연 평가라 실제 디코딩 오류가 여기서 터진다.
+        segments = [
             {
                 "start": round(seg.start, 2),
                 "end": round(seg.end, 2),
                 "text": seg.text.strip(),
             }
-        )
+            for seg in segments_iter
+        ]
+    except DeepCheckErrorBase:
+        raise
+    except Exception as e:
+        raise TranscriptionError(
+            f"음성 인식에 실패했습니다({model_size}): {e}", stage="transcript", cause=e
+        ) from e
 
     text = " ".join(s["text"] for s in segments).strip()
     logger.info(

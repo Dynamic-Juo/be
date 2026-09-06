@@ -8,15 +8,33 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Concurrent analyses. Each one is CPU-heavy (STT + classifier), so on a
-      # low-core host keep this at 1-2, not the code default of 3.
+      # 동시 분석 수. 각각 CPU를 많이 쓰므로 코어가 적은 호스트는 1-2로 둔다.
       DEEPCHECK_WORKERS: "${DEEPCHECK_WORKERS:-2}"
+      DEEPCHECK_LOG_LEVEL: "${DEEPCHECK_LOG_LEVEL:-INFO}"
+      # 운영에서는 json으로 두면 로그 수집·검색이 쉽다.
+      DEEPCHECK_LOG_FORMAT: "${DEEPCHECK_LOG_FORMAT:-text}"
+      # 브라우저에서 호출할 오리진. 자격증명이 필요해지면 "*" 대신 명시해야 한다.
+      DEEPCHECK_CORS_ORIGINS: "${DEEPCHECK_CORS_ORIGINS:-*}"
+      # 지정할 때만 VLM 단계를 실행한다. 제공자는 DEEPCHECK_VLM_PROVIDER로 교체 가능.
+      DEEPCHECK_VLM_MODEL: "${DEEPCHECK_VLM_MODEL:-}"
       HF_TOKEN: "${HF_TOKEN:-}"
     volumes:
-      # Persist downloaded model weights (faster-whisper + HF classifier) across
-      # container restarts — without this every restart re-downloads them.
+      # 모델 가중치(faster-whisper + HF 분류기)를 재시작해도 다시 받지 않게 보존한다.
       - model-cache:/root/.cache
-    # Uncomment and tune once you know the host's real headroom.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8000/health',timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    logging:
+      # 기본 설정이면 컨테이너 로그가 무한히 커진다. 장기 운영 전제라 상한을 둔다.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # 호스트 여력을 확인한 뒤 조정한다.
     # mem_limit: 3g
     # cpus: 2
 

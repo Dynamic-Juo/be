@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from deepcheck.config import config
+from deepcheck.errors import as_error_dict
 from deepcheck.logging_setup import current_job_id
 from deepcheck.pipeline import AnalysisOptions, analyze_url
 
@@ -44,7 +45,9 @@ class Job:
     progress: float = 0.0
     message: str = "대기 중"
     result: dict[str, Any] | None = None
-    error: str | None = None
+    # 실패 시 {code, message, retryable, stage?} 구조. 문자열 하나만 남기면
+    # 호출자가 실패 종류를 구분할 수 없다.
+    error: dict[str, Any] | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -120,7 +123,11 @@ class Harness:
                 # queued에 머문다. 반드시 삼키고 로그만 남긴다.
                 logger.exception("job 디스패치 실패: %s", getattr(item, "id", "?"))
                 if isinstance(item, Job):
-                    self._fail(item, "디스패치 실패")
+                    self._fail(item, {
+                        "code": "dispatch_failed",
+                        "message": "작업을 워커에 전달하지 못했습니다.",
+                        "retryable": True,
+                    })
 
     def _run(self, job: Job) -> None:
         token = current_job_id.set(job.id)
@@ -140,19 +147,21 @@ class Harness:
             job.message = "완료"
             logger.info("job 완료: %s (%.1fs)", job.id, time.monotonic() - started)
         except Exception as e:
-            # str(e)만 남기면 원인 추적이 불가능해서 traceback을 반드시 로그로 남긴다.
-            logger.exception("job 실패: %s", job.id)
-            self._fail(job, f"{type(e).__name__}: {e}")
+            # 응답에는 구조화된 에러를, 로그에는 traceback을 남긴다. 둘 중 하나만
+            # 있으면 원인 추적이 안 된다.
+            error = as_error_dict(e)
+            logger.error("job 실패: %s (%s)", job.id, error["code"], exc_info=True)
+            self._fail(job, error)
         finally:
             job.updated_at = time.time()
             with self._lock:
                 self._inflight_url.pop(job.url, None)
             current_job_id.reset(token)
 
-    def _fail(self, job: Job, message: str) -> None:
+    def _fail(self, job: Job, error: dict) -> None:
         job.status = ERROR
-        job.error = message
-        job.message = "오류"
+        job.error = error
+        job.message = error.get("message", "오류")
         job.updated_at = time.time()
 
     # ---- helpers ----

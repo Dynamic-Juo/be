@@ -9,14 +9,12 @@ Combines up to three signals, each optional so the tool degrades gracefully:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
-import urllib.request
 from dataclasses import dataclass, field
 
-from . import face
+from . import face, vlm
 from .config import config
 
 logger = logging.getLogger(__name__)
@@ -75,11 +73,10 @@ class DeepfakeDetector:
     """Detector holder; each stage is lazy and enabled by kwargs."""
 
     def __init__(self, use_classifier: bool = True, vlm_model: str | None = None,
-                 classifier_model: str | None = None, ollama_url: str | None = None):
+                 classifier_model: str | None = None):
         self.use_classifier = use_classifier
         self.vlm_model = vlm_model
         self.classifier_model = classifier_model or config.classifier_model
-        self.ollama_url = (ollama_url or config.ollama_url).rstrip("/")
 
     # ---- classifier (torch + transformers) ----
     def _load_classifier(self):
@@ -135,55 +132,29 @@ class DeepfakeDetector:
             return arts
         return arts
 
-    # ---- VLM (Ollama) ----
+    # ---- VLM (교체 가능, deepcheck/vlm.py) ----
     def _vlm_analyze(self, frames: list[str]) -> tuple[str | None, str | None, str | None]:
         """(요약, 사용 모델, 실패 사유)를 반환한다.
 
         VLM은 모델을 명시적으로 지정했을 때만 실행한다. 실패 사유는 버리지 않고
-        돌려줘서, VLM을 켰는데 결과가 없을 때 왜 없는지 알 수 있게 한다.
+        돌려줘서, VLM을 켰는데 근거가 없을 때 왜 없는지 알 수 있게 한다.
         """
-        if not self.vlm_model:
+        provider = vlm.get_provider(self.vlm_model)
+        if provider is None:
             return None, None, None
-        if Image is None:
-            return None, None, "Pillow 미설치로 VLM 입력 이미지를 만들 수 없음"
-
-        model = self.vlm_model
-        # Ollama 비전 모델은 메시지당 이미지 한 장이 편해서 첫 프레임만 보낸다.
+        # 비전 모델은 이미지 한 장씩 다루는 편이 안정적이라 대표 프레임만 보낸다.
         target = frames[:1]
         if not target:
             return None, None, "분석할 프레임이 없어 VLM을 건너뜀"
 
-        prompt = (
-            "이미지에서 AI가 생성했거나 딥페이크일 수 있는 시각적 흔적(얼굴 비대칭, 손/손가락 왜곡, "
-            "사람 피부 불연속, 비정상 그림자, 공간 반복 등)이 있으면 한국어로 구체적으로 설명하세요. "
-            "없으면 '특이사항 없음'이라고만 답하세요. 2문장 이내로."
-        )
-        notes: list[str] = []
-        for fp in target:
-            b64 = _encode_b64(fp)
-            if not b64:
-                return None, None, f"프레임 인코딩 실패: {os.path.basename(fp)}"
-            try:
-                payload = {"model": model, "prompt": prompt, "images": [b64], "stream": False}
-                req = urllib.request.Request(
-                    f"{self.ollama_url}/api/generate",
-                    data=json.dumps(payload).encode(),
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=config.vlm_timeout_sec) as resp:
-                    data = json.loads(resp.read().decode())
-                note = (data.get("response") or "").strip()
-                if note:
-                    notes.append(note)
-                logger.info("VLM(%s) 분석 완료", model)
-            except Exception as e:
-                reason = f"VLM 호출 실패({model} @ {self.ollama_url}): {e}"
-                logger.warning(reason)
-                return None, None, reason
+        try:
+            note = provider.describe(target[0])
+        except vlm.VLMUnavailable as e:
+            logger.warning("VLM 사용 불가: %s", e)
+            return None, None, str(e)
 
-        if not notes:
-            return None, None, f"VLM({model})이 빈 응답을 반환"
-        return "\n".join(notes), model, None
+        logger.info("VLM(%s/%s) 분석 완료", provider.name, self.vlm_model)
+        return note, self.vlm_model, None
 
     # ---- main entry ----
     def analyze(self, frames: list[str]) -> DeepfakeReport:
@@ -274,11 +245,3 @@ class DeepfakeDetector:
         )
 
 
-def _encode_b64(path: str) -> str | None:
-    try:
-        import base64
-        with open(path, "rb") as f:
-            return base64.b64encode(f.read()).decode()
-    except Exception as e:
-        logger.warning("프레임 base64 인코딩 실패(%s): %s", os.path.basename(path), e)
-        return None
