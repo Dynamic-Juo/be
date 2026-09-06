@@ -9,6 +9,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import captions
 from .config import config
 from .errors import DependencyMissingError, DownloadError
 
@@ -27,6 +28,10 @@ class VideoMedia:
     workdir: str
     video_path: str
     audio_path: str | None = None
+    # 영상에 이미 달려 있는 자막(있으면 STT를 건너뛴다)
+    caption_path: str | None = None
+    caption_language: str | None = None
+    caption_source: str | None = None
     title: str | None = None
     video_id: str | None = None
     duration: float | None = None
@@ -44,7 +49,8 @@ def _ffmpeg_binary() -> str | None:
     return shutil.which("ffmpeg")
 
 
-def download(url: str, workdir: str, max_height: int | None = None) -> VideoMedia:
+def download(url: str, workdir: str, max_height: int | None = None,
+             caption_policy: str | None = None) -> VideoMedia:
     """Download best available mp4 (video+audio merged) for a URL.
 
     Uses the yt-dlp Python API so it stays resilient on a single process.
@@ -115,11 +121,18 @@ def download(url: str, workdir: str, max_height: int | None = None) -> VideoMedi
             logger.warning("별도 오디오 스트림이 없어 영상 파일을 STT 입력으로 사용한다")
             audio_path = video_path
 
+        caption_path, caption_language, caption_source = _fetch_captions(
+            url, workdir, info, base, caption_policy or config.caption_policy
+        )
+
         return VideoMedia(
             url=url,
             workdir=workdir,
             video_path=video_path,
             audio_path=audio_path,
+            caption_path=caption_path,
+            caption_language=caption_language,
+            caption_source=caption_source,
             title=info.get("title"),
             video_id=video_id,
             duration=info.get("duration"),
@@ -130,6 +143,48 @@ def download(url: str, workdir: str, max_height: int | None = None) -> VideoMedi
         )
 
     return inner()
+
+
+def _fetch_captions(url: str, workdir: str, info: dict, base_opts: dict, policy: str
+                    ) -> tuple[str | None, str | None, str | None]:
+    """쓸 만한 자막이 있으면 내려받는다. 실패해도 STT로 넘어가면 되므로 예외를 올리지 않는다."""
+    picked = captions.pick_track(
+        info.get("subtitles") or {}, info.get("automatic_captions") or {}, policy
+    )
+    if picked is None:
+        logger.info("사용할 자막이 없어 STT로 진행한다 (정책: %s)", policy)
+        return None, None, None
+
+    language, source, _formats = picked
+    template = os.path.join(workdir, "%(id)s.sub")
+    options = {
+        **base_opts,
+        "skip_download": True,
+        "writesubtitles": source == "manual",
+        "writeautomaticsub": source == "automatic",
+        "subtitleslangs": [language],
+        "subtitlesformat": "vtt",
+        "outtmpl": template,
+    }
+    try:
+        with YoutubeDL(options) as ydl:
+            ydl.extract_info(url, download=True)
+    except Exception as e:
+        logger.warning("자막 다운로드 실패(%s/%s): %s — STT로 진행한다", language, source, e)
+        return None, None, None
+
+    video_id = info.get("id") or ""
+    matches = [
+        f for f in os.listdir(workdir)
+        if f.startswith(video_id) and ".sub" in f and f.endswith((".vtt", ".srt"))
+    ]
+    if not matches:
+        logger.warning("자막 파일을 찾지 못했습니다 — STT로 진행한다")
+        return None, None, None
+
+    path = os.path.join(workdir, matches[0])
+    logger.info("자막 확보: %s (%s, %s)", os.path.basename(path), language, source)
+    return path, language, source
 
 
 def _find(workdir: str, video_id: str | None, marker: str) -> str | None:

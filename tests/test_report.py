@@ -10,7 +10,8 @@ from deepcheck.config import config
 
 
 def _deepfake(frames_analyzed=8, frames_fake=0, avg=0.0, method="heuristics+ViT-classifier",
-              evidence=None, vlm_summary=None):
+              evidence=None, vlm_summary=None, frames_with_face=None,
+              face_model_available=True):
     return {
         "frames_analyzed": frames_analyzed,
         "frames_fake": frames_fake,
@@ -18,6 +19,9 @@ def _deepfake(frames_analyzed=8, frames_fake=0, avg=0.0, method="heuristics+ViT-
         "method": method,
         "evidence": evidence or [],
         "vlm_summary": vlm_summary,
+        # 기본은 "모든 프레임에서 얼굴을 찾았다"로 둔다.
+        "frames_with_face": frames_analyzed if frames_with_face is None else frames_with_face,
+        "face_model_available": face_model_available,
     }
 
 
@@ -58,6 +62,31 @@ class TestUnavailable:
         )
         assert mm.status == report.AxisStatus.UNAVAILABLE.value
         assert mm.risk is None
+
+    def test_얼굴을_못_찾으면_분류기_점수를_믿지_않는다(self):
+        # 이 분류기는 얼굴 crop으로 학습됐다. 얼굴이 없는데 나온 낮은 점수를
+        # "정상 영상"으로 읽으면 설계 문서의 원칙을 어긴다.
+        mm = report.build_media_manipulation(
+            _deepfake(avg=5.0, frames_with_face=0), _text()
+        )
+        assert mm.status == report.AxisStatus.UNAVAILABLE.value
+        assert mm.risk is None
+        assert "얼굴을 찾지 못해" in mm.detail
+
+    def test_얼굴_검출_모델이_없을_때는_사유가_다르다(self):
+        mm = report.build_media_manipulation(
+            _deepfake(avg=5.0, frames_with_face=0, face_model_available=False), _text()
+        )
+        assert mm.status == report.AxisStatus.UNAVAILABLE.value
+        assert "얼굴 검출 모델이 없어" in mm.detail
+
+    def test_일부_프레임에서만_얼굴을_찾으면_경고를_남기고_판정한다(self):
+        mm = report.build_media_manipulation(
+            _deepfake(avg=40.0, frames_with_face=3), _text()
+        )
+        assert mm.status == report.AxisStatus.ANALYZED.value
+        assert mm.risk == 40.0
+        assert "3장에서만" in mm.detail
 
 
 class TestScoring:
@@ -135,9 +164,22 @@ class TestBuild:
         r = report.build({"url": "u"}, _deepfake(frames_analyzed=0), _text(), self._stages())
         assert r.analysis_status == report.AnalysisState.PARTIAL.value
 
-    def test_주장검증은_기본적으로_미구현_상태(self):
+    def test_주장검증_결과를_안_넘기면_수행하지_않은_상태로_남는다(self):
         r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(), self._stages())
-        assert r.claim_verification.status == report.AxisStatus.NOT_IMPLEMENTED.value
+        assert r.claim_verification.status == report.AxisStatus.UNAVAILABLE.value
+
+    def test_주장검증_결과가_그대로_실린다(self):
+        cv = report.ClaimVerification(
+            status=report.AxisStatus.ANALYZED.value,
+            claims=[{"text": "2024년 실업률이 3.2% 감소했다", "verdict": "refuted",
+                     "reason": '전문 기관 판정: "False"', "evidence": []}],
+            summary={"total": 1, "supported": 0, "refuted": 1, "unverified": 0},
+        )
+        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(), self._stages(),
+                         claim_verification=cv)
+        assert r.claim_verification.summary["refuted"] == 1
+        # 두 축은 끝까지 분리된 채로 남는다. 조작 점수에 섞이지 않는다.
+        assert r.media_manipulation.risk == 10.0
 
     def test_응답_스키마_필수_키(self):
         r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(), self._stages())

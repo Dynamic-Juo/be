@@ -29,8 +29,14 @@ def test_API_요청_모델과_파이프라인_기본값이_같다():
         assert getattr(pipeline_defaults, key) == value, f"기본값 불일치: {key}"
 
 
-def test_주장검증은_기본적으로_꺼져있다():
-    assert AnalysisOptions().enable_claim_verification is False
+def test_주장검증은_기본적으로_켜져있다():
+    # PRD가 정의한 두 축 중 하나이므로 기본 동작에 포함한다.
+    assert AnalysisOptions().enable_claim_verification is True
+
+
+def test_자막_정책_기본값은_수동_자막만_사용한다():
+    # 자동 자막은 결국 다른 STT의 출력이라 품질이 낫다고 보기 어렵다.
+    assert AnalysisOptions().caption_policy == "manual"
 
 
 def test_환경변수로_설정을_덮어쓸_수_있다(monkeypatch):

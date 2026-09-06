@@ -26,13 +26,11 @@ class StageState(str, Enum):
     OK = "ok"
     FAILED = "failed"
     SKIPPED = "skipped"
-    NOT_IMPLEMENTED = "not_implemented"
 
 
 class AxisStatus(str, Enum):
     ANALYZED = "analyzed"
     UNAVAILABLE = "unavailable"
-    NOT_IMPLEMENTED = "not_implemented"
 
 
 class AnalysisState(str, Enum):
@@ -45,6 +43,12 @@ LEVEL_MODERATE = "상당함"
 LEVEL_CAUTION = "주의 필요"
 LEVEL_LOW = "낮음"
 LEVEL_UNKNOWN = "판단 불가"
+
+_VERDICT_LABELS = {
+    "supported": "지지",
+    "refuted": "반박",
+    "unverified": "판단 유보",
+}
 
 
 @dataclass
@@ -71,9 +75,9 @@ class MediaManipulation:
 
 @dataclass
 class ClaimVerification:
-    status: str = AxisStatus.NOT_IMPLEMENTED.value
+    status: str = AxisStatus.UNAVAILABLE.value
     claims: list[dict] = field(default_factory=list)
-    evidence: list[str] = field(default_factory=list)
+    summary: dict = field(default_factory=dict)
     detail: str | None = None
 
 
@@ -139,7 +143,23 @@ def level_for(risk: float | None) -> str:
 def build_media_manipulation(deepfake: dict, text: dict) -> MediaManipulation:
     """영상 신호 + 자가표기·합성음성 신호를 미디어 조작 축 하나로 모은다."""
     frames_analyzed = int(deepfake.get("frames_analyzed", 0))
+    frames_with_face = int(deepfake.get("frames_with_face", 0))
+    classifier_used = "ViT-classifier" in str(deepfake.get("method", ""))
+
     visual_risk = float(deepfake.get("avg_fake_score", 0.0)) if frames_analyzed > 0 else None
+    visual_unavailable_reason = None
+    if frames_analyzed == 0:
+        visual_unavailable_reason = "분석할 영상 프레임을 확보하지 못했다."
+    elif classifier_used and frames_with_face == 0:
+        # 이 분류기는 얼굴 crop 이미지로 학습된 모델이다. 얼굴을 한 명도 못 찾았다면
+        # 전체 프레임에 대한 점수는 근거로 쓸 수 없다. 설계 문서의 원칙대로
+        # "얼굴을 못 찾음"을 정상 판정으로 바꾸지 않고 판단을 유보한다.
+        visual_risk = None
+        visual_unavailable_reason = (
+            "영상에서 얼굴을 찾지 못해 얼굴 기반 분류 결과를 신뢰할 수 없다."
+            if deepfake.get("face_model_available")
+            else "얼굴 검출 모델이 없어 얼굴 기반 분석을 수행하지 못했다."
+        )
 
     self_disclosure_risk = float(text.get("self_disclosure_risk", 0))
     tts_risk = float(text.get("tts_risk", 0))
@@ -151,7 +171,10 @@ def build_media_manipulation(deepfake: dict, text: dict) -> MediaManipulation:
             "risk": visual_risk,
             "frames_analyzed": frames_analyzed,
             "frames_fake": int(deepfake.get("frames_fake", 0)),
-            "classifier_used": "ViT-classifier" in str(deepfake.get("method", "")),
+            "classifier_used": classifier_used,
+            "frames_with_face": frames_with_face,
+            "face_model_available": bool(deepfake.get("face_model_available")),
+            "unavailable_reason": visual_unavailable_reason,
         },
         "self_disclosure": {
             "risk": self_disclosure_risk,
@@ -164,6 +187,7 @@ def build_media_manipulation(deepfake: dict, text: dict) -> MediaManipulation:
     # 영상 분석도 못 했고 자가표기도 없으면 판단할 근거가 없다. 합성 음성 의심만으로는
     # 판정하지 않는다(신호가 약해 단독 근거로 쓰기 어렵다).
     if visual_risk is None and not disclosed:
+        reason = visual_unavailable_reason or "판단할 근거가 부족하다."
         return MediaManipulation(
             status=AxisStatus.UNAVAILABLE.value,
             risk=None,
@@ -171,7 +195,7 @@ def build_media_manipulation(deepfake: dict, text: dict) -> MediaManipulation:
             frames_analyzed=frames_analyzed,
             frames_fake=int(deepfake.get("frames_fake", 0)),
             method=str(deepfake.get("method", "")),
-            detail="분석 가능한 영상 프레임을 확보하지 못했고 자가표기도 없어 판단을 유보한다.",
+            detail=f"{reason} 자가표기도 없어 판단을 유보한다.",
             signals=signals,
             evidence=list(deepfake.get("evidence", [])),
         )
@@ -185,9 +209,12 @@ def build_media_manipulation(deepfake: dict, text: dict) -> MediaManipulation:
 
     detail = None
     if visual_risk is None:
-        detail = "영상 프레임 분석은 하지 못했고, 제목·설명의 자가표기만으로 판단한 점수다."
-    elif not signals["visual"]["classifier_used"]:
+        detail = f"{visual_unavailable_reason} 제목·설명의 자가표기만으로 판단한 점수다."
+    elif not classifier_used:
         detail = "딥페이크 분류기를 사용하지 못해 휴리스틱만으로 영상을 판단했다."
+    elif frames_with_face < frames_analyzed:
+        detail = (f"프레임 {frames_analyzed}장 중 {frames_with_face}장에서만 얼굴을 찾았다. "
+                  "나머지는 전체 프레임으로 분석해 정확도가 낮을 수 있다.")
 
     evidence = list(deepfake.get("evidence", [])) + list(text.get("self_disclosure_evidence", []))
 
@@ -225,8 +252,8 @@ def build(meta: dict, deepfake: dict, text: dict, stages: dict,
           claim_verification: ClaimVerification | None = None) -> AnalysisReport:
     media_manipulation = build_media_manipulation(deepfake, text)
     claims = claim_verification or ClaimVerification(
-        status=AxisStatus.NOT_IMPLEMENTED.value,
-        detail="주장 사실성 검증 파이프라인은 아직 구현되지 않았다(팀 결정 대기).",
+        status=AxisStatus.UNAVAILABLE.value,
+        detail="주장 사실성 검증을 수행하지 않았다.",
     )
 
     stage_payload = {
@@ -306,10 +333,31 @@ def format_text(r: AnalysisReport) -> str:
         lines.append(f"    VLM    : {mm.signals['vlm']['summary']}")
     lines.append("")
 
+    cv = r.claim_verification
     lines.append("[2] 주장 사실성 검증")
-    lines.append(f"    상태   : {r.claim_verification.status}")
-    if r.claim_verification.detail:
-        lines.append(f"    사유   : {r.claim_verification.detail}")
+    lines.append(f"    상태   : {cv.status}")
+    if cv.summary:
+        lines.append(
+            f"    판정   : 지지 {cv.summary.get('supported', 0)} · "
+            f"반박 {cv.summary.get('refuted', 0)} · "
+            f"판단 유보 {cv.summary.get('unverified', 0)} (총 {cv.summary.get('total', 0)}건)"
+        )
+    if cv.detail:
+        lines.append(f"    사유   : {cv.detail}")
+    for claim in cv.claims:
+        when = ""
+        if claim.get("start") is not None:
+            minutes, seconds = divmod(int(claim["start"]), 60)
+            when = f"[{minutes:02d}:{seconds:02d}] "
+        lines.append(f"    · ({_VERDICT_LABELS.get(claim.get('verdict'), '판단 유보')}) "
+                     f"{when}{claim.get('text', '')[:80]}")
+        if claim.get("reason"):
+            lines.append(f"        사유: {claim['reason']}")
+        for item in claim.get("evidence", [])[:2]:
+            rating = f" — {item['rating']}" if item.get("rating") else ""
+            lines.append(f"        근거: [{item.get('source')}] {item.get('title', '')[:60]}{rating}")
+            if item.get("url"):
+                lines.append(f"              {item['url']}")
     lines.append("")
 
     lines.append("[참고] 음성 텍스트")
@@ -330,6 +378,31 @@ def format_text(r: AnalysisReport) -> str:
 def format_json(r: AnalysisReport) -> str:
     import json
     return json.dumps(r.to_dict(), ensure_ascii=False, indent=2)
+
+
+def _claims_html(cv: ClaimVerification, esc) -> str:
+    """주장별 판정·근거를 목록으로 만든다. 근거 링크는 원문을 확인할 수 있게 남긴다."""
+    if not cv.claims:
+        return ""
+    rows = []
+    for claim in cv.claims:
+        label = _VERDICT_LABELS.get(claim.get("verdict"), "판단 유보")
+        links = "".join(
+            f'<li><a href="{esc(item.get("url"))}" rel="noopener noreferrer" '
+            f'target="_blank">{esc(item.get("title"))}</a> '
+            f'<small>({esc(item.get("source"))}{esc(" · " + item["rating"] if item.get("rating") else "")})</small></li>'
+            for item in claim.get("evidence", [])[:3]
+        )
+        rows.append(
+            f'<li><b>[{esc(label)}]</b> {esc(claim.get("text"))}'
+            f'<br><small>{esc(claim.get("reason"))}</small>'
+            + (f"<ul>{links}</ul>" if links else "")
+            + "</li>"
+        )
+    summary = cv.summary or {}
+    header = (f"<p>지지 {summary.get('supported', 0)} · 반박 {summary.get('refuted', 0)} · "
+              f"판단 유보 {summary.get('unverified', 0)}</p>") if summary else ""
+    return f"{header}<ul>{''.join(rows)}</ul>"
 
 
 def format_html(r: AnalysisReport) -> str:
@@ -365,6 +438,7 @@ li{{margin:6px 0;font-size:.95rem}}</style></head><body>
 <ul>{ev}</ul></div>
 <div class="card"><h3>2. 주장 사실성 검증</h3>
 <p>상태: {esc(r.claim_verification.status)}</p>
+{_claims_html(r.claim_verification, esc)}
 <p>{esc(r.claim_verification.detail)}</p></div>
 <div class="card"><h3>참고: 음성 텍스트</h3><p>{esc(r.transcript.summary)}</p>
 <p><b>키워드:</b> {kw}</p>

@@ -1,9 +1,13 @@
 FROM python:3.12-slim
 
-# libgl1/libglib2.0-0: required by mediapipe/opencv-style native deps at import time.
+# MediaPipe(얼굴 검출)와 OpenCV가 import·초기화 시점에 찾는 네이티브 라이브러리들.
+# libegl1이 빠지면 얼굴 검출기 로드가 "libEGL.so.1 없음"으로 조용히 실패하고,
+# 전체 프레임으로 분류하게 되어 정확도가 떨어진다. 실제로 이 이미지에서 겪었다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libgl1 \
+    libegl1 \
+    libgles2 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 

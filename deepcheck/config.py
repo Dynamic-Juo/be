@@ -73,6 +73,25 @@ class Config:
     level_moderate: float = 45.0
     level_caution: float = 25.0
 
+    # --- 발언 텍스트 확보 ---
+    # 자막이 있으면 STT를 건너뛴다. manual=사람이 단 자막만, any=자동 자막까지,
+    # off=항상 STT. 자동 자막은 결국 다른 STT의 출력이라 기본값은 manual이다.
+    caption_policy: str = "manual"
+
+    # --- 주장 사실성 검증 ---
+    # 영상 하나에서 검증할 주장 수. 주장마다 외부 검색이 붙으므로 응답 시간에 직결된다.
+    max_claims: int = 5
+    evidence_per_claim: int = 3
+    evidence_timeout_sec: int = 8
+    # 주장 전체에 쓸 수 있는 근거 검색 시간 총량. 넘기면 남은 주장은 검색 없이 유보한다.
+    # 응답이 하염없이 늦어지는 것보다 "일부는 확인하지 못했다"고 말하는 편이 낫다.
+    evidence_budget_sec: int = 30
+    # 사용할 근거 검색 수단(쉼표 구분, 앞에서부터 순서대로 조회).
+    # gdelt는 실측에서 16초 이상 걸리고 429가 잦아 기본에서 제외했다.
+    evidence_providers: str = "factcheck,wikipedia,wikipedia_en"
+    # 전문 기관의 공개 판정 검색(Google Fact Check Tools). 키가 있을 때만 사용한다.
+    google_factcheck_api_key: str = ""
+
     # --- 실행 ---
     max_frames: int = 8
     max_video_height: int = 720
@@ -112,6 +131,15 @@ def load_config() -> Config:
         level_high=_env_float("LEVEL_HIGH", Config.level_high),
         level_moderate=_env_float("LEVEL_MODERATE", Config.level_moderate),
         level_caution=_env_float("LEVEL_CAUTION", Config.level_caution),
+        caption_policy=_env_str("CAPTION_POLICY", Config.caption_policy).lower(),
+        max_claims=_env_int("MAX_CLAIMS", Config.max_claims),
+        evidence_per_claim=_env_int("EVIDENCE_PER_CLAIM", Config.evidence_per_claim),
+        evidence_timeout_sec=_env_int("EVIDENCE_TIMEOUT_SEC", Config.evidence_timeout_sec),
+        evidence_providers=_env_str("EVIDENCE_PROVIDERS", Config.evidence_providers),
+        evidence_budget_sec=_env_int("EVIDENCE_BUDGET_SEC", Config.evidence_budget_sec),
+        google_factcheck_api_key=_env_str(
+            "GOOGLE_FACTCHECK_API_KEY", Config.google_factcheck_api_key
+        ),
         max_frames=_env_int("MAX_FRAMES", Config.max_frames),
         max_video_height=_env_int("MAX_VIDEO_HEIGHT", Config.max_video_height),
         audio_convert_timeout_sec=_env_int(

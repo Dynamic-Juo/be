@@ -132,7 +132,9 @@ class AnalyzeRequest(BaseModel):
     max_frames: int = Field(default_factory=lambda: config.max_frames, ge=0, le=64)
     use_classifier: bool = True
     vlm_model: str | None = Field(default_factory=default_vlm_model, max_length=128)
-    enable_claim_verification: bool = False
+    enable_claim_verification: bool = True
+    caption_policy: str = Field(default_factory=lambda: config.caption_policy,
+                                pattern="^(manual|any|off)$")
     session_id: str | None = Field(default=None, max_length=64)
 
 

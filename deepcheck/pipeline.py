@@ -15,11 +15,12 @@ import os
 import shutil
 import tempfile
 import time
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import analyzer, deepfake, downloader, report, transcriber
+from . import analyzer, captions, claims, deepfake, downloader, report, transcriber
 from .config import config, default_vlm_model
 from .errors import DeepCheckError, UnsupportedURLError, as_error_dict
 from .report import StageState, StageStatus
@@ -42,8 +43,9 @@ class AnalysisOptions:
     max_frames: int = field(default_factory=lambda: config.max_frames)
     use_classifier: bool = True
     vlm_model: str | None = field(default_factory=default_vlm_model)
-    # 주장 사실성 검증은 아직 미구현이다. 팀 결정(docs PR #4) 전까지 스위치만 둔다.
-    enable_claim_verification: bool = False
+    enable_claim_verification: bool = True
+    # manual: 사람이 단 자막만 사용 / any: 자동 자막까지 / off: 항상 STT
+    caption_policy: str = field(default_factory=lambda: config.caption_policy)
     workdir: str | None = None
     keep_workdir: bool = False
     save_transcript: str | None = None
@@ -112,23 +114,26 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
     try:
         progress(0.05, "영상 다운로드 중...")
         with tracker.run("download"):
-            media = downloader.download(url, tmp)
+            media = downloader.download(url, tmp, caption_policy=opts.caption_policy)
 
-        progress(0.30, "프레임 추출 중...")
+        progress(0.25, "프레임 추출 중...")
         frames = _extract_frames(media, tmp, opts, tracker)
 
-        progress(0.45, "영상 조작 분석 중...")
+        progress(0.35, "영상 조작 분석 중...")
         det_report = _detect_manipulation(frames, opts, tracker)
 
-        progress(0.60, "음성→텍스트(STT) 변환 중...")
-        transcript_text, language, coverage_pct = _transcribe(media, opts, tracker)
+        progress(0.55, "발언 텍스트 확보 중...")
+        transcript_text, language, coverage_pct, segments = _collect_transcript(
+            media, opts, tracker
+        )
 
-        progress(0.85, "텍스트 신호 분석 중...")
+        progress(0.75, "텍스트 신호 분석 중...")
         txt_report = analyzer.analyze(
             transcript_text, language, title=media.title, description=media.description
         )
 
-        claim_result = _verify_claims(opts, tracker)
+        progress(0.80, "주장 사실성 검증 중...")
+        claim_result = _verify_claims(transcript_text, segments, opts, tracker)
 
         progress(0.95, "결과 정리 중...")
         meta = {
@@ -215,9 +220,38 @@ def _detect_manipulation(frames: list[str], opts: AnalysisOptions,
     return det_report
 
 
+def _collect_transcript(media: downloader.VideoMedia, opts: AnalysisOptions,
+                        tracker: StageTracker
+                        ) -> tuple[str, str | None, float | None, list[dict]]:
+    """발언 텍스트를 확보한다.
+
+    설계 문서의 분기를 그대로 따른다: 쓸 수 있는 자막이 있으면 자막을 쓰고,
+    없을 때만 음성 인식으로 넘어간다. 자막이 있으면 STT 수십 초를 통째로 아낀다.
+    """
+    if media.caption_path:
+        started = time.monotonic()
+        track = captions.load_track(
+            media.caption_path, media.caption_language or "", media.caption_source or "manual"
+        )
+        if track:
+            coverage_pct = None
+            if media.duration and track.duration:
+                coverage_pct = round(min(track.duration, media.duration) / media.duration * 100, 1)
+            tracker.mark(
+                "transcript", StageState.OK,
+                f"자막 사용({media.caption_source}/{media.caption_language}), "
+                f"{track.word_count}단어",
+                round(time.monotonic() - started, 2),
+            )
+            return track.text, track.language, coverage_pct, track.segments
+        logger.info("자막을 읽지 못해 STT로 넘어간다")
+
+    return _transcribe(media, opts, tracker)
+
+
 def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
-                tracker: StageTracker) -> tuple[str, str | None, float | None]:
-    """(텍스트, 언어, STT 커버리지 %)를 반환한다. 실패해도 예외를 올리지 않는다."""
+                tracker: StageTracker) -> tuple[str, str | None, float | None, list[dict]]:
+    """(텍스트, 언어, STT 커버리지 %, 세그먼트)를 반환한다. 실패해도 예외를 올리지 않는다."""
     started = time.monotonic()
     source = media.audio_path or media.video_path
     try:
@@ -229,7 +263,7 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
         tracker.mark("transcript", StageState.FAILED, error["message"],
                      round(time.monotonic() - started, 2), error=error)
         logger.error("STT 실패 (%s)", error["code"], exc_info=True)
-        return "", None, None
+        return "", None, None, []
 
     coverage_pct = None
     if media.duration and result.duration:
@@ -246,10 +280,10 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
 
     tracker.mark(
         "transcript", StageState.OK,
-        f"{result.word_count}단어" + (f", 커버리지 {coverage_pct}%" if coverage_pct else ""),
+        f"STT {result.word_count}단어" + (f", 커버리지 {coverage_pct}%" if coverage_pct else ""),
         round(time.monotonic() - started, 2),
     )
-    return result.text, result.language, coverage_pct
+    return result.text, result.language, coverage_pct, result.segments
 
 
 def _save_transcript(path: str, media: downloader.VideoMedia,
@@ -269,25 +303,65 @@ def _save_transcript(path: str, media: downloader.VideoMedia,
         logger.warning("transcript 저장 실패(%s): %s", path, e)
 
 
-def _verify_claims(opts: AnalysisOptions, tracker: StageTracker) -> report.ClaimVerification:
-    """주장 사실성 검증 축.
-
-    아직 구현하지 않았다. PRD의 R-03~R-05가 미정 상태이고(주장 선정 기준, 근거
-    검색 수단, 판정 기준), 이는 팀 결정 사항이라 임의로 구현하지 않는다.
-    스위치와 응답 자리만 먼저 만들어 둬서, 결정이 나면 이 함수만 채우면 된다.
-    """
+def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
+                   tracker: StageTracker) -> report.ClaimVerification:
+    """주장 사실성 검증 축: 주장 추출 → 외부 근거 검색 → 판정."""
     if not opts.enable_claim_verification:
         tracker.mark("claim_verification", StageState.SKIPPED, "옵션이 꺼져 있음")
         return report.ClaimVerification(
-            status=report.AxisStatus.NOT_IMPLEMENTED.value,
-            detail="주장 사실성 검증은 아직 구현되지 않았다(팀 결정 대기).",
+            status=report.AxisStatus.UNAVAILABLE.value,
+            detail="주장 사실성 검증을 요청하지 않았다.",
         )
 
-    tracker.mark("claim_verification", StageState.NOT_IMPLEMENTED,
-                 "요청했지만 파이프라인이 아직 없음")
-    logger.warning("주장 사실성 검증을 요청했으나 아직 구현되지 않았다")
+    started = time.monotonic()
+    if not text:
+        tracker.mark("claim_verification", StageState.SKIPPED, "발언 텍스트가 없음")
+        return report.ClaimVerification(
+            status=report.AxisStatus.UNAVAILABLE.value,
+            detail="발언 텍스트를 확보하지 못해 검증할 주장을 뽑을 수 없다.",
+        )
+
+    try:
+        extracted = claims.extract_claims(text, segments, max_claims=config.max_claims)
+        if not extracted:
+            tracker.mark("claim_verification", StageState.OK, "검증 대상 주장 없음",
+                         round(time.monotonic() - started, 2))
+            return report.ClaimVerification(
+                status=report.AxisStatus.ANALYZED.value,
+                # 주장이 없어도 summary 모양은 유지한다. 소비하는 쪽이 키 유무로
+                # 분기하지 않게.
+                summary={"total": 0, "supported": 0, "refuted": 0, "unverified": 0},
+                detail="검증 가능한 사실 주장을 찾지 못했다. 의견이나 일상 대화 위주의 영상일 수 있다.",
+            )
+
+        verified = claims.verify_claims(extracted)
+    except Exception as e:
+        # 팩트체크가 실패해도 미디어 조작 분석 결과는 돌려줄 수 있다.
+        error = as_error_dict(e, stage="claim_verification")
+        tracker.mark("claim_verification", StageState.FAILED, error["message"],
+                     round(time.monotonic() - started, 2), error=error)
+        logger.error("주장 검증 실패 (%s)", error["code"], exc_info=True)
+        return report.ClaimVerification(
+            status=report.AxisStatus.UNAVAILABLE.value,
+            detail="주장 검증 중 오류가 발생해 판단을 유보한다.",
+        )
+
+    counts = Counter(claim.verdict for claim in verified)
+    tracker.mark(
+        "claim_verification", StageState.OK,
+        f"주장 {len(verified)}건 (지지 {counts[claims.SUPPORTED]}, "
+        f"반박 {counts[claims.REFUTED]}, 유보 {counts[claims.UNVERIFIED]})",
+        round(time.monotonic() - started, 2),
+    )
     return report.ClaimVerification(
-        status=report.AxisStatus.NOT_IMPLEMENTED.value,
-        detail="검증을 요청했지만 파이프라인이 아직 구현되지 않았다. 주장 선정·근거 검색·판정 "
-               "기준이 PRD에서 미정 상태다.",
+        status=report.AxisStatus.ANALYZED.value,
+        claims=[claim.to_dict() for claim in verified],
+        summary={
+            "total": len(verified),
+            "supported": counts[claims.SUPPORTED],
+            "refuted": counts[claims.REFUTED],
+            "unverified": counts[claims.UNVERIFIED],
+        },
+        detail=None if counts[claims.REFUTED] or counts[claims.SUPPORTED] else
+        "관련 자료는 모았지만 이 주장들을 직접 검증한 판정을 찾지 못해 모두 판단을 유보했다.",
     )

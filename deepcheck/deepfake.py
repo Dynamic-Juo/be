@@ -42,6 +42,10 @@ class DeepfakeReport:
     evidence: list[str] = field(default_factory=list)
     method: str = "heuristics"
     vlm_summary: str | None = None
+    # 얼굴 기반 분류기의 결과를 믿어도 되는지 판단하는 데 필요한 정보.
+    # 얼굴을 한 명도 못 찾았는데 낮은 점수가 나온 것을 "정상 영상"으로 읽으면 안 된다.
+    frames_with_face: int = 0
+    face_model_available: bool = False
 
 
 # Module-level cache: the ViT pipeline is loaded once per process and reused
@@ -165,6 +169,7 @@ class DeepfakeDetector:
             return DeepfakeReport(
                 frames_analyzed=0, frames_fake=0, avg_fake_score=0.0,
                 evidence=[], method="none", vlm_summary=None,
+                face_model_available=face.available(),
             )
 
         results: list[FrameResult] = []
@@ -182,9 +187,16 @@ class DeepfakeDetector:
             results.append(fr)
 
         cropped = sum(1 for r in results if r.face_cropped)
-        logger.info("프레임 %d장 분석, 얼굴 crop 적용 %d장", len(results), cropped)
+        face_model_available = face.available()
+        logger.info(
+            "프레임 %d장 분석, 얼굴 검출 %d장 (얼굴 모델 %s)",
+            len(results), cropped, "있음" if face_model_available else "없음",
+        )
         if self.use_classifier and cropped == 0:
-            logger.warning("얼굴 crop이 한 장도 적용되지 않음 — 전체 프레임으로 분류해 정확도가 낮을 수 있다")
+            # 설계 문서 원칙: 얼굴을 못 찾은 것을 정상 판정으로 처리하지 않는다.
+            # 여기서는 사실만 기록하고, 판단 유보 여부는 report가 정한다.
+            reason = ("얼굴 검출 모델이 없어" if not face_model_available else "영상에서 얼굴을 찾지 못해")
+            logger.warning("%s 얼굴 기반 분류 결과를 신뢰할 수 없다", reason)
 
         scored = [r for r in results if r.fake_score is not None]
         if scored:
@@ -242,6 +254,8 @@ class DeepfakeDetector:
             evidence=evidence,
             method="+".join(method_parts),
             vlm_summary=vlm_summary,
+            frames_with_face=cropped,
+            face_model_available=face_model_available,
         )
 
 

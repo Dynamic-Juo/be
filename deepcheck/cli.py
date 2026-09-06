@@ -27,8 +27,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-classifier", action="store_true",
                    help="ViT 딥페이크 분류기를 쓰지 않고 휴리스틱만 사용")
     p.add_argument("--vlm-model", default=None, help="Ollama 비전모델 (예: qwen2.5vl:7b)")
-    p.add_argument("--with-claim-verification", action="store_true",
-                   help="주장 사실성 검증 시도 (아직 미구현 — 상태만 반환)")
+    p.add_argument("--no-claim-verification", action="store_true",
+                   help="주장 사실성 검증을 건너뛴다 (외부 검색을 하지 않아 더 빠름)")
+    p.add_argument("--caption-policy", default=config.caption_policy,
+                   choices=["manual", "any", "off"],
+                   help=f"자막 사용 정책 (기본 {config.caption_policy}). "
+                        "manual=수동 자막만, any=자동 자막까지, off=항상 STT")
     p.add_argument("--keep", action="store_true", help="다운로드 파일 유지")
     p.add_argument("--save-transcript", nargs="?", const="deepcheck_transcript.txt", default=None,
                    help="STT 전체 텍스트(+타임스탬프)를 파일로 저장")
@@ -47,7 +51,8 @@ def main(argv: list[str] | None = None) -> int:
             max_frames=args.max_frames,
             use_classifier=not args.no_classifier,
             vlm_model=args.vlm_model,
-            enable_claim_verification=args.with_claim_verification,
+            enable_claim_verification=not args.no_claim_verification,
+            caption_policy=args.caption_policy,
             workdir=args.workdir,
             keep_workdir=args.keep,
             save_transcript=args.save_transcript,
