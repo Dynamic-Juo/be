@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-import os
+import logging
 import threading
+import time
 from dataclasses import dataclass, field
+
+from .config import config
+
+logger = logging.getLogger(__name__)
 
 try:
     from faster_whisper import WhisperModel
@@ -39,8 +44,8 @@ def _detect_device() -> tuple[str, str]:
     try:
         if ctranslate2.get_cuda_device_count() > 0:
             return "cuda", "float16"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("CUDA 장치 확인 실패, CPU로 진행: %s", e)
 
     return "cpu", "int8"
 
@@ -62,18 +67,22 @@ def _get_model(model_size: str, device: str, compute_type: str):
     with _model_lock:
         if key in _model_cache:
             return _model_cache[key]
+        logger.info("STT 모델 로드: %s (%s/%s)", model_size, device, compute_type)
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
         _model_cache[key] = model
         return model
 
 
-def transcribe(audio_or_video: str, model_size: str = "small", language: str | None = None) -> Transcript:
+def transcribe(audio_or_video: str, model_size: str | None = None,
+               language: str | None = None) -> Transcript:
     """Transcribe an audio/video file. Falls back gracefully if model files are missing."""
     if WhisperModel is None:
         raise RuntimeError("faster-whisper is not installed. Run: uv pip install -r requirements.txt")
 
+    model_size = model_size or config.whisper_model_size
     device, compute_type = _detect_device()
     model = _get_model(model_size, device, compute_type)
+    started = time.monotonic()
     segments_iter, info = model.transcribe(
         audio_or_video,
         language=language,
@@ -93,6 +102,11 @@ def transcribe(audio_or_video: str, model_size: str = "small", language: str | N
         )
 
     text = " ".join(s["text"] for s in segments).strip()
+    logger.info(
+        "STT 완료: %d세그먼트, %d단어, 언어 %s(%.2f), 처리 구간 %.1fs, 소요 %.1fs",
+        len(segments), len(text.split()), info.language, info.language_probability or 0.0,
+        float(info.duration or 0.0), time.monotonic() - started,
+    )
     return Transcript(
         text=text,
         language=info.language,

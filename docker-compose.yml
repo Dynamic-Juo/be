@@ -1,7 +1,9 @@
 services:
   deepcheck-api:
     build: .
-    image: deepcheck-api:local
+    # playground 레포도 같은 구성으로 컨테이너를 띄우므로 이미지 이름을 분리한다.
+    # 같은 이름을 쓰면 한쪽에서 빌드한 이미지로 다른 쪽 컨테이너가 뜬다.
+    image: conan-be:local
     restart: unless-stopped
     ports:
       - "8000:8000"

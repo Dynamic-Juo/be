@@ -1,46 +1,37 @@
-"""Hermes — a bounded worker-pool harness for running heavyweight DeepCheck jobs.
+"""Hermes — 무거운 분석 작업을 처리하는 제한된 워커 풀.
 
-Motivation: each analysis (download → STT → classifier) is heavy and blocking, so
-we must NOT run them on the event loop or spawn an unbounded thread per request.
-Hermes keeps a small pool of workers + a bounded backlog queue:
+분석 한 건이 수십 초에서 수 분 걸리므로 이벤트 루프에서 돌릴 수 없고, 요청마다
+스레드를 무한히 만들 수도 없다. 작은 워커 풀 + 상한이 있는 대기열로 처리한다.
 
-  submit() ──► [bounded queue] ──► [N workers] ──► job status/result
-                 (backpressure   (concurrency)      queried by session/job id
-                  -> 429 busy)
+  submit() ──► [bounded queue] ──► [N workers] ──► job 상태/결과
+                 (넘치면 429)        (동시 실행)     job_id·session_id로 조회
 
-Multi-session / multi-thread friendly:
-  - every job carries a session_id so a front-end can group its own requests
-  - dedup: the same in-flight URL is served as one job instead of re-analyzed
+같은 URL이 이미 처리 중이면 새 job을 만들지 않고 기존 job을 재사용한다.
 """
 
 from __future__ import annotations
 
-import os
+import logging
 import queue
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, asdict, field
-from enum import Enum
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from deepcheck.cli import analyze_url
+from deepcheck.config import config
+from deepcheck.logging_setup import current_job_id
+from deepcheck.pipeline import AnalysisOptions, analyze_url
 
-# Statuses
+logger = logging.getLogger(__name__)
+
 QUEUED = "queued"
 RUNNING = "running"
 DONE = "done"
 ERROR = "error"
 
-_STOP = object()  # internal sentinel to stop the dispatcher
-
-
-class Status(str, Enum):
-    queued = QUEUED
-    running = RUNNING
-    done = DONE
-    error = ERROR
+_STOP = object()
 
 
 @dataclass
@@ -60,55 +51,59 @@ class Job:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @property
+    def finished(self) -> bool:
+        return self.status in (DONE, ERROR)
+
 
 class Harness:
-    """Bounded worker pool with a backlog queue and session grouping."""
+    """상한이 있는 대기열 + 워커 풀 + 세션 그룹핑."""
 
-    def __init__(self, max_workers: int = 3, backlog: int = 64):
-        self.max_workers = max_executors = max_workers
-        self.backlog = backlog
-        self.executor = ThreadPoolExecutor(max_workers=max_executors, thread_name_prefix="hermes")
-        self._queue: queue.Queue = queue.Queue(maxsize=backlog)
+    def __init__(self, max_workers: int | None = None, backlog: int | None = None,
+                 max_retained_jobs: int | None = None):
+        self.max_workers = max_workers or config.workers
+        self.backlog = backlog or config.backlog
+        self.max_retained_jobs = max_retained_jobs or config.max_retained_jobs
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers,
+                                           thread_name_prefix="hermes")
+        self._queue: queue.Queue = queue.Queue(maxsize=self.backlog)
         self._jobs: dict[str, Job] = {}
-        self._inflight_url: dict[str, str] = {}  # url -> job_id (queued|running)
+        self._inflight_url: dict[str, str] = {}
         self._lock = threading.Lock()
-        self._dispatcher = threading.Thread(target=self._dispatch, name="hermes-dispatcher", daemon=True)
+        self._dispatcher = threading.Thread(target=self._dispatch, name="hermes-dispatcher",
+                                            daemon=True)
         self._dispatcher.start()
+        logger.info("Hermes 시작: 워커 %d, 대기열 상한 %d", self.max_workers, self.backlog)
 
     # ---- submission ----
     def submit(self, url: str, session_id: str, params: dict[str, Any]) -> tuple[Job, bool]:
-        """Enqueue a job. Returns (job, reused).
+        """작업을 큐에 넣는다. (job, 재사용여부)를 반환한다.
 
-        reused=True means the same URL was already queued/running, so this job is
-        deduplicated (multi-thread friendly). Raises queue.Full if the backlog is
-        saturated (caller maps to HTTP 429).
+        같은 URL이 이미 대기/실행 중이면 중복 분석 대신 그 job을 돌려준다.
+        대기열이 가득 차면 queue.Full을 올리고, 호출자가 429로 변환한다.
         """
         with self._lock:
-            # dedup: same URL already queued/running → reuse it (multi-thread friendly)
             existing_id = self._inflight_url.get(url)
-            if existing_id:
+            if existing_id and existing_id in self._jobs:
+                logger.info("중복 URL 요청 — 기존 job 재사용: %s", existing_id)
                 return self._jobs[existing_id], True
 
-            job = Job(
-                id=uuid.uuid4().hex,
-                session_id=session_id,
-                url=url,
-                params=params,
-            )
+            job = Job(id=uuid.uuid4().hex, session_id=session_id, url=url, params=params)
             self._jobs[job.id] = job
             self._inflight_url[url] = job.id
+            self._evict_old_jobs_locked()
 
-        # enqueue outside the lock; queue.Full becomes backpressure signal
         try:
-            self._queue.put_nowait((job, params))
+            self._queue.put_nowait(job)
         except queue.Full:
             with self._lock:
-                # roll back
                 self._jobs.pop(job.id, None)
                 if self._inflight_url.get(url) == job.id:
                     self._inflight_url.pop(url, None)
+            logger.warning("대기열 포화(%d) — 요청 거절", self.backlog)
             raise
 
+        logger.info("job 등록: %s (session %s) %s", job.id, session_id, url)
         return job, False
 
     # ---- worker flow ----
@@ -116,32 +111,49 @@ class Harness:
         while True:
             item = self._queue.get()
             if item is _STOP:
+                logger.info("디스패처 종료")
                 break
-            job, params = item
-            self.executor.submit(self._run, job, params)
+            try:
+                self.executor.submit(self._run, item)
+            except Exception:
+                # 여기서 예외가 새면 디스패처 스레드가 죽고, 이후 모든 job이 영원히
+                # queued에 머문다. 반드시 삼키고 로그만 남긴다.
+                logger.exception("job 디스패치 실패: %s", getattr(item, "id", "?"))
+                if isinstance(item, Job):
+                    self._fail(item, "디스패치 실패")
 
-    def _run(self, job: Job, params: dict[str, Any]) -> None:
+    def _run(self, job: Job) -> None:
+        token = current_job_id.set(job.id)
         job.status = RUNNING
         job.message = "시작"
+        job.updated_at = time.time()
+        started = time.monotonic()
         try:
-            result = analyze_url(
+            options = AnalysisOptions.from_dict(job.params)
+            job.result = analyze_url(
                 url=job.url,
-                model_size=params.get("model_size", "small"),
-                max_frames=params.get("max_frames", 8),
-                use_classifier=params.get("use_classifier", True),
-                vlm_model=params.get("vlm_model"),
+                options=options,
                 progress_cb=lambda pct, msg: self._update(job, pct, msg),
             )
-            job.result = result
             job.progress = 1.0
             job.status = DONE
             job.message = "완료"
-        except Exception as e:  # pragma: no cover
-            job.status = ERROR
-            job.error = str(e)
-            job.message = "오류"
+            logger.info("job 완료: %s (%.1fs)", job.id, time.monotonic() - started)
+        except Exception as e:
+            # str(e)만 남기면 원인 추적이 불가능해서 traceback을 반드시 로그로 남긴다.
+            logger.exception("job 실패: %s", job.id)
+            self._fail(job, f"{type(e).__name__}: {e}")
         finally:
-            self._reset(parallel=job.url)
+            job.updated_at = time.time()
+            with self._lock:
+                self._inflight_url.pop(job.url, None)
+            current_job_id.reset(token)
+
+    def _fail(self, job: Job, message: str) -> None:
+        job.status = ERROR
+        job.error = message
+        job.message = "오류"
+        job.updated_at = time.time()
 
     # ---- helpers ----
     def _update(self, job: Job, pct: float, msg: str) -> None:
@@ -149,9 +161,22 @@ class Harness:
         job.message = msg
         job.updated_at = time.time()
 
-    def _reset(self, parallel: str) -> None:
-        with self._lock:
-            self._inflight_url.pop(parallel, None)
+    def _evict_old_jobs_locked(self) -> None:
+        """완료된 오래된 job부터 정리한다.
+
+        job은 결과 리포트 전체를 들고 있어서, 정리하지 않으면 장기 구동 시 메모리가
+        계속 늘어난다. 진행 중인 job은 건드리지 않는다.
+        """
+        if len(self._jobs) <= self.max_retained_jobs:
+            return
+        finished = sorted(
+            (j for j in self._jobs.values() if j.finished), key=lambda j: j.updated_at
+        )
+        removable = len(self._jobs) - self.max_retained_jobs
+        for job in finished[:removable]:
+            self._jobs.pop(job.id, None)
+        logger.info("완료된 job %d건 정리 (보관 상한 %d)",
+                    min(removable, len(finished)), self.max_retained_jobs)
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
@@ -169,7 +194,7 @@ class Harness:
 
     def stats(self) -> dict:
         with self._lock:
-            counts = {"queued": 0, "running": 0, "done": 0, "error": 0}
+            counts = {QUEUED: 0, RUNNING: 0, DONE: 0, ERROR: 0}
             for j in self._jobs.values():
                 counts[j.status] = counts.get(j.status, 0) + 1
             return {
@@ -177,15 +202,8 @@ class Harness:
                 "inflight_urls": len(self._inflight_url),
                 "backlog_size": self._queue.qsize(),
                 "max_workers": self.max_workers,
-                "status": counts,
+                "job_counts": counts,
             }
 
     def shutdown(self) -> None:
         self._queue.put(_STOP)
-
-
-def default_workers() -> int:
-    try:
-        return int(os.environ.get("DEEPCHECK_WORKERS", "3"))
-    except ValueError:
-        return 3

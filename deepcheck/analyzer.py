@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TextSignals:
+    """텍스트에서 뽑은 신호들.
+
+    여기서 하나의 텍스트 위험도로 합치지 않는다. 신호마다 성격이 달라서
+    (자가표기·합성음성은 미디어 조작의 근거지만, 클릭베이트·주장 강도는 아니다)
+    합치는 판단은 축을 아는 report.py에서 한다.
+    """
+
     summary: str
     keywords: list[str]
     tone: str
@@ -16,22 +26,8 @@ class TextSignals:
     claim_risk: int  # 0..100 — sensational/absolute claims
     self_disclosure_risk: int = 0  # 0..100 — title/description explicitly says AI/parody/synthetic
     self_disclosure_evidence: list[str] = field(default_factory=list)
+    word_count: int = 0
     facts: list[str] = field(default_factory=list)
-    risk: float = field(init=False)
-
-    def __post_init__(self) -> None:
-        # Single source of truth for the text-level weighted risk score. This
-        # used to be a @property, which dataclasses.asdict() silently drops —
-        # so report.py was recomputing the same weights from scratch in a
-        # second place, and this property was effectively dead code. Now it's
-        # a real field, so report.py reads it directly.
-        self.risk = round(
-            self.tts_risk * 0.35
-            + self.clickbait_risk * 0.15
-            + self.claim_risk * 0.10
-            + self.self_disclosure_risk * 0.40,
-            1,
-        )
 
 
 # Signals that often accompany synthetic/AI voices or scripted AI content.
@@ -45,7 +41,7 @@ _CLICKBAIT_WORDS = [
 ]
 _CLAIM_WORDS = [
     "반드시", "무조건", "확실히", "100%", "절대", "전부 다", "알려지지 않은", "숨겨진", "비밀",
-    "무조건", "한국인", "국민", "시청자 여러분", "must", "always", "never", "everyone",
+    "한국인", "국민", "시청자 여러분", "must", "always", "never", "everyone",
 ]
 _HYPE_PUNCT = re.compile(r"[!！?？]{2,}")
 
@@ -106,12 +102,17 @@ def analyze(text: str, language: str | None = None, title: str | None = None,
     self_disclosure_risk, self_disclosure_evidence = detect_self_disclosure(title, description)
 
     if not text:
+        logger.info(
+            "텍스트 분석: 전사 결과 없음 (자가표기 %d점, 근거 %d건)",
+            self_disclosure_risk, len(self_disclosure_evidence),
+        )
         facts = [f"자가표기: {'; '.join(self_disclosure_evidence)}"] if self_disclosure_evidence else []
         return TextSignals(
             summary="(음성 텍스트 없음)", keywords=[], tone="unknown",
             tts_risk=0, clickbait_risk=0, claim_risk=0,
             self_disclosure_risk=self_disclosure_risk,
             self_disclosure_evidence=self_disclosure_evidence,
+            word_count=0,
             facts=facts,
         )
 
@@ -146,6 +147,13 @@ def analyze(text: str, language: str | None = None, title: str | None = None,
         facts.append(f"언어: {language}")
     facts.append(f"단어수: {word_count}")
 
+    logger.info(
+        "텍스트 분석 완료: %d단어, tts %d, 클릭베이트 %d, 주장강도 %d, 자가표기 %d",
+        word_count, tts_risk, clickbait_risk, claim_risk, self_disclosure_risk,
+    )
+    if self_disclosure_evidence:
+        logger.info("자가표기 근거: %s", "; ".join(self_disclosure_evidence))
+
     return TextSignals(
         summary=summarize(text),
         keywords=keywords,
@@ -155,6 +163,7 @@ def analyze(text: str, language: str | None = None, title: str | None = None,
         claim_risk=claim_risk,
         self_disclosure_risk=self_disclosure_risk,
         self_disclosure_evidence=self_disclosure_evidence,
+        word_count=word_count,
         facts=facts,
     )
 

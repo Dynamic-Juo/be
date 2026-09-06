@@ -10,12 +10,16 @@ Combines up to three signals, each optional so the tool degrades gracefully:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import urllib.request
 from dataclasses import dataclass, field
 
 from . import face
+from .config import config
+
+logger = logging.getLogger(__name__)
 
 try:
     from PIL import Image
@@ -29,12 +33,7 @@ class FrameResult:
     fake_score: float | None  # 0..1 probability of being fake/AI-generated
     label: str | None
     heuristic_artifacts: list[str] = field(default_factory=list)
-    vlm_note: str | None = None
     face_cropped: bool = False  # True if the classifier ran on a cropped face, not the full frame
-
-    @property
-    def score(self) -> float:
-        return self.fake_score if self.fake_score is not None else 0.0
 
 
 @dataclass
@@ -46,23 +45,16 @@ class DeepfakeReport:
     method: str = "heuristics"
     vlm_summary: str | None = None
 
-    @property
-    def risk(self) -> float:
-        return self.avg_fake_score
-
-
-_CLASSIFIER_MODEL = "dima806/deepfake_vs_real_image_detection"
 
 # Module-level cache: the ViT pipeline is loaded once per process and reused
 # across every request/worker thread. Previously each DeepfakeDetector()
-# instance (created fresh per analyze_url() call, see cli.py) reloaded this
-# from scratch every time -- same "reload on every request" issue fixed for
-# the STT model in transcriber.py.
+# instance (created fresh per analysis) reloaded this from scratch every time --
+# same "reload on every request" issue fixed for the STT model in transcriber.py.
 _classifier_cache: dict[str, object] = {}
 _classifier_lock = threading.Lock()
 
 
-def _get_classifier_pipeline(model_name: str = _CLASSIFIER_MODEL):
+def _get_classifier_pipeline(model_name: str):
     if model_name in _classifier_cache:
         return _classifier_cache[model_name]
     with _classifier_lock:
@@ -71,8 +63,10 @@ def _get_classifier_pipeline(model_name: str = _CLASSIFIER_MODEL):
         try:
             from transformers import pipeline
             pipe = pipeline("image-classification", model=model_name, top_k=None)
-        except Exception:
+            logger.info("딥페이크 분류기 로드 완료: %s", model_name)
+        except Exception as e:
             pipe = None
+            logger.warning("딥페이크 분류기 로드 실패(%s): %s — 휴리스틱으로 진행", model_name, e)
         _classifier_cache[model_name] = pipe
         return pipe
 
@@ -80,16 +74,16 @@ def _get_classifier_pipeline(model_name: str = _CLASSIFIER_MODEL):
 class DeepfakeDetector:
     """Detector holder; each stage is lazy and enabled by kwargs."""
 
-    def __init__(self, use_classifier: bool = False, vlm_endpoint: str | None = None,
-                 vlm_model: str | None = None, ollama_url: str = "http://localhost:11434"):
+    def __init__(self, use_classifier: bool = True, vlm_model: str | None = None,
+                 classifier_model: str | None = None, ollama_url: str | None = None):
         self.use_classifier = use_classifier
-        self.vlm_endpoint = vlm_endpoint
         self.vlm_model = vlm_model
-        self.ollama_url = ollama_url.rstrip("/")
+        self.classifier_model = classifier_model or config.classifier_model
+        self.ollama_url = (ollama_url or config.ollama_url).rstrip("/")
 
     # ---- classifier (torch + transformers) ----
     def _load_classifier(self):
-        return _get_classifier_pipeline(_CLASSIFIER_MODEL)
+        return _get_classifier_pipeline(self.classifier_model)
 
     def _classifier_score(self, frame_path: str) -> tuple[float | None, str | None]:
         pipe = self._load_classifier()
@@ -97,7 +91,8 @@ class DeepfakeDetector:
             return None, None
         try:
             out = pipe(frame_path)
-        except Exception:
+        except Exception as e:
+            logger.warning("프레임 분류 실패(%s): %s", os.path.basename(frame_path), e)
             return None, None
         # Prefer a 'fake'-ish label; map label -> score.
         fake_pair = next((x for x in out if (x["label"] or "").lower().replace(" ", "") in
@@ -135,34 +130,39 @@ class DeepfakeDetector:
             bs = statistics.mean(p[2] for p in px)
             if abs(rs - gs) < 6 and abs(gs - bs) < 6 and abs(rs - bs) < 6 and 90 < rs < 150:
                 arts.append("전체 색상 편차 지나치게 낮음 — 합성 배경 의심")
-        except Exception:
+        except Exception as e:
+            logger.warning("휴리스틱 분석 실패(%s): %s", os.path.basename(frame_path), e)
             return arts
         return arts
 
     # ---- VLM (Ollama) ----
-    def _vlm_analyze(self, frames: list[str]) -> tuple[str | None, str | None]:
-        # VLM only runs when a model is explicitly requested. (Fixes a bug where
-        # the backend's default request -- use_classifier=True, vlm_model=None --
-        # made this condition False, so every default API call silently tried to
-        # call Ollama anyway, even though VLM was meant to be strictly opt-in.)
-        if not self.vlm_model:
-            return None, None
-        if Image is None:
-            return None, None
+    def _vlm_analyze(self, frames: list[str]) -> tuple[str | None, str | None, str | None]:
+        """(요약, 사용 모델, 실패 사유)를 반환한다.
 
-        model = self.vlm_model or "qwen2.5vl:7b"
-        # Encodings: build a small multi-image prompt by concatenating the first frame
-        # (Ollama vision handles one image per message conveniently).
-        note_list = []
-        for fp in frames[:1]:
+        VLM은 모델을 명시적으로 지정했을 때만 실행한다. 실패 사유는 버리지 않고
+        돌려줘서, VLM을 켰는데 결과가 없을 때 왜 없는지 알 수 있게 한다.
+        """
+        if not self.vlm_model:
+            return None, None, None
+        if Image is None:
+            return None, None, "Pillow 미설치로 VLM 입력 이미지를 만들 수 없음"
+
+        model = self.vlm_model
+        # Ollama 비전 모델은 메시지당 이미지 한 장이 편해서 첫 프레임만 보낸다.
+        target = frames[:1]
+        if not target:
+            return None, None, "분석할 프레임이 없어 VLM을 건너뜀"
+
+        prompt = (
+            "이미지에서 AI가 생성했거나 딥페이크일 수 있는 시각적 흔적(얼굴 비대칭, 손/손가락 왜곡, "
+            "사람 피부 불연속, 비정상 그림자, 공간 반복 등)이 있으면 한국어로 구체적으로 설명하세요. "
+            "없으면 '특이사항 없음'이라고만 답하세요. 2문장 이내로."
+        )
+        notes: list[str] = []
+        for fp in target:
             b64 = _encode_b64(fp)
             if not b64:
-                continue
-            prompt = (
-                "이미지에서 AI가 생성했거나 딥페이크일 수 있는 시각적 흔적(얼굴 비대칭, 손/손가락 왜곡, "
-                "사람 피부 불연속, 비정상 그림자, 공간 반복 등)이 있으면 한국어로 구체적으로 설명하세요. "
-                "없으면 '특이사항 없음'이라고만 답하세요. 2문장 이내로."
-            )
+                return None, None, f"프레임 인코딩 실패: {os.path.basename(fp)}"
             try:
                 payload = {"model": model, "prompt": prompt, "images": [b64], "stream": False}
                 req = urllib.request.Request(
@@ -170,20 +170,32 @@ class DeepfakeDetector:
                     data=json.dumps(payload).encode(),
                     headers={"Content-Type": "application/json"},
                 )
-                with urllib.request.urlopen(req, timeout=180) as resp:
+                with urllib.request.urlopen(req, timeout=config.vlm_timeout_sec) as resp:
                     data = json.loads(resp.read().decode())
-                note_list.append(data.get("response", "").strip())
+                note = (data.get("response") or "").strip()
+                if note:
+                    notes.append(note)
+                logger.info("VLM(%s) 분석 완료", model)
             except Exception as e:
-                note_list.append(f"(VLM 불가: {e})")
-        if note_list:
-            joined = "\n".join(n for n in note_list if n)
-            # A note is "successful" if it is a real analysis we can use.
-            ok = any(n and not n.startswith("(VLM") for n in note_list)
-            return (joined if ok else None), (model if ok else None)
-        return None, None
+                reason = f"VLM 호출 실패({model} @ {self.ollama_url}): {e}"
+                logger.warning(reason)
+                return None, None, reason
+
+        if not notes:
+            return None, None, f"VLM({model})이 빈 응답을 반환"
+        return "\n".join(notes), model, None
 
     # ---- main entry ----
-    def analyze(self, frames: list[str], frames_dir: str | None = None) -> DeepfakeReport:
+    def analyze(self, frames: list[str]) -> DeepfakeReport:
+        if not frames:
+            # 프레임이 없으면 "조작 없음"이 아니라 "판단할 재료가 없음"이다.
+            # 이 구분은 report.build_media_manipulation이 unavailable로 처리한다.
+            logger.warning("분석할 프레임이 0장이라 영상 분석을 건너뛴다")
+            return DeepfakeReport(
+                frames_analyzed=0, frames_fake=0, avg_fake_score=0.0,
+                evidence=[], method="none", vlm_summary=None,
+            )
+
         results: list[FrameResult] = []
         for fp in frames:
             fr = FrameResult(path=fp, fake_score=None, label=None)
@@ -198,44 +210,56 @@ class DeepfakeDetector:
             fr.heuristic_artifacts = self._heuristics(fp)
             results.append(fr)
 
+        cropped = sum(1 for r in results if r.face_cropped)
+        logger.info("프레임 %d장 분석, 얼굴 crop 적용 %d장", len(results), cropped)
+        if self.use_classifier and cropped == 0:
+            logger.warning("얼굴 crop이 한 장도 적용되지 않음 — 전체 프레임으로 분류해 정확도가 낮을 수 있다")
+
         scored = [r for r in results if r.fake_score is not None]
         if scored:
             avg = sum(r.fake_score for r in scored) / len(scored)
-            frames_fake = sum(1 for r in scored if r.fake_score >= 0.5)
-            # Don't let one very confident frame get diluted into nothing by a
-            # simple average across all sampled frames (confirmed with a real
-            # video: 1/8 frames at 98.4% still only averaged to 13/100). Blend
-            # the mean with the single strongest frame, same "don't dilute a
-            # strong signal" idea as the self-disclosure floor in report.py.
-            # Weighting is a tunable judgment call, not a proven-optimal constant.
+            frames_fake = sum(1 for r in scored if r.fake_score >= config.fake_frame_threshold)
+            # 단순 평균은 강한 단일 프레임 신호를 희석시킨다(실측: 8장 중 1장이
+            # 98.4% fake인데 평균은 13/100). 평균과 최댓값을 섞어 완화한다.
             peak = max(r.fake_score for r in scored)
-            avg = max(avg, avg * 0.6 + peak * 0.4)
+            blended = avg * config.frame_mean_weight + peak * config.frame_peak_weight
+            avg = max(avg, blended)
+            logger.info(
+                "분류기 결과: 의심 %d/%d, 평균 %.3f, 최댓값 %.3f → 집계 %.3f",
+                frames_fake, len(scored), sum(r.fake_score for r in scored) / len(scored), peak, avg,
+            )
         else:
-            # No classifier: fall back to heuristic-only pseudo score.
+            # 분류기를 못 쓰면 휴리스틱만으로 임시 점수를 낸다. 신뢰도가 낮으므로
+            # report 쪽에서 method를 보고 degraded 상태임을 표시한다.
             heur_penalty = sum(1 for r in results if r.heuristic_artifacts)
-            avg = (heur_penalty / max(len(results), 1)) * 0.55
+            avg = (heur_penalty / max(len(results), 1)) * config.heuristic_only_scale
             frames_fake = heur_penalty
+            if self.use_classifier:
+                logger.warning("분류기 점수를 얻지 못해 휴리스틱 점수(%.3f)로 대체", avg)
 
         evidence: list[str] = []
         for r in results:
             crop_tag = " [얼굴 crop 적용]" if r.face_cropped else ""
-            if r.fake_score is not None and r.score >= 0.5:
+            if r.fake_score is not None and r.fake_score >= config.fake_frame_threshold:
                 evidence.append(
-                    f"{os.path.basename(r.path)}: fake {r.score:.1%} (라벨 {r.label}){crop_tag}"
+                    f"{os.path.basename(r.path)}: fake {r.fake_score:.1%} (라벨 {r.label}){crop_tag}"
                 )
             elif r.heuristic_artifacts:
                 evidence.append(
                     f"{os.path.basename(r.path)}: " + "; ".join(r.heuristic_artifacts)
                 )
 
-        vlm_summary, method_vlm = self._vlm_analyze(results and [r.path for r in results] or [])
-        if vlm_summary and "특이사항" not in vlm_summary and not vlm_summary.startswith("(VLM"):
+        vlm_summary, method_vlm, vlm_error = self._vlm_analyze([r.path for r in results])
+        if vlm_summary and "특이사항" not in vlm_summary:
             evidence.append(f"VLM: {vlm_summary}")
+        if vlm_error:
+            # 실패 사유를 조용히 버리지 않는다 — VLM을 켰는데 근거가 없으면 왜인지 알아야 한다.
+            evidence.append(f"VLM 미적용: {vlm_error}")
 
         method_parts = ["heuristics"]
         if scored:
             method_parts.append("ViT-classifier")
-            if any(r.face_cropped for r in results):
+            if cropped:
                 method_parts.append("face-crop")
         if method_vlm:
             method_parts.append(f"VLM({method_vlm})")
@@ -251,22 +275,10 @@ class DeepfakeDetector:
 
 
 def _encode_b64(path: str) -> str | None:
-    if Image is None:
-        return None
     try:
         import base64
-        import io
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode()
-    except Exception:
+    except Exception as e:
+        logger.warning("프레임 base64 인코딩 실패(%s): %s", os.path.basename(path), e)
         return None
-
-
-def classify(frames: list[str], use_classifier: bool = True,
-             vlm_model: str | None = None, ollama_url: str = "http://localhost:11434") -> DeepfakeReport:
-    det = DeepfakeDetector(
-        use_classifier=use_classifier,
-        vlm_model=vlm_model,
-        ollama_url=ollama_url,
-    )
-    return det.analyze(frames)

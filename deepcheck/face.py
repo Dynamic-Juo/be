@@ -18,8 +18,11 @@ other optional stage in this project (classifier/VLM missing -> heuristics-only)
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
+
+logger = logging.getLogger(__name__)
 
 try:
     from PIL import Image
@@ -49,6 +52,10 @@ def _get_detector():
             return _detector
         _detector_load_attempted = True
         if not os.path.exists(_MODEL_PATH):
+            logger.warning(
+                "얼굴 검출 모델 파일이 없어 얼굴 crop 없이 전체 프레임으로 분류한다 (정확도 저하). %s",
+                setup_instructions(),
+            )
             return None
         try:
             from mediapipe.tasks.python import vision as mp_vision
@@ -56,7 +63,9 @@ def _get_detector():
             base_options = BaseOptions(model_asset_path=_MODEL_PATH)
             options = mp_vision.FaceDetectorOptions(base_options=base_options)
             _detector = mp_vision.FaceDetector.create_from_options(options)
-        except Exception:
+            logger.info("얼굴 검출기 로드 완료: %s", _MODEL_PATH)
+        except Exception as e:
+            logger.warning("얼굴 검출기 로드 실패: %s — 전체 프레임으로 분류한다", e)
             _detector = None
     return _detector
 
@@ -97,7 +106,8 @@ def crop_face(frame_path: str, padding: float = 0.35) -> str | None:
         out = f"{os.path.splitext(frame_path)[0]}_face.jpg"
         crop.save(out, "JPEG", quality=90)
         return out
-    except Exception:
+    except Exception as e:
+        logger.warning("얼굴 crop 실패(%s): %s", os.path.basename(frame_path), e)
         return None
 
 

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any
+
+from .config import config
+
+logger = logging.getLogger(__name__)
 
 try:
     from yt_dlp import YoutubeDL
@@ -38,7 +43,7 @@ def _ffmpeg_binary() -> str | None:
     return shutil.which("ffmpeg")
 
 
-def download(url: str, workdir: str, keep: bool = False, max_height: int | None = 720) -> VideoMedia:
+def download(url: str, workdir: str, max_height: int | None = None) -> VideoMedia:
     """Download best available mp4 (video+audio merged) for a URL.
 
     Uses the yt-dlp Python API so it stays resilient on a single process.
@@ -48,6 +53,7 @@ def download(url: str, workdir: str, keep: bool = False, max_height: int | None 
         raise RuntimeError("yt-dlp is not installed. Run: uv pip install -r requirements.txt")
 
     os.makedirs(workdir, exist_ok=True)
+    height_cap = max_height if max_height is not None else config.max_video_height
 
     def inner() -> VideoMedia:
         # YouTube (and most sites) expose separate video-only and audio-only DASH
@@ -67,12 +73,13 @@ def download(url: str, workdir: str, keep: bool = False, max_height: int | None 
 
         video_tmpl = os.path.join(workdir, "%(id)s.v.%(ext)s")
         audio_tmpl = os.path.join(workdir, "%(id)s.a.%(ext)s")
-        video_fmt = f"bv[ext=mp4][height<={max_height}]/bv[ext=mp4]/b[ext=mp4]/b"
+        video_fmt = f"bv[ext=mp4][height<={height_cap}]/bv[ext=mp4]/b[ext=mp4]/b"
         audio_fmt = "ba[ext=m4a]/ba[acodec!=none]/ba/b"
 
         info: dict[str, Any] = {}
         video_path = audio_path = None
 
+        logger.info("영상 스트림 다운로드 시작 (최대 %dp): %s", height_cap, url)
         try:
             with YoutubeDL({**base, "format": video_fmt, "outtmpl": video_tmpl}) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -81,16 +88,22 @@ def download(url: str, workdir: str, keep: bool = False, max_height: int | None 
 
         video_id = info.get("id")
         video_path = _find(workdir, video_id, marker=".v.")
+        logger.info(
+            "영상 다운로드 완료: id=%s, 길이=%ss, 파일=%s",
+            video_id, info.get("duration"), os.path.basename(video_path or "-"),
+        )
 
         try:
             with YoutubeDL({**base, "format": audio_fmt, "outtmpl": audio_tmpl}) as ydl:
                 ainfo = ydl.extract_info(url, download=True)
-        except Exception:
+        except Exception as e:
+            logger.warning("오디오 스트림 다운로드 실패: %s — 영상 컨테이너로 STT를 시도한다", e)
             ainfo = info  # keep metadata; STT can fall back to video container
 
         audio_path = _find(workdir, ainfo.get("id") or video_id, marker=".a.")
         if audio_path is None and video_path:
-            audio_path = video_path  # no separate audio stream available
+            logger.warning("별도 오디오 스트림이 없어 영상 파일을 STT 입력으로 사용한다")
+            audio_path = video_path
 
         return VideoMedia(
             url=url,
@@ -142,17 +155,22 @@ def extract_audio(media: VideoMedia, fmt: str = "wav", sample_rate: int = 16000)
         "-f", fmt, audio_path,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=600)
-    except subprocess.CalledProcessError:
+        subprocess.run(cmd, check=True, capture_output=True,
+                       timeout=config.audio_convert_timeout_sec)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        logger.warning("ffmpeg 오디오 변환 실패: %s — PyAV 디코딩으로 진행", e)
         return None
     return audio_path
 
 
-def extract_frames(video_path: str, frames_dir: str, max_frames: int = 8) -> list[str]:
+def extract_frames(video_path: str, frames_dir: str, max_frames: int | None = None) -> list[str]:
     """Sample up to max_frames evenly spaced frames from a video into frames_dir.
 
     Uses ffmpeg if present, else falls back to PyAV. Returns sorted frame paths.
+    빈 리스트는 "조작 없음"이 아니라 "영상을 판단할 재료를 못 얻음"을 뜻하며,
+    report 단계에서 판단 유보로 처리된다.
     """
+    frame_count = max_frames if max_frames is not None else config.max_frames
     os.makedirs(frames_dir, exist_ok=True)
     ffmpeg = _ffmpeg_binary()
 
@@ -163,36 +181,53 @@ def extract_frames(video_path: str, frames_dir: str, max_frames: int = 8) -> lis
         try:
             out = subprocess.run(
                 [ffprobe, "-v", "quiet", "-print_format", "json", "-show_format", video_path],
-                capture_output=True, check=True, text=True, timeout=120,
+                capture_output=True, check=True, text=True, timeout=config.probe_timeout_sec,
             ).stdout
             import json
             probed = json.loads(out)
             duration = float(probed["format"].get("duration", 0))
-        except Exception:
+        except Exception as e:
+            logger.debug("ffprobe 길이 확인 실패: %s", e)
             duration = None
 
     if not duration:
         duration = _duration_pyav(video_path)
 
+    if frame_count <= 0:
+        logger.warning("요청된 프레임 수가 %d이라 영상 분석을 건너뛴다", frame_count)
+        return []
+
     if ffmpeg and duration:
         frames: list[str] = []
-        for i in range(max_frames):
-            ts = duration * i / max_frames if max_frames > 1 else duration / 2
+        failures: list[str] = []
+        for i in range(frame_count):
+            ts = duration * i / frame_count if frame_count > 1 else duration / 2
             ts = max(ts, 0.0)
             out = os.path.join(frames_dir, f"frame_{i:03d}.jpg")
             cmd = [ffmpeg, "-y", "-ss", f"{ts:.3f}", "-i", video_path,
                    "-frames:v", "1", "-q:v", "2", "-vf", "scale=480:-2", out]
-            probes: list[str] = []
             try:
-                subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+                subprocess.run(cmd, check=True, capture_output=True,
+                               timeout=config.frame_extract_timeout_sec)
                 frames.append(out)
-            except subprocess.CalledProcessError:
-                probes.append(out)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                # 타임아웃도 여기서 흡수한다. 예전에는 TimeoutExpired가 밖으로 전파돼
+                # 프레임 한 장 때문에 파이프라인 전체가 죽었다.
+                failures.append(f"{os.path.basename(out)}({type(e).__name__})")
+        if failures:
+            logger.warning("ffmpeg 프레임 추출 일부 실패 %d/%d: %s",
+                           len(failures), frame_count, ", ".join(failures))
         if frames:
+            logger.info("ffmpeg로 프레임 %d/%d장 추출", len(frames), frame_count)
             return sorted(frames)
+        logger.warning("ffmpeg 경로에서 프레임을 얻지 못해 PyAV 폴백으로 전환")
 
-    # Fallback: PyAV (bundled with faster-whisper requirements) extraction.
-    return _frames_pyav(video_path, frames_dir, max_frames)
+    frames = _frames_pyav(video_path, frames_dir, frame_count)
+    if frames:
+        logger.info("PyAV로 프레임 %d/%d장 추출", len(frames), frame_count)
+    else:
+        logger.error("프레임을 한 장도 추출하지 못했다 — 영상 분석 불가 상태로 보고된다")
+    return frames
 
 
 def _duration_pyav(video_path: str) -> float | None:
@@ -244,7 +279,8 @@ def _frames_pyav(video_path: str, frames_dir: str, max_frames: int) -> list[str]
                     frames.append(out)
                     target_idx += 1
             container.close()
-        except Exception:
+        except Exception as e:
+            logger.warning("PyAV 균등 샘플링 실패: %s — 프레임 수 기반 샘플링으로 재시도", e)
             frames = []
         if frames:
             return sorted(frames)
@@ -268,6 +304,7 @@ def _frames_pyav(video_path: str, frames_dir: str, max_frames: int) -> list[str]
             if len(frames) >= max_frames or idx > (total or max_frames * 50):
                 break
         container.close()
-    except Exception:
+    except Exception as e:
+        logger.warning("PyAV 프레임 추출 실패: %s (확보한 프레임 %d장)", e, len(frames))
         return frames
     return sorted(frames)
