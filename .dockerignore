@@ -1,0 +1,15 @@
+.venv
+__pycache__
+*.pyc
+.git
+docs
+test_long
+downloads
+frames
+results
+*.wav
+*.mp3
+*.m4a
+*.mp4
+.env
+.DS_Store

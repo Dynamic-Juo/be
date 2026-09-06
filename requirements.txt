@@ -1,0 +1,5 @@
+# Core pipeline (lightweight)
+yt-dlp>=2025.1.15          # video download
+faster-whisper>=1.1.0      # CTranslate2 fast speech-to-text
+av>=12.0                   # FFmpeg bindings (bundled, no system ffmpeg needed for decoding)
+pillow>=10.0               # frame image encoding/analysis (works with PyAV, no ffmpeg needed)

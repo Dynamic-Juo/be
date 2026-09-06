@@ -1,0 +1,22 @@
+services:
+  deepcheck-api:
+    build: .
+    image: deepcheck-api:local
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Concurrent analyses. Each one is CPU-heavy (STT + classifier), so on a
+      # low-core host keep this at 1-2, not the code default of 3.
+      DEEPCHECK_WORKERS: "${DEEPCHECK_WORKERS:-2}"
+      HF_TOKEN: "${HF_TOKEN:-}"
+    volumes:
+      # Persist downloaded model weights (faster-whisper + HF classifier) across
+      # container restarts — without this every restart re-downloads them.
+      - model-cache:/root/.cache
+    # Uncomment and tune once you know the host's real headroom.
+    # mem_limit: 3g
+    # cpus: 2
+
+volumes:
+  model-cache:

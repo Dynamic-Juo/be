@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+results/
+downloads/
+frames/
+*.wav
+*.mp3
+*.m4a
+*.mp4
+.env
+deepcheck/models/*.tflite
+.DS_Store
+test_long/
+docs/

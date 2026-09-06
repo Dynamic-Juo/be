@@ -1,0 +1,9 @@
+# Optional: ViT deepfake frame classifier (--with-classifier)
+torch>=2.3
+torchvision>=0.18
+transformers>=4.46
+timm>=1.0
+
+# Optional: face-crop preprocessing before the classifier (see deepcheck/face.py
+# and README.md's "얼굴 crop 모델 받기" section for the one-time model download)
+mediapipe>=0.10
