@@ -65,6 +65,13 @@ def parse_vtt(path: str) -> list[dict]:
 
     segments: list[dict] = []
     current: dict | None = None
+    # YouTube 자동 자막은 "롤링" 방식이다 — 한 줄이 그대로 다음 큐의 첫 줄로
+    # 다시 나오고, 그 뒤에 새 낱말이 이어 붙는다(실측: "민족 최대 명절 추석이
+    # 한달 앞으로"가 그대로 반복된 뒤 "다가왔지만 23년만에 …"가 덧붙는 식).
+    # 큐 단위로만 중복을 걸렀더니 이 반복이 그대로 텍스트에 남아 같은 구절이
+    # 3번씩 겹쳐 나온 적이 있다. 큐 경계와 무관하게 직전 줄과 공통되는 접두
+    # 낱말은 버리고, 새로 늘어난 낱말만 취한다.
+    prev_words: list[str] = []
     for line in raw.splitlines():
         stripped = line.strip()
         match = _TIMESTAMP_RE.search(stripped)
@@ -84,10 +91,18 @@ def parse_vtt(path: str) -> list[dict]:
         cleaned = _TAG_RE.sub("", stripped).strip()
         if not cleaned:
             continue
-        # 자동 자막은 같은 문장을 겹쳐 반복 표시하는 경우가 많아 중복을 걸러낸다.
-        if cleaned in current["text"]:
+
+        words = cleaned.split()
+        overlap = 0
+        for a, b in zip(prev_words, words):
+            if a != b:
+                break
+            overlap += 1
+        prev_words = words
+        new_words = words[overlap:]
+        if not new_words:
             continue
-        current["text"] = f"{current['text']} {cleaned}".strip()
+        current["text"] = f"{current['text']} {' '.join(new_words)}".strip()
 
     if current and current["text"]:
         segments.append(current)
