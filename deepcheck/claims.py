@@ -51,6 +51,13 @@ _OPINION_RE = re.compile(
     r"(생각합니다|생각해|같아요|같습니다|느낌|좋아요|싫어|재밌|구독|좋아요 눌러|"
     r"안녕하세요|감사합니다|i think|i feel|please subscribe|welcome back)"
 )
+# 아직 일어나지 않은 일은 검증할 수 없다. "조만간 7%도 넘어설 것으로 보입니다" 같은
+# 전망을 주장으로 뽑으면, 어떤 근거를 가져와도 판정할 수 없는 항목만 늘어난다.
+_SPECULATION_RE = re.compile(
+    r"(것으로 보입니다|것으로 예상|전망입니다|전망이다|예상됩니다|예상된다|"
+    r"할 것입니다|할 전망|우려됩니다|가능성이 (있|높|커)|"
+    r"is expected to|is likely to|will likely|forecast)"
+)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+|\n+")
 
 
@@ -246,6 +253,8 @@ def extract_claims(text: str, segments: list[dict] | None = None,
             continue
         if _OPINION_RE.search(sentence.lower()):
             continue
+        if _SPECULATION_RE.search(sentence):
+            continue
         if not _ASSERTION_RE.search(sentence):
             continue
 
@@ -294,12 +303,8 @@ _QUERY_STOPWORDS = {
 _PARTICLE_RE = re.compile(r"(이|가|은|는|을|를|의|에|에서|으로|로|와|과|도|만|보다|처럼|까지)$")
 
 
-def _search_query(claim_text: str) -> str:
-    """주장 문장을 검색어로 줄인다.
-
-    문장을 통째로 넣으면 검색 엔진이 매칭할 것을 찾지 못한다. 고유명사와 수치처럼
-    식별력이 높은 낱말만 남겨 짧은 질의를 만든다.
-    """
+def _key_tokens(claim_text: str) -> list[str]:
+    """주장에서 식별력이 높은 낱말만 뽑는다. 검색어와 관련성 판정에 함께 쓴다."""
     cleaned = re.sub(r"[^\w가-힣%\s]", " ", claim_text)
     scored: list[tuple[float, str]] = []
     seen: set[str] = set()
@@ -320,7 +325,35 @@ def _search_query(claim_text: str) -> str:
         scored.append((score, word))
 
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    return " ".join(word for _, word in scored[:6])
+    return [word for _, word in scored]
+
+
+def _is_relevant(claim_text: str, evidence: Evidence) -> bool:
+    """찾아온 자료가 이 주장과 실제로 관련이 있는지 최소한으로 확인한다.
+
+    검색 엔진은 질의어가 애매하면 아무 문서나 돌려준다. 실측에서 "물가 상승률"
+    주장에 "주기율표"가 딸려 왔다. 무관한 자료를 근거라고 보여주는 것은 사실상
+    거짓 근거이므로, 주장의 핵심어가 제목이나 인용문에 하나도 없으면 버린다.
+    """
+    haystack = f"{evidence.title} {evidence.snippet or ''}".lower()
+    if not haystack.strip():
+        return False
+    # 전문 기관 판정은 그 자체가 이 주장을 검증한 결과이므로 통과시킨다.
+    if evidence.rating:
+        return True
+    for token in _key_tokens(claim_text)[:8]:
+        if len(token) >= 2 and token.lower() in haystack:
+            return True
+    return False
+
+
+def _search_query(claim_text: str) -> str:
+    """주장 문장을 검색어로 줄인다.
+
+    문장을 통째로 넣으면 검색 엔진이 매칭할 것을 찾지 못한다. 고유명사와 수치처럼
+    식별력이 높은 낱말만 남겨 짧은 질의를 만든다.
+    """
+    return " ".join(_key_tokens(claim_text)[:6])
 
 
 def _build_provider(name: str, cfg) -> EvidenceProvider | None:
@@ -391,17 +424,22 @@ def verify_claims(claims: list[Claim], providers: list[EvidenceProvider] | None 
                 # 근거 검색 실패가 분석 전체를 멈추게 하지 않는다.
                 logger.warning("근거 검색 실패(%s): %s", getattr(provider, "name", "?"), e)
 
-        claim.evidence = collected[: per_claim * 2]
+        # 검색 결과 중 이 주장과 실제로 관련 있는 것만 근거로 삼는다.
+        relevant = [e for e in collected if _is_relevant(claim.text, e)]
+        dropped = len(collected) - len(relevant)
+        if dropped:
+            logger.info("무관한 검색 결과 %d건 제외 (남은 근거 %d건)", dropped, len(relevant))
+        claim.evidence = relevant[: per_claim * 2]
 
         decided = None
-        for evidence in collected:
+        for evidence in relevant:
             decided = _verdict_from_rating(evidence.rating)
             if decided:
                 break
 
         if decided:
             claim.verdict, claim.reason = decided
-        elif collected:
+        elif relevant:
             claim.verdict = UNVERIFIED
             claim.reason = ("관련 자료는 찾았지만 이 주장을 직접 검증한 판정이 없어 "
                             "판단을 유보한다.")

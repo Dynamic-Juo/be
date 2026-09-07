@@ -181,8 +181,54 @@ class TestTimeBudget:
         targets = [claims.Claim(text=f"20{10 + i}년에 {i}만 명이 증가했다") for i in range(4)]
         result = claims.verify_claims(targets, providers=[SlowProvider()], time_budget_sec=0.06)
 
-        # 예산 안에서 처리된 주장에는 근거가 붙고, 넘어간 주장은 사유가 남는다.
-        assert result[0].evidence
-        assert not result[-1].evidence
+        # 예산 안에서 처리된 주장은 검색을 했고, 넘어간 주장은 사유가 남는다.
+        assert "예산" not in result[0].reason
         assert "예산" in result[-1].reason
+        assert not result[-1].evidence
         assert all(c.verdict == claims.UNVERIFIED for c in result)
+
+
+class TestRelevanceFilter:
+    """실측에서 물가 주장에 '주기율표'가 근거로 딸려왔다. 무관한 자료를 근거라고
+    보여주는 것은 사실상 거짓 근거이므로 걸러낸다."""
+
+    def _claim(self):
+        return [claims.Claim(text="1998년 11월 이후 처음으로 6%대의 상승률입니다")]
+
+    def test_주장과_무관한_검색결과는_근거로_쓰지_않는다(self):
+        provider = FakeProvider("wiki", [
+            claims.Evidence(title="주기율표", url="https://x/1", source="wikipedia"),
+            claims.Evidence(title="동일본 대진재", url="https://x/2", source="wikipedia"),
+        ])
+        result = claims.verify_claims(self._claim(), providers=[provider])
+        assert result[0].evidence == []
+        assert result[0].verdict == claims.UNVERIFIED
+        assert "거짓이라는 뜻은 아니다" in result[0].reason
+
+    def test_핵심어가_겹치면_근거로_남긴다(self):
+        provider = FakeProvider("wiki", [
+            claims.Evidence(title="대한민국의 소비자물가 상승률", url="https://x/3",
+                            source="wikipedia", snippet="1998년 외환위기 당시 상승률은"),
+        ])
+        result = claims.verify_claims(self._claim(), providers=[provider])
+        assert len(result[0].evidence) == 1
+
+    def test_전문기관_판정은_관련성_필터를_통과한다(self):
+        # 판정 자체가 이 주장을 검증한 결과라 제목이 안 겹쳐도 유효하다.
+        provider = FakeProvider("factcheck", [
+            claims.Evidence(title="검증 결과", url="https://x/4", source="factcheck",
+                            rating="False"),
+        ])
+        result = claims.verify_claims(self._claim(), providers=[provider])
+        assert result[0].verdict == claims.REFUTED
+
+
+class TestSpeculationFilter:
+    def test_미래_전망은_주장으로_뽑지_않는다(self):
+        # 아직 일어나지 않은 일은 어떤 근거로도 판정할 수 없다.
+        text = "지금 같은 추세면 조만간 7%도 넘어설 것으로 보입니다."
+        assert claims.extract_claims(text) == []
+
+    def test_이미_일어난_일은_그대로_뽑는다(self):
+        text = "6월 소비자물가 상승률이 6%를 기록했다고 통계청이 발표했다."
+        assert len(claims.extract_claims(text)) == 1
