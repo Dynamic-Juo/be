@@ -164,7 +164,7 @@ class DeepfakeDetector:
     def analyze(self, frames: list[str]) -> DeepfakeReport:
         if not frames:
             # 프레임이 없으면 "조작 없음"이 아니라 "판단할 재료가 없음"이다.
-            # 이 구분은 report.build_media_manipulation이 unavailable로 처리한다.
+            # 이 구분은 report.build_face_manipulation이 unavailable로 처리한다.
             logger.warning("분석할 프레임이 0장이라 영상 분석을 건너뛴다")
             return DeepfakeReport(
                 frames_analyzed=0, frames_fake=0, avg_fake_score=0.0,

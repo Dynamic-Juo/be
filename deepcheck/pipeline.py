@@ -17,7 +17,7 @@ import tempfile
 import time
 from collections import Counter
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Callable
 
 from . import analyzer, captions, claims, deepfake, downloader, report, transcriber
@@ -27,7 +27,11 @@ from .report import StageState, StageStatus
 
 logger = logging.getLogger(__name__)
 
-ProgressCallback = Callable[[float, str], None]
+# stage는 analysis-runtime.md의 job 상태값(processing:collecting 등)과 맞춘다.
+ProgressCallback = Callable[[float, str, str | None], None]
+# 완성된 하위 블록의 전체 스냅샷을 통째로 넘긴다(부분 필드 병합이 아니라 키
+# 단위 덮어쓰기라 항상 일관된 상태를 유지한다).
+PartialCallback = Callable[[dict], None]
 
 
 @dataclass
@@ -94,15 +98,26 @@ class StageTracker:
 
 
 def analyze_url(url: str, options: AnalysisOptions | None = None,
-                progress_cb: ProgressCallback | None = None) -> dict:
-    """전체 파이프라인을 실행하고 결과 dict를 반환한다."""
+                progress_cb: ProgressCallback | None = None,
+                on_partial: PartialCallback | None = None) -> dict:
+    """전체 파이프라인을 실행하고 결과 dict를 반환한다.
+
+    `on_partial`을 넘기면 완성되는 대로 하위 블록(미디어 조작 두 축, 주장 카드)을
+    조각조각 통지한다 — result-ui.md가 요구하는 "폴링마다 결과가 조금씩 채워지는"
+    동작을 위한 것이다. CLI처럼 최종 결과만 필요하면 생략하면 된다(기본 None).
+    """
     opts = options or AnalysisOptions()
     tracker = StageTracker()
+    started = time.monotonic()
 
-    def progress(pct: float, msg: str) -> None:
+    def progress(pct: float, msg: str, stage: str | None = None) -> None:
         logger.info("[%3d%%] %s", int(pct * 100), msg)
         if progress_cb:
-            progress_cb(pct, msg)
+            progress_cb(pct, msg, stage)
+
+    def partial(patch: dict) -> None:
+        if on_partial:
+            on_partial(patch)
 
     if not _is_supported_url(url):
         raise UnsupportedURLError(f"http(s) URL이 아닙니다: {url}", stage="input")
@@ -112,30 +127,45 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
     logger.info("분석 시작: %s (작업 디렉토리 %s)", url, tmp)
 
     try:
-        progress(0.05, "영상 다운로드 중...")
+        progress(0.05, "영상 다운로드 중...", "collecting")
         with tracker.run("download"):
             media = downloader.download(url, tmp, caption_policy=opts.caption_policy)
 
-        progress(0.25, "프레임 추출 중...")
+        progress(0.25, "프레임 추출 중...", "collecting")
         frames = _extract_frames(media, tmp, opts, tracker)
 
-        progress(0.35, "영상 조작 분석 중...")
+        progress(0.35, "영상 조작 분석 중...", "collecting")
         det_report = _detect_manipulation(frames, opts, tracker)
 
-        progress(0.55, "발언 텍스트 확보 중...")
+        # 자가표기(self-disclosure)는 제목·설명만 보므로 발언 텍스트(STT)를 기다릴
+        # 필요가 없다 — 다운로드 직후부터 이미 알 수 있다. 미디어 조작 두 축은
+        # 주장 검증을 기다리지 않고 이 시점에 바로 통지한다.
+        sd_risk, sd_evidence = analyzer.detect_self_disclosure(media.title, media.description)
+        self_disclosure = {"self_disclosure_risk": sd_risk, "self_disclosure_evidence": sd_evidence}
+        face_axis = report.build_face_manipulation(det_report.__dict__, self_disclosure)
+        whole_video_axis = report.build_whole_video_generation(self_disclosure)
+        partial({
+            "face_manipulation": _asdict_axis(face_axis),
+            "whole_video_generation": _asdict_axis(whole_video_axis),
+        })
+
+        progress(0.45, "발언 텍스트 확보 중...", "transcribing")
         transcript_text, language, coverage_pct, segments = _collect_transcript(
             media, opts, tracker
         )
 
-        progress(0.75, "텍스트 신호 분석 중...")
+        progress(0.65, "텍스트 신호 분석 중...", "transcribing")
         txt_report = analyzer.analyze(
             transcript_text, language, title=media.title, description=media.description
         )
 
-        progress(0.80, "주장 사실성 검증 중...")
-        claim_result = _verify_claims(transcript_text, segments, opts, tracker)
+        progress(0.70, "주장 추출 중...", "extracting_claims")
+        claim_result = _verify_claims(
+            transcript_text, segments, opts, tracker, deadline=started + config.max_processing_sec,
+            progress=progress, partial=partial,
+        )
 
-        progress(0.95, "결과 정리 중...")
+        progress(0.95, "결과 정리 중...", "verifying")
         meta = {
             "url": url,
             "title": media.title,
@@ -151,9 +181,9 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         )
         progress(1.0, "완료")
         logger.info(
-            "분석 완료: 상태=%s, 미디어조작=%s(%s)",
-            final.analysis_status, final.media_manipulation.status,
-            final.media_manipulation.level,
+            "분석 완료: 상태=%s, 얼굴조작=%s, 영상전체AI=%s",
+            final.analysis_status, final.face_manipulation.status,
+            final.whole_video_generation.status,
         )
         return final.to_dict()
     except DeepCheckError:
@@ -164,6 +194,10 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
     finally:
         if not opts.keep_workdir and not opts.workdir:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _asdict_axis(axis: report.ManipulationAxis) -> dict:
+    return asdict(axis)
 
 
 def _is_supported_url(url: str) -> bool:
@@ -303,9 +337,39 @@ def _save_transcript(path: str, media: downloader.VideoMedia,
         logger.warning("transcript 저장 실패(%s): %s", path, e)
 
 
+def _claim_verification_snapshot(claim_list: list[claims.Claim]) -> report.ClaimVerification:
+    """지금까지의 카드 상태로 ClaimVerification 스냅샷을 만든다.
+
+    pending/verifying 카드가 섞여 있어도 그대로 넣는다 — 아직 안 끝난 카드는
+    verdict가 기본값(UNVERIFIED)이지만 status로 "아직 끝나지 않았다"는 걸 구분한다.
+    """
+    status_counts = Counter(c.status for c in claim_list)
+    verdict_counts = Counter(c.verdict for c in claim_list if c.status == claims.DONE)
+    return report.ClaimVerification(
+        status=report.AxisStatus.ANALYZED.value,
+        claims=[c.to_dict() for c in claim_list],
+        summary={
+            "total": len(claim_list),
+            "pending": status_counts[claims.PENDING],
+            "verifying": status_counts[claims.VERIFYING],
+            "done": status_counts[claims.DONE],
+            "supported": verdict_counts[claims.SUPPORTED],
+            "refuted": verdict_counts[claims.REFUTED],
+            "unverified": verdict_counts[claims.UNVERIFIED],
+        },
+    )
+
+
 def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
-                   tracker: StageTracker) -> report.ClaimVerification:
-    """주장 사실성 검증 축: 주장 추출 → 외부 근거 검색 → 판정."""
+                   tracker: StageTracker, deadline: float,
+                   progress: Callable[[float, str, str | None], None],
+                   partial: Callable[[dict], None]) -> report.ClaimVerification:
+    """주장 사실성 검증 축: 주장 추출 → 카드 생성(즉시 통지) → 하나씩 검증(통지).
+
+    카드가 폴링마다 채워지는 게 목적이라, 여기서 리스트를 한 번에 처리하고 끝에
+    돌려주지 않는다. 추출 직후 pending 카드를 전부 만들어 `partial`로 알리고,
+    하나씩 검증할 때마다 그 시점의 전체 스냅샷을 다시 `partial`로 보낸다.
+    """
     if not opts.enable_claim_verification:
         tracker.mark("claim_verification", StageState.SKIPPED, "옵션이 꺼져 있음")
         return report.ClaimVerification(
@@ -323,45 +387,71 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
 
     try:
         extracted = claims.extract_claims(text, segments, max_claims=config.max_claims)
-        if not extracted:
-            tracker.mark("claim_verification", StageState.OK, "검증 대상 주장 없음",
-                         round(time.monotonic() - started, 2))
-            return report.ClaimVerification(
-                status=report.AxisStatus.ANALYZED.value,
-                # 주장이 없어도 summary 모양은 유지한다. 소비하는 쪽이 키 유무로
-                # 분기하지 않게.
-                summary={"total": 0, "supported": 0, "refuted": 0, "unverified": 0},
-                detail="검증 가능한 사실 주장을 찾지 못했다. 의견이나 일상 대화 위주의 영상일 수 있다.",
-            )
-
-        verified = claims.verify_claims(extracted)
     except Exception as e:
-        # 팩트체크가 실패해도 미디어 조작 분석 결과는 돌려줄 수 있다.
         error = as_error_dict(e, stage="claim_verification")
         tracker.mark("claim_verification", StageState.FAILED, error["message"],
                      round(time.monotonic() - started, 2), error=error)
-        logger.error("주장 검증 실패 (%s)", error["code"], exc_info=True)
+        logger.error("주장 추출 실패 (%s)", error["code"], exc_info=True)
         return report.ClaimVerification(
             status=report.AxisStatus.UNAVAILABLE.value,
-            detail="주장 검증 중 오류가 발생해 판단을 유보한다.",
+            detail="주장 추출 중 오류가 발생해 판단을 유보한다.",
         )
 
-    counts = Counter(claim.verdict for claim in verified)
+    if not extracted:
+        tracker.mark("claim_verification", StageState.OK, "검증 대상 주장 없음",
+                     round(time.monotonic() - started, 2))
+        return report.ClaimVerification(
+            status=report.AxisStatus.ANALYZED.value,
+            # 주장이 없어도 summary 모양은 유지한다. 소비하는 쪽이 키 유무로
+            # 분기하지 않게.
+            summary={"total": 0, "supported": 0, "refuted": 0, "unverified": 0},
+            detail="검증 가능한 사실 주장을 찾지 못했다. 의견이나 일상 대화 위주의 영상일 수 있다.",
+        )
+
+    # 전체 주장 수가 확정된 시점 — 카드를 전부 만들어 즉시 통지한다.
+    logger.info("주장 %d건 추출, 검증 시작", len(extracted))
+    partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
+    progress(0.75, f"주장 {len(extracted)}건 검증 중...", "verifying")
+
+    active_providers = claims.default_providers()
+    timed_out_count = 0
+    for i, claim in enumerate(extracted):
+        if time.monotonic() > deadline:
+            # 소프트 타임아웃: 이미 진행 중인 단계를 강제로 끊진 않지만, 남은 주장은
+            # 검색을 시도하지 않고 시간 초과로 채운다.
+            for remaining in extracted[i:]:
+                remaining.status = claims.TIMED_OUT
+                timed_out_count += 1
+            logger.warning("전체 처리 시간(%.0fs) 초과 — 남은 주장 %d건은 시간 초과로 처리",
+                           config.max_processing_sec, timed_out_count)
+            break
+
+        claims.verify_one_claim(claim, active_providers)
+        partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
+
+    counts = Counter(c.verdict for c in extracted if c.status == claims.DONE)
+    detail = None
+    if timed_out_count:
+        detail = f"전체 처리 시간 초과로 주장 {timed_out_count}건은 검증하지 못했다."
+    elif not (counts[claims.REFUTED] or counts[claims.SUPPORTED]):
+        detail = "관련 자료는 모았지만 이 주장들을 직접 검증한 판정을 찾지 못해 모두 판단을 유보했다."
+
     tracker.mark(
         "claim_verification", StageState.OK,
-        f"주장 {len(verified)}건 (지지 {counts[claims.SUPPORTED]}, "
-        f"반박 {counts[claims.REFUTED]}, 유보 {counts[claims.UNVERIFIED]})",
+        f"주장 {len(extracted)}건 (지지 {counts[claims.SUPPORTED]}, "
+        f"반박 {counts[claims.REFUTED]}, 유보 {counts[claims.UNVERIFIED]}, "
+        f"시간초과 {timed_out_count})",
         round(time.monotonic() - started, 2),
     )
     return report.ClaimVerification(
         status=report.AxisStatus.ANALYZED.value,
-        claims=[claim.to_dict() for claim in verified],
+        claims=[c.to_dict() for c in extracted],
         summary={
-            "total": len(verified),
+            "total": len(extracted),
             "supported": counts[claims.SUPPORTED],
             "refuted": counts[claims.REFUTED],
             "unverified": counts[claims.UNVERIFIED],
+            "timed_out": timed_out_count,
         },
-        detail=None if counts[claims.REFUTED] or counts[claims.SUPPORTED] else
-        "관련 자료는 모았지만 이 주장들을 직접 검증한 판정을 찾지 못해 모두 판단을 유보했다.",
+        detail=detail,
     )

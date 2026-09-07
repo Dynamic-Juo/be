@@ -101,6 +101,10 @@ class Config:
     vlm_timeout_sec: int = 180
 
     # --- 백엔드 ---
+    # 분석 시작부터 이 시간을 넘기면 남은 주장은 검색을 포기하고 시간 초과로
+    # 채운다(소프트 타임아웃 — 이미 도는 단계를 강제로 끊진 않는다).
+    # docs analysis-runtime.md의 최대 처리 시간(10분)을 따른다.
+    max_processing_sec: int = 600
     workers: int = 3
     backlog: int = 64
     # job은 결과 리포트 전체를 들고 있어서 무한히 쌓으면 메모리를 계속 먹는다.
@@ -150,6 +154,7 @@ def load_config() -> Config:
             "FRAME_EXTRACT_TIMEOUT_SEC", Config.frame_extract_timeout_sec
         ),
         vlm_timeout_sec=_env_int("VLM_TIMEOUT_SEC", Config.vlm_timeout_sec),
+        max_processing_sec=_env_int("MAX_PROCESSING_SEC", Config.max_processing_sec),
         workers=_env_int("WORKERS", Config.workers),
         backlog=_env_int("BACKLOG", Config.backlog),
         max_retained_jobs=_env_int("MAX_RETAINED_JOBS", Config.max_retained_jobs),

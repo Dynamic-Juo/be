@@ -8,19 +8,27 @@
 > **[파이프라인 해부도](docs/pipeline.md)** — 단계별 흐름도, 각 단계의 라이브러리와 실패 처리,
 > 모델·라이브러리를 갈아끼울 때 건드릴 곳, 구간별 실측 성능. 검증하거나 무언가를 교체할 때 여기부터 보세요.
 
-## 두 축을 분리한다
+## 세 축을 분리한다
 
-제품은 두 분석 결과를 **하나의 진위 점수로 합치지 않습니다**. 실제 인물이 나온 영상에도
-허위 주장이 있을 수 있고, AI로 만든 영상의 발언이 사실일 수도 있기 때문입니다.
+제품은 분석 결과를 **하나의 진위 점수로 합치지 않습니다**. 실제 인물이 나온 영상에도
+허위 주장이 있을 수 있고, AI로 만든 영상의 발언이 사실일 수도 있기 때문입니다. 미디어
+조작도 두 가지를 구분합니다 — 얼굴을 합성·변형한 것과, 영상 전체를 AI가 만든 것은
+서로 다른 문제입니다.
 
 | 축 | 응답 필드 | 내용 |
 |---|---|---|
-| 미디어 조작 탐지 | `media_manipulation` | 프레임 분류기 + 휴리스틱 + 자가표기 + 선택적 VLM |
+| 얼굴 합성·변형 | `face_manipulation` | 프레임 분류기 + 휴리스틱 + 자가표기 + 선택적 VLM |
+| 영상 전체 AI 생성 | `whole_video_generation` | 자가표기만 (전용 탐지 모델은 아직 없음 — docs T-06) |
 | 주장 사실성 검증 | `claim_verification` | 주장 추출 → 외부 근거 검색 → 지지·반박·판단 유보 |
 
+미디어 조작 두 축은 **숫자 점수를 노출하지 않습니다.** `조작 의심`/`뚜렷한 조작 징후 없음`/
+`판단 보류`/`분석 불가` 네 단계로만 응답합니다(`status`, 표시용 한국어 문구는 `status_label`).
+내부적으로 계산하는 연속 점수는 `signals` 안에만 남아 있고 디버깅용입니다 — 확률처럼 보이는
+숫자를 사용자에게 보여주면 실제보다 정밀한 판정처럼 오해될 수 있어서입니다.
+
 또 하나의 원칙은 **"분석 못 함"과 "분석했더니 정상"을 구분**하는 것입니다. 프레임을 한 장도
-못 뽑았을 때 위험도 0점을 주면 실패가 무죄 판정으로 둔갑합니다. 그런 경우 `risk`는 `null`,
-`status`는 `unavailable`, `level`은 `판단 불가`입니다.
+못 뽑았는데 "뚜렷한 조작 징후 없음"이라고 답하면 실패가 무죄 판정으로 둔갑합니다. 그런 경우
+`status`는 `unavailable`("분석 불가")입니다.
 
 이 원칙은 얼굴 검출에도 적용됩니다. 지금 쓰는 분류기는 얼굴 crop 이미지로 학습된 모델이라,
 영상에서 얼굴을 한 명도 못 찾으면 전체 프레임에 대한 점수를 근거로 쓸 수 없습니다. 이때도
@@ -106,13 +114,31 @@ pytest
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | POST | `/api/analyze` | `{url, model_size, max_frames, use_classifier, vlm_model, enable_claim_verification, session_id}` → `{job_id, session_id, deduplicated}` |
-| GET | `/api/jobs/{job_id}` | `{status, progress, message, result, error}` — status: queued/running/done/error |
+| GET | `/api/jobs/{job_id}` | `{status, progress, message, result, error}` — status 값은 아래 표 참고 |
 | GET | `/api/sessions/{session_id}` | 해당 세션이 요청한 job 목록 |
 | GET | `/health` | `{status, harness:{...}}` |
 
-분석은 무거우므로 job 방식입니다. POST로 `job_id`를 받고 2초 간격 정도로 폴링하세요.
+분석은 무거우므로 job 방식입니다. POST로 `job_id`를 받고 2~3초 간격으로 폴링하세요.
 같은 URL이 이미 처리 중이면 새 job을 만들지 않고 기존 job을 재사용합니다(`deduplicated: true`).
 대기열이 가득 차면 `429`를 반환하니 잠시 후 재시도하면 됩니다.
+
+### job 상태값
+
+`result`는 **폴링마다 조금씩 채워집니다.** 미디어 조작 두 축은 준비되는 즉시, 주장 카드는
+개수가 확정되면 전부(대기 중 상태로) 먼저 나타났다가 하나씩 검증되며 갱신됩니다. 두 결과 중
+어느 게 먼저 올지는 보장하지 않습니다.
+
+| status | 의미 |
+|---|---|
+| `queued` | 대기열에서 워커를 기다리는 중. `result`는 비어 있다 |
+| `processing:collecting` | 영상·프레임을 확보하는 중 |
+| `processing:transcribing` | 발언 텍스트(자막 또는 STT)를 확보하는 중 |
+| `processing:extracting_claims` | 주장을 추출하고 중복을 합치는 중 |
+| `partially_completed` | 첫 부분 결과가 나왔다. `result`의 키를 보고 뭐가 준비됐는지 확인 |
+| `completed` | 모든 분석이 끝났다 |
+| `completed_with_limitations` | 일부 분석을 못 했지만 나머지 결과는 있다 (`stages`에서 실패한 단계 확인) |
+| `timed_out` | 전체 처리 시간(기본 10분)을 넘겼다. 완료된 결과는 유지, 나머지 주장 카드는 `status: "timed_out"` |
+| `failed` | 진행할 수 없는 오류. `error`에 사유 |
 
 ### result 스키마 (프론트 계약)
 
@@ -120,27 +146,26 @@ pytest
 {
   "url": "...",
   "media": { "title": "...", "uploader": "...", "duration": 26, "video_id": "..." },
-  "analysis_status": "complete",        // 한 단계라도 실패/건너뜀이면 "partial"
+  "analysis_status": "complete",        // 한 단계라도 실패/건너뜀이면 "partial". job.status가 최종 상태의 기준
   "stages": {                            // 무엇을 했고 무엇을 못 했는지
     "download":  { "status": "ok", "detail": null, "elapsed_sec": 6.1 },
     "frames":    { "status": "ok", "detail": "8장 추출", "elapsed_sec": 1.2 },
     "transcript":{ "status": "ok", "detail": "24단어, 커버리지 99.5%", "elapsed_sec": 12.0 }
   },
-  "media_manipulation": {
-    "status": "analyzed",                // 또는 "unavailable"
-    "risk": 63.0,                        // unavailable이면 null
-    "level": "상당함",                    // 매우 높음 / 상당함 / 주의 필요 / 낮음 / 판단 불가
-    "frames_analyzed": 8,
-    "frames_fake": 1,
-    "method": "heuristics+ViT-classifier",
-    "detail": null,                      // 강등된 경우 그 사유
-    "signals": {
-      "visual":          { "available": true, "risk": 46.9, "classifier_used": true },
-      "self_disclosure": { "risk": 70, "evidence": ["제목/설명에 자가표기 발견: \"ai generated\""] },
-      "tts":             { "risk": 8 },
-      "vlm":             { "summary": null }
-    },
-    "evidence": ["frame_000.jpg: fake 98.4% (라벨 Fake)", "..."]
+  "face_manipulation": {
+    "status": "suspected",               // suspected / no_clear_signs / inconclusive / unavailable
+    "status_label": "조작 의심",          // 화면에 그대로 쓸 수 있는 한국어 문구
+    "detail": null,                      // 강등되거나 판정 사유가 있으면 여기
+    "evidence": ["frame_000.jpg: fake 98.4% (라벨 Fake)", "제목/설명에 자가표기 발견: \"ai generated\""],
+    "signals": { "combined_risk": 63.0, "frames_analyzed": 8, "frames_with_face": 6, "..." : "..." }
+    // signals는 디버그용이다. 확률처럼 보이는 숫자를 사용자에게 보여주지 않는다 — status만 표시할 것.
+  },
+  "whole_video_generation": {
+    "status": "unavailable",
+    "status_label": "분석 불가",
+    "detail": "영상 전체 AI 생성 탐지 모델이 아직 선정되지 않았다.",
+    "evidence": [],
+    "signals": { "self_disclosure_risk": 0, "model": null }
   },
   "claim_verification": {
     "status": "analyzed",                // 또는 "unavailable"
@@ -149,7 +174,8 @@ pytest
       {
         "text": "2024년 실업률이 3.2% 감소했다",
         "start": 12.5, "end": 18.0,      // 영상에서 이 말이 나온 위치
-        "verdict": "refuted",            // supported / refuted / unverified
+        "status": "done",                // pending / verifying / done / failed / timed_out (카드 처리 상태)
+        "verdict": "refuted",            // supported / refuted / unverified (검증 판정. status가 done일 때만 의미 있음)
         "reason": "전문 기관 판정: \"False\"",
         "evidence": [
           { "title": "...", "url": "https://...", "source": "factcheck",
@@ -162,17 +188,22 @@ pytest
   "transcript": {
     "summary": "...", "keywords": ["..."], "tone": "중립",
     "language": "en", "word_count": 24, "coverage_pct": 99.5,
-    "signals": { "clickbait": 6, "claim_strength": 0 }   // 참고용 — 조작 점수에 미반영
+    "signals": { "clickbait": 6, "claim_strength": 0, "tts": 8 }   // 참고용 — 어느 축 점수에도 미반영
   }
 }
 ```
 
-프론트에서 반드시 처리해야 할 세 가지:
+프론트에서 반드시 처리해야 할 것들:
 
-1. `media_manipulation.status === "unavailable"`이면 점수 대신 "판단 불가"와 사유(`detail`)를 보여주세요.
-2. `analysis_status === "partial"`이면 `stages`에서 실패한 단계를 확인해 안내해주세요.
-3. `verdict: "unverified"`는 **"거짓"이 아니라 "확인 못 함"**입니다. 거짓처럼 보이게 표시하면 안 됩니다.
+1. **`status`만 표시하고 숫자는 쓰지 마세요.** `face_manipulation`/`whole_video_generation`의 `signals` 안
+   점수는 디버그용입니다. 화면에는 `status_label`(또는 `status`를 보고 직접 매핑한 문구)만 씁니다.
+2. `status === "unavailable"`이면 "판단 불가"와 사유(`detail`)를 보여주세요. `whole_video_generation`은
+   전용 모델이 아직 없어 자가표기가 없는 한 항상 `unavailable`입니다 — 이건 정상 상태입니다.
+3. 카드의 `status`(처리 상태)와 `verdict`(검증 판정)를 분리해서 다루세요. `status !== "done"`인 카드는
+   `verdict`를 아직 신뢰할 수 없습니다(기본값일 뿐).
+4. `verdict: "unverified"`는 **"거짓"이 아니라 "확인 못 함"**입니다. 거짓처럼 보이게 표시하면 안 됩니다.
    `reason`에 왜 유보했는지가 들어 있으니 함께 보여주세요.
+5. `analysis_status === "partial"`이면 `stages`에서 실패한 단계를 확인해 안내해주세요.
 
 ### 에러 응답
 

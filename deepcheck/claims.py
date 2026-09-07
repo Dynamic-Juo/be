@@ -36,6 +36,14 @@ SUPPORTED = "supported"
 REFUTED = "refuted"
 UNVERIFIED = "unverified"
 
+# 카드 처리 상태. verdict(지지/반박/유보)와는 별개 축이다 — result-ui.md가 이
+# 둘을 분리해서 표시하라고 정했다: "처리 상태와 검증 판정을 분리한다."
+PENDING = "pending"
+VERIFYING = "verifying"
+DONE = "done"
+FAILED = "failed"
+TIMED_OUT = "timed_out"
+
 # 검증할 만한 주장인지 가르는 신호들. 숫자·연도·비율은 사실 확인이 가능하고,
 # 단정적 표현은 확인해볼 가치가 있는 문장을 고르는 데 쓴다.
 _NUMERIC_RE = re.compile(r"\d")
@@ -86,6 +94,9 @@ class Claim:
     text: str
     start: float | None = None
     end: float | None = None
+    # 카드 처리 상태(pending/verifying/done/failed/timed_out). 폴링으로 이 값이
+    # 바뀌는 걸 보고 프론트가 카드를 갱신한다.
+    status: str = PENDING
     verdict: str = UNVERIFIED
     reason: str = ""
     evidence: list[Evidence] = field(default_factory=list)
@@ -488,66 +499,80 @@ def default_providers(cfg=None) -> list[EvidenceProvider]:
     return providers
 
 
-def verify_claims(claims: list[Claim], providers: list[EvidenceProvider] | None = None,
-                  evidence_per_claim: int | None = None,
-                  time_budget_sec: float | None = None) -> list[Claim]:
-    """주장마다 근거를 모으고 판정한다.
+def verify_one_claim(claim: Claim, providers: list[EvidenceProvider],
+                     evidence_per_claim: int | None = None) -> Claim:
+    """주장 하나에 근거를 모으고 판정한다. 카드를 하나씩 갱신해야 하는 파이프라인이
+    직접 부르는 단위. `claim.status`를 VERIFYING → DONE으로 바꾸고 반환한다.
 
     우리가 지지/반박을 선언하는 경우는 전문 기관의 공개 판정을 찾았을 때뿐이다.
     나머지는 관련 자료를 붙여 두되 판단은 유보한다.
+    """
+    per_claim = evidence_per_claim or config.evidence_per_claim
+    claim.status = VERIFYING
+
+    query = _search_query(claim.text)
+    collected: list[Evidence] = []
+    for provider in providers:
+        try:
+            collected.extend(provider.search(query, per_claim))
+        except Exception as e:
+            # 근거 검색 실패가 분석 전체를 멈추게 하지 않는다.
+            logger.warning("근거 검색 실패(%s): %s", getattr(provider, "name", "?"), e)
+
+    # 검색 결과 중 이 주장과 실제로 관련 있는 것만 근거로 삼는다.
+    relevant = [e for e in collected if _is_relevant(claim.text, e)]
+    dropped = len(collected) - len(relevant)
+    if dropped:
+        logger.info("무관한 검색 결과 %d건 제외 (남은 근거 %d건)", dropped, len(relevant))
+    claim.evidence = relevant[: per_claim * 2]
+
+    decided = None
+    for evidence in relevant:
+        decided = _verdict_from_rating(evidence.rating)
+        if decided:
+            break
+
+    if decided:
+        claim.verdict, claim.reason = decided
+    elif relevant:
+        claim.verdict = UNVERIFIED
+        claim.reason = ("관련 자료는 찾았지만 이 주장을 직접 검증한 판정이 없어 "
+                        "판단을 유보한다.")
+    else:
+        # 못 찾았다고 거짓이 아니다.
+        claim.verdict = UNVERIFIED
+        claim.reason = "관련 근거를 찾지 못해 판단을 유보한다. 거짓이라는 뜻은 아니다."
+
+    claim.status = DONE
+    logger.info("주장 판정: %s — %s (근거 %d건)",
+                claim.verdict, claim.text[:40], len(claim.evidence))
+    return claim
+
+
+def verify_claims(claims: list[Claim], providers: list[EvidenceProvider] | None = None,
+                  evidence_per_claim: int | None = None,
+                  time_budget_sec: float | None = None) -> list[Claim]:
+    """`verify_one_claim`을 순서대로 돌리는 일괄 처리 도우미.
+
+    CLI처럼 중간 갱신이 필요 없는 호출자를 위한 것이다. 폴링으로 카드를 하나씩
+    갱신해야 하는 API 경로는 `verify_one_claim`을 직접 부른다(`pipeline.py` 참고).
 
     외부 검색은 느려질 수 있으므로(제공자 하나가 타임아웃까지 버티면 주장마다 수십
     초가 든다) 전체 시간 예산을 두고, 예산을 넘기면 남은 주장은 검색 없이 유보한다.
-    응답이 영원히 안 오는 것보다 "일부는 확인하지 못했다"고 말하는 편이 낫다.
     """
     if not claims:
         return []
     active = providers if providers is not None else default_providers()
-    per_claim = evidence_per_claim or config.evidence_per_claim
     budget = time_budget_sec if time_budget_sec is not None else config.evidence_budget_sec
     started = time.monotonic()
 
     for claim in claims:
         if budget and time.monotonic() - started > budget:
+            claim.status = DONE
             claim.verdict = UNVERIFIED
             claim.reason = "근거 검색 시간이 예산을 넘어 이 주장은 확인하지 못했다."
             logger.warning("근거 검색 시간 예산(%.0fs) 초과 — 남은 주장은 검색을 건너뛴다", budget)
             continue
-
-        query = _search_query(claim.text)
-        collected: list[Evidence] = []
-        for provider in active:
-            try:
-                collected.extend(provider.search(query, per_claim))
-            except Exception as e:
-                # 근거 검색 실패가 분석 전체를 멈추게 하지 않는다.
-                logger.warning("근거 검색 실패(%s): %s", getattr(provider, "name", "?"), e)
-
-        # 검색 결과 중 이 주장과 실제로 관련 있는 것만 근거로 삼는다.
-        relevant = [e for e in collected if _is_relevant(claim.text, e)]
-        dropped = len(collected) - len(relevant)
-        if dropped:
-            logger.info("무관한 검색 결과 %d건 제외 (남은 근거 %d건)", dropped, len(relevant))
-        claim.evidence = relevant[: per_claim * 2]
-
-        decided = None
-        for evidence in relevant:
-            decided = _verdict_from_rating(evidence.rating)
-            if decided:
-                break
-
-        if decided:
-            claim.verdict, claim.reason = decided
-        elif relevant:
-            claim.verdict = UNVERIFIED
-            claim.reason = ("관련 자료는 찾았지만 이 주장을 직접 검증한 판정이 없어 "
-                            "판단을 유보한다.")
-        else:
-            # 못 찾았다고 거짓이 아니다.
-            claim.verdict = UNVERIFIED
-            claim.reason = "관련 근거를 찾지 못해 판단을 유보한다. 거짓이라는 뜻은 아니다."
-
-        logger.info("주장 판정: %s — %s (근거 %d건)",
-                    claim.verdict, claim.text[:40], len(claim.evidence))
+        verify_one_claim(claim, active, evidence_per_claim)
 
     return claims

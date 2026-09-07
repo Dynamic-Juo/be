@@ -3,8 +3,8 @@
 영상 URL 하나가 들어와서 두 갈래의 분석 결과가 나오기까지, 무엇이 무엇에게 무엇을 넘기는지 정리한다.
 각 단계에서 쓰는 라이브러리와, 그 라이브러리를 갈아끼우려면 어디를 건드려야 하는지도 함께 적는다.
 
-- 기준 커밋: `2e3f3e6`
-- 확인일: 2026-09-07
+- 기준 커밋: MVP 확정 사양 반영판(미디어 조작 두 축 분리 + 점진적 결과 전달)
+- 확인일: 2026-09-08
 - 실행 환경: Docker, CPU 전용, Python 3.12
 - 제품 요구사항과 설계 기준은 [docs 레포](https://github.com/Dynamic-Juo/docs)의 `project/prd.md`와 `design/ai-pipeline.md`를 따른다.
 
@@ -12,38 +12,41 @@
 
 구현 전체가 아래 세 규칙을 코드로 옮긴 것이다.
 
-1. **두 축을 합치지 않는다.** 실제 인물이 나온 영상에도 허위 주장이 있을 수 있고, AI로 만든 영상의 발언이 사실일 수도 있다. 미디어 조작과 주장 사실성은 끝까지 별도의 결과로 남는다.
-2. **못 한 것과 정상을 구분한다.** 프레임을 못 뽑았거나 얼굴을 못 찾았을 때 위험도 0점을 주면 실패가 무죄 판정으로 둔갑한다. 이런 경우 점수는 `null`, 상태는 `unavailable`, 등급은 `판단 불가`다.
+1. **세 축을 합치지 않는다.** 실제 인물이 나온 영상에도 허위 주장이 있을 수 있고, AI로 만든 영상의 발언이 사실일 수도 있다. 얼굴 합성·변형, 영상 전체 AI 생성, 주장 사실성은 끝까지 별도의 결과로 남는다.
+2. **못 한 것과 정상을 구분한다.** 프레임을 못 뽑았거나 얼굴을 못 찾았을 때 "뚜렷한 조작 징후 없음"이라고 답하면 실패가 무죄 판정으로 둔갑한다. 이런 경우 상태는 `unavailable`("분석 불가")이다.
 3. **하지 않은 판단을 하지 않는다.** 근거를 못 찾은 것은 거짓의 근거가 아니다. 지지와 반박은 전문 기관이 이미 공개한 판정을 찾았을 때만 선언한다.
+4. **숫자로 확신을 과장하지 않는다.** 미디어 조작 두 축은 연속 점수를 계산은 하지만(내부 `signals`), 사용자에게는 `조작 의심`/`뚜렷한 조작 징후 없음`/`판단 보류`/`분석 불가` 네 범주로만 보여준다.
 
 ## 전체 흐름
 
-다운로드 직후 경로가 둘로 갈라진다. 위쪽은 픽셀을 보는 경로, 아래쪽은 말을 읽는 경로다. 두 경로는 서로의 판정을 전제하지 않고, 마지막에도 합쳐지지 않은 채 각자의 블록으로 응답에 실린다.
+다운로드 직후 경로가 둘로 갈라진다. 위쪽은 픽셀을 보는 경로, 아래쪽은 말을 읽는 경로다. 세 축은 서로의 판정을 전제하지 않고, 마지막에도 합쳐지지 않은 채 각자의 블록으로 응답에 실린다.
 
 ```mermaid
 flowchart LR
     URL["영상 URL"] --> DL["① 확보<br/>yt-dlp"]
 
     DL -->|"mp4"| FRAMES["② 프레임 샘플링<br/>ffmpeg 또는 PyAV"]
+    DL -->|"제목·설명"| SD["자가표기 감지<br/>STT 필요 없음"]
     DL -->|"m4a, vtt"| TEXT["④ 발언 텍스트<br/>자막 또는 Whisper"]
 
     FRAMES --> DETECT["③ 얼굴 검출 → 딥페이크 분류<br/>MediaPipe → ViT"]
-    TEXT --> SIGNALS["⑤ 텍스트 신호<br/>자가표기, 합성음성"]
     TEXT --> CLAIMS["⑥ 주장 검증<br/>위키백과, 팩트체크 API"]
 
-    DETECT --> AXIS_A["미디어 조작<br/>risk, level, evidence"]
-    SIGNALS -->|"보조 신호"| AXIS_A
+    DETECT --> AXIS_A["얼굴 합성·변형<br/>status, evidence"]
+    SD -->|"하한선"| AXIS_A
+    SD --> AXIS_C["영상 전체 AI 생성<br/>모델 미선정, 자가표기만"]
     CLAIMS --> AXIS_B["주장 사실성<br/>claims, summary"]
 
-    FRAMES -.->|"0장"| UNKNOWN["판단 불가"]
+    FRAMES -.->|"0장"| UNKNOWN["분석 불가"]
     DETECT -.->|"얼굴 0장"| UNKNOWN
     UNKNOWN -.-> AXIS_A
 
-    AXIS_A --- SEP{{"합치지 않음"}}
+    AXIS_A --- SEP{{"세 축, 합치지 않음"}}
     SEP --- AXIS_B
+    SEP --- AXIS_C
 ```
 
-실선은 정상 경로, 점선은 강등 경로다. 강등 경로를 탄 결과도 응답에 실리지만 점수 대신 판단 불가와 그 사유가 담긴다.
+실선은 정상 경로, 점선은 강등 경로다. 강등 경로를 탄 결과도 응답에 실리지만 범주 대신 분석 불가와 그 사유가 담긴다. 자가표기는 제목·설명만 보므로 음성 인식(STT)을 기다리지 않고 다운로드 직후 바로 계산된다 — 그래서 미디어 조작 두 축은 발언 텍스트 확보보다 먼저 응답에 채워질 수 있다(아래 "점진적 결과 전달" 참고).
 
 ## 단계별 상세
 
@@ -128,29 +131,32 @@ flowchart TD
 | 실패하면 | 검색 실패나 시간 초과는 해당 주장만 유보 처리. 전체 예산 30초를 넘기면 남은 주장은 검색 없이 유보한다 |
 | 교체 지점 | `claims.extract_claims()`, `claims.EvidenceProvider`, 수단 `DEEPCHECK_EVIDENCE_PROVIDERS` |
 
-## 미디어 조작 점수가 정해지는 방식
+## 미디어 조작 두 축이 정해지는 방식
 
-프레임별 확률이 하나의 점수가 되는 과정에 두 개의 보정이 들어간다. 둘 다 강한 신호가 평균에 묻히는 것을 막기 위한 것이다.
+내부적으로는 여전히 연속 점수를 계산하지만(디버깅용), 사용자에게는 4단계 범주만 보여준다. 얼굴 합성·변형과 영상 전체 AI 생성은 완전히 다른 함수로 만든다.
 
 ```mermaid
 flowchart LR
     F["프레임별 fake 확률<br/>0.98, 0.11, 0.07 …"] --> BLEND["평균-최댓값 블렌드<br/>max(평균, 평균×0.6 + 최댓값×0.4)"]
-    SD["자가표기<br/>제목·설명 키워드"] --> FLOOR
-    TTS["합성음성 의심<br/>× 0.35"] --> FLOOR
-    BLEND --> FLOOR["하한선 적용<br/>자가표기 ≥ 50이면<br/>점수 = max(점수, 표기×0.9)"]
-    FLOOR --> LEVEL["등급 판정"]
+    SD["자가표기<br/>제목·설명 키워드"] --> FLOORA["하한선 적용<br/>자가표기 ≥ 50이면<br/>점수 = max(점수, 표기×0.9)"]
+    BLEND --> FLOORA
+    FLOORA --> CATA["4단계 범주화"]
 
-    LEVEL --> L1["≥ 70 매우 높음"]
-    LEVEL --> L2["≥ 45 상당함"]
-    LEVEL --> L3["≥ 25 주의 필요"]
-    LEVEL --> L4["25 미만 낮음"]
+    CATA --> L1["≥ 70 조작 의심"]
+    CATA --> L2["≥ 45 판단 보류"]
+    CATA --> L3["45 미만 뚜렷한 조작 징후 없음"]
+    NOFRAME["프레임 0장 또는 얼굴 0장<br/>(자가표기도 없으면)"] -.-> L4["분석 불가"]
 
-    NOFRAME["프레임 0장 또는 얼굴 0장"] -.-> L5["null → 판단 불가"]
+    SD --> WHOLE{"자가표기 ≥ 50?"}
+    WHOLE -->|"예"| WSUS["조작 의심"]
+    WHOLE -->|"아니오"| WNA["분석 불가<br/>(모델 미선정)"]
 ```
 
-블렌드 가중치(0.6/0.4)와 플로어 계수(0.9)는 실측으로 튜닝해야 할 판단값이지 검증된 최적값이 아니다. 블렌드는 실제 사례에서 8장 중 1장이 98.4%일 때 최종 점수를 13.1에서 47.2로 끌어올렸다.
+**합성음성(TTS) 의심은 더 이상 이 계산에 들어가지 않는다.** PRD가 음성 합성 탐지를 MVP에서 제외하기로 했다(M-03). 블렌드 가중치(0.6/0.4)와 플로어 계수(0.9)는 실측으로 튜닝해야 할 판단값이지 검증된 최적값이 아니다. 블렌드는 실제 사례에서 8장 중 1장이 98.4%일 때 최종 점수를 13.1에서 47.2로 끌어올렸다.
 
 클릭베이트와 주장 강도는 이 계산에 들어가지 않는다. 자극적인 제목의 진짜 영상이 AI 가짜 쪽으로 밀리는 것을 막기 위해 조작 축에서 분리했다.
+
+**영상 전체 AI 생성 탐지는 아직 전용 모델이 없다**(docs T-06: "설계 필요"). 지금은 자가표기가 유일한 근거라 그것만 쓴다 — 자가표기가 없으면 항상 `분석 불가`("모델이 아직 선정되지 않았다")다. 이건 실패가 아니라 지금 시점의 정상 상태다: `build_whole_video_generation()`이 이 축을 `_is_degraded` 판정에서 제외한다.
 
 ## 주장 검증 흐름
 
@@ -190,12 +196,25 @@ flowchart TD
 flowchart LR
     FE["프론트<br/>POST /api/analyze"] -->|"url"| QUEUE["대기열<br/>상한 64<br/>같은 URL은 재사용"]
     QUEUE --> WORKER["워커 N개<br/>파이프라인 실행<br/>job_id를 로그에 실음"]
-    WORKER --> JOB["job 상태<br/>queued → running<br/>→ done / error"]
-    JOB -->|"GET /api/jobs/:id<br/>2초 간격 폴링"| FE
+    WORKER --> JOB["job 상태<br/>queued → processing:*<br/>→ partially_completed<br/>→ completed(_with_limitations) / timed_out / failed"]
+    JOB -->|"GET /api/jobs/:id<br/>2~3초 간격 폴링"| FE
     QUEUE -.->|"가득 차면 429 + Retry-After"| FE
 ```
 
 uvicorn은 반드시 단일 워커 프로세스로 띄운다. job 상태를 프로세스 메모리에 들고 있어서 프로세스가 여럿이면 조회가 무작위로 404가 난다. 동시 실행은 `DEEPCHECK_WORKERS`로 조절한다. job은 메모리 보관 상한 200건이며 재시작하면 사라진다. 영속화는 아직 없다.
+
+### 점진적 결과 전달
+
+`job.result`는 완성되는 대로 채워지는 살아있는 dict다. 미디어 조작 두 축은 준비되는 즉시, 주장은 개수가 확정되면 카드를 전부(대기 중 상태로) 만들어 통지하고 하나씩 검증하며 갱신한다. 실제 폴링 로그(20분 영상 예시)로 보면 이렇다.
+
+```
+t=4s   status=processing:collecting        result={}
+t=40s  status=partially_completed          result에 face_manipulation, whole_video_generation, claim_verification 등장
+                                            claim_verification.claims의 status가 done/pending 혼재
+t=44s  status=completed                    모든 카드가 done, 나머지 최상위 키(media, stages, ...)도 채워짐
+```
+
+첫 부분 결과가 도착하는 순간 `queued`/`processing:*`에서 `partially_completed`로 전환하고, 그 뒤로는 세부 단계 태그(`processing:transcribing` 등)를 다시 밟지 않는다 — "첫 결과가 준비되면 partially_completed"라는 문서 규칙 그대로다. 전체 처리 시간이 `DEEPCHECK_MAX_PROCESSING_SEC`(기본 600초)를 넘기면 아직 시작하지 않은 주장 카드는 검색을 시도하지 않고 `status: "timed_out"`으로 채우고, job 자체도 `timed_out`으로 끝난다. 이건 소프트 타임아웃이라 이미 도는 단계(다운로드·STT 등)를 강제로 끊지는 못한다 — 각 단계 자체의 타임아웃(`DEEPCHECK_*_TIMEOUT_SEC`)에 의존한다.
 
 ## 갈아끼우기
 
@@ -210,9 +229,11 @@ uvicorn은 반드시 단일 워커 프로세스로 띄운다. job 상태를 프�
 | VLM 제공자 | `DEEPCHECK_VLM_PROVIDER`. 새 제공자는 `vlm.VLMProvider` 구현 후 등록 | 등록만 |
 | 근거 검색 수단 | `DEEPCHECK_EVIDENCE_PROVIDERS`. 새 수단은 `claims.EvidenceProvider` 구현 후 `_build_provider`에 추가 | 등록만 |
 | 주장 추출 방식 | `claims.extract_claims()`. 규칙 기반을 LLM으로 바꾸려면 이 함수만 교체한다 | 필요 |
-| 점수 가중치와 등급 경계 | `DEEPCHECK_FRAME_MEAN_WEIGHT`, `DEEPCHECK_FRAME_PEAK_WEIGHT`, `DEEPCHECK_LEVEL_HIGH` 등 | 불필요 |
+| 점수 가중치와 범주 경계 | `DEEPCHECK_FRAME_MEAN_WEIGHT`, `DEEPCHECK_FRAME_PEAK_WEIGHT`, `DEEPCHECK_LEVEL_HIGH` 등 | 불필요 |
+| 영상 전체 AI 생성 탐지 모델 | 아직 없음. `report.build_whole_video_generation()`이 붙일 자리 | 필요 (신규 구현) |
 | 자막 사용 정책 | `DEEPCHECK_CAPTION_POLICY` (manual, any, off) | 불필요 |
 | 동시 실행 수와 대기열 | `DEEPCHECK_WORKERS`, `DEEPCHECK_BACKLOG` | 불필요 |
+| 전체 처리 시간 상한 | `DEEPCHECK_MAX_PROCESSING_SEC` (기본 600초) | 불필요 |
 
 모델을 바꾸면 `tests/test_report.py`의 degraded 경로 테스트가 여전히 통과하는지 확인한다. "얼굴을 못 찾으면 판단을 유보한다"는 규칙은 지금 분류기가 얼굴 crop 모델이라는 전제에 기대고 있어서, 전체 프레임으로 학습된 모델로 바꾸면 이 규칙도 함께 손봐야 한다.
 

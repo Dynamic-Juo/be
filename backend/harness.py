@@ -27,10 +27,18 @@ from deepcheck.pipeline import AnalysisOptions, analyze_url
 
 logger = logging.getLogger(__name__)
 
+# analysis-runtime.md의 작업 상태 표를 그대로 따른다. queued/processing:* 동안은
+# 아직 아무 결과도 못 준 상태고, 첫 부분 결과가 오는 순간 partially_completed로
+# 넘어가서 그 뒤로는 processing:* 세부 단계를 다시 밟지 않는다.
 QUEUED = "queued"
-RUNNING = "running"
-DONE = "done"
-ERROR = "error"
+PROCESSING_PREFIX = "processing:"
+PARTIALLY_COMPLETED = "partially_completed"
+COMPLETED = "completed"
+COMPLETED_WITH_LIMITATIONS = "completed_with_limitations"
+FAILED = "failed"
+TIMED_OUT = "timed_out"
+
+_TERMINAL = (COMPLETED, COMPLETED_WITH_LIMITATIONS, FAILED, TIMED_OUT)
 
 _STOP = object()
 
@@ -59,7 +67,7 @@ class Job:
 
     @property
     def finished(self) -> bool:
-        return self.status in (DONE, ERROR)
+        return self.status in _TERMINAL
 
 
 class Harness:
@@ -138,21 +146,33 @@ class Harness:
 
     def _run(self, job: Job) -> None:
         token = current_job_id.set(job.id)
-        job.status = RUNNING
+        job.status = f"{PROCESSING_PREFIX}collecting"
         job.message = "시작"
+        job.result = {}
         job.updated_at = time.time()
         started = time.monotonic()
         try:
             options = AnalysisOptions.from_dict(job.params)
-            job.result = analyze_url(
+            final = analyze_url(
                 url=job.url,
                 options=options,
-                progress_cb=lambda pct, msg: self._update(job, pct, msg),
+                progress_cb=lambda pct, msg, stage=None: self._update(job, pct, msg, stage),
+                on_partial=lambda patch: self._merge_partial(job, patch),
             )
+            elapsed = time.monotonic() - started
+            with self._lock:
+                job.result = final  # 부분 스냅샷을 완성된 결과로 최종 정리
             job.progress = 1.0
-            job.status = DONE
-            job.message = "완료"
-            logger.info("job 완료: %s (%.1fs)", job.id, time.monotonic() - started)
+            if elapsed > config.max_processing_sec:
+                job.status = TIMED_OUT
+                job.message = "시간 초과"
+            elif final.get("analysis_status") == "complete":
+                job.status = COMPLETED
+                job.message = "완료"
+            else:
+                job.status = COMPLETED_WITH_LIMITATIONS
+                job.message = "일부 분석만 완료"
+            logger.info("job 종료: %s status=%s (%.1fs)", job.id, job.status, elapsed)
         except Exception as e:
             # 응답에는 구조화된 에러를, 로그에는 traceback을 남긴다. 둘 중 하나만
             # 있으면 원인 추적이 안 된다.
@@ -166,15 +186,27 @@ class Harness:
             current_job_id.reset(token)
 
     def _fail(self, job: Job, error: dict) -> None:
-        job.status = ERROR
+        job.status = FAILED
         job.error = error
         job.message = error.get("message", "오류")
         job.updated_at = time.time()
 
     # ---- helpers ----
-    def _update(self, job: Job, pct: float, msg: str) -> None:
+    def _update(self, job: Job, pct: float, msg: str, stage: str | None = None) -> None:
         job.progress = max(0.0, min(1.0, pct))
         job.message = msg
+        # partially_completed로 넘어간 뒤에는 세부 단계 태그를 더 이상 반영하지
+        # 않는다 — "첫 결과가 준비되면 partially_completed로 전환"이 그 뒤로도
+        # processing:* 로 되돌아가지 않는다는 뜻이기 때문이다.
+        if stage and job.status not in (PARTIALLY_COMPLETED,) and job.status not in _TERMINAL:
+            job.status = f"{PROCESSING_PREFIX}{stage}"
+        job.updated_at = time.time()
+
+    def _merge_partial(self, job: Job, patch: dict) -> None:
+        with self._lock:
+            job.result.update(patch)
+            if job.status not in (PARTIALLY_COMPLETED,) and job.status not in _TERMINAL:
+                job.status = PARTIALLY_COMPLETED
         job.updated_at = time.time()
 
     def _evict_old_jobs_locked(self) -> None:
@@ -211,7 +243,9 @@ class Harness:
 
     def stats(self) -> dict:
         with self._lock:
-            counts = {QUEUED: 0, RUNNING: 0, DONE: 0, ERROR: 0}
+            # status는 processing:collecting처럼 세부 단계별로 값이 늘어날 수 있어
+            # 고정된 키 집합을 미리 두지 않고, 실제로 관측된 값만 센다.
+            counts: dict[str, int] = {}
             for j in self._jobs.values():
                 counts[j.status] = counts.get(j.status, 0) + 1
             return {
