@@ -83,3 +83,41 @@ class TestErrorMapping:
         cause = TimeoutError("시간 초과")
         payload = DownloadError("실패", cause=cause).to_dict()
         assert "TimeoutError" in payload["cause"]
+
+
+class TestBackpressure:
+    def test_대기열이_차면_429와_Retry_After를_준다(self, monkeypatch):
+        import queue as queue_mod
+
+        from backend import app as app_module
+
+        def saturated(*args, **kwargs):
+            raise queue_mod.Full()
+
+        monkeypatch.setattr(app_module.harness, "submit", saturated)
+        with TestClient(app) as client:
+            r = client.post("/api/analyze", json={"url": "https://example.com/v"})
+        assert r.status_code == 429
+        assert r.json()["error"]["code"] == "server_busy"
+        # 재시도 간격을 클라이언트가 추측하지 않게 알려준다.
+        assert r.headers["Retry-After"] == "10"
+        assert r.json()["error"]["retryable"] is True
+
+
+class TestSessionGrouping:
+    def test_중복_제거된_요청도_요청한_세션에서_보인다(self):
+        from backend.harness import Harness
+
+        h = Harness(max_workers=1, backlog=8)
+        try:
+            first, reused_a = h.submit("https://example.com/v", "SES_A", {})
+            second, reused_b = h.submit("https://example.com/v", "SES_B", {})
+
+            assert reused_a is False and reused_b is True
+            assert first.id == second.id
+            # 두 번째 요청자가 자기 목록에서 이 분석을 못 찾으면,
+            # 프론트에서는 "요청했는데 목록에 없다"가 된다.
+            assert [j.id for j in h.session_jobs("SES_A")] == [first.id]
+            assert [j.id for j in h.session_jobs("SES_B")] == [first.id]
+        finally:
+            h.shutdown()

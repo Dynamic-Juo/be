@@ -7,6 +7,11 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    # 아래 environment에 나열한 값만 컨테이너로 전달된다. 그 외의 DEEPCHECK_* 설정
+    # (deepcheck/config.py 참고)을 바꾸려면 .env 파일에 적는다. 파일이 없어도 뜬다.
+    env_file:
+      - path: .env
+        required: false
     environment:
       # 동시 분석 수. 각각 CPU를 많이 쓰므로 코어가 적은 호스트는 1-2로 둔다.
       DEEPCHECK_WORKERS: "${DEEPCHECK_WORKERS:-2}"

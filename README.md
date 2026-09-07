@@ -192,6 +192,17 @@ pytest
 
 모든 값은 `DEEPCHECK_` 환경변수로 덮어쓸 수 있습니다 (기본값은 `deepcheck/config.py`).
 
+Docker로 띄울 때는 `docker-compose.yml`의 `environment`에 나열된 것만 컨테이너로 전달됩니다.
+그 외 설정을 바꾸려면 레포 루트에 `.env` 파일을 만들어 적으세요 (파일이 없어도 정상 기동하며,
+`.gitignore`에 있어 커밋되지 않습니다).
+
+```bash
+# .env
+DEEPCHECK_BACKLOG=16
+DEEPCHECK_MAX_CLAIMS=3
+DEEPCHECK_GOOGLE_FACTCHECK_API_KEY=...
+```
+
 | 환경변수 | 기본값 | 설명 |
 |---|---|---|
 | `DEEPCHECK_WORKERS` | 3 | 동시 분석 수. 저사양 호스트는 1~2 권장 |

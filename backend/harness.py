@@ -38,9 +38,12 @@ _STOP = object()
 @dataclass
 class Job:
     id: str
-    session_id: str
+    session_id: str  # 처음 요청한 세션
     url: str
     params: dict[str, Any]
+    # 같은 URL을 요청해 이 job을 재사용한 세션들. 중복 제거로 job을 합치더라도
+    # 나중에 요청한 세션이 자기 목록에서 이 분석을 찾을 수 있어야 한다.
+    session_ids: list[str] = field(default_factory=list)
     status: str = QUEUED
     progress: float = 0.0
     message: str = "대기 중"
@@ -88,10 +91,14 @@ class Harness:
         with self._lock:
             existing_id = self._inflight_url.get(url)
             if existing_id and existing_id in self._jobs:
+                existing = self._jobs[existing_id]
+                if session_id not in existing.session_ids:
+                    existing.session_ids.append(session_id)
                 logger.info("중복 URL 요청 — 기존 job 재사용: %s", existing_id)
-                return self._jobs[existing_id], True
+                return existing, True
 
-            job = Job(id=uuid.uuid4().hex, session_id=session_id, url=url, params=params)
+            job = Job(id=uuid.uuid4().hex, session_id=session_id, url=url, params=params,
+                      session_ids=[session_id])
             self._jobs[job.id] = job
             self._inflight_url[url] = job.id
             self._evict_old_jobs_locked()
@@ -193,7 +200,8 @@ class Harness:
 
     def session_jobs(self, session_id: str) -> list[Job]:
         with self._lock:
-            jobs = [j for j in self._jobs.values() if j.session_id == session_id]
+            jobs = [j for j in self._jobs.values()
+                    if session_id == j.session_id or session_id in j.session_ids]
         return sorted(jobs, key=lambda j: j.created_at)
 
     def all_jobs(self) -> list[Job]:
