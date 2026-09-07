@@ -261,6 +261,15 @@ class TestKoreanExtraction:
         assert all(not c.text.startswith("-") for c in found)
         assert all("(기자)" not in c.text for c in found)
 
+    def test_구어체_종결어미도_잡는다(self):
+        # 실측(2026-09-08): 마침표가 있는 깨끗한 STT 텍스트에서 "-는데요"로 끝나는
+        # 문장("...최대 50%까지 할인 받을 수 있는데요.")이 수치가 명확한데도 빠졌다.
+        # 격식체(-다/-니다)만 서술문으로 인정하고 있었기 때문이다.
+        text = "1인당 한도를 기존 만 원에서 2만 원으로 높였고 최대 50%까지 할인 받을 수 있는데요."
+        found = claims.extract_claims(text)
+        assert len(found) == 1
+        assert "50%" in found[0].text
+
     def test_소수점이_있는_수치가_검색어에서_깨지지_않는다(self):
         # 사실 확인의 핵심이 수치인데 "6.0%"가 "6"과 "0%"로 쪼개지면 검색이 망가진다.
         query = claims._search_query("지난달 소비자 물가 상승률이 6.0%로 집계됐습니다")
