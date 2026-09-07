@@ -5,6 +5,9 @@
 기획·설계 기준은 [docs 레포](https://github.com/Dynamic-Juo/docs)를 따릅니다
 (`project/prd.md`, `design/ai-pipeline.md`). 작업 규칙은 [AGENTS.md](AGENTS.md)를 참고하세요.
 
+> **[파이프라인 해부도](docs/pipeline.md)** — 단계별 흐름도, 각 단계의 라이브러리와 실패 처리,
+> 모델·라이브러리를 갈아끼울 때 건드릴 곳, 구간별 실측 성능. 검증하거나 무언가를 교체할 때 여기부터 보세요.
+
 ## 두 축을 분리한다
 
 제품은 두 분석 결과를 **하나의 진위 점수로 합치지 않습니다**. 실제 인물이 나온 영상에도

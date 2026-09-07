@@ -11,5 +11,5 @@ frames/
 .env
 deepcheck/models/*.tflite
 .DS_Store
+# 로컬에서 긴 영상으로 파이프라인을 검증할 때 쓰는 산출물(영상·transcript)
 test_long/
-docs/
