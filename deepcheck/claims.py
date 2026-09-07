@@ -42,9 +42,13 @@ _NUMERIC_RE = re.compile(r"\d")
 _YEAR_RE = re.compile(r"(19|20)\d{2}\s*년?")
 _PERCENT_RE = re.compile(r"\d+(\.\d+)?\s*(%|퍼센트|프로)")
 _QUANTITY_RE = re.compile(r"\d+(\.\d+)?\s*(명|원|달러|억|만|천|배|위|건|개|톤|km|킬로)")
+# 사실을 서술하는 문장인지 본다. 한국어 서술문은 "-다" 또는 "-니다"로 끝나므로
+# 어미를 열거하는 대신 종결형을 본다. 열거 방식은 하나만 빠져도 조용히 놓치는데,
+# 실제로 뉴스 기본체인 "집계됐습니다", "올랐습니다"를 통째로 놓치고 있었다.
+# 문장 끝을 보므로 잘린 자막 조각("...외식 물가가")도 자연히 걸러진다.
 _ASSERTION_RE = re.compile(
-    r"(이다|입니다|였다|했다|한다|된다|밝혀졌|확인됐|발표했|증가했|감소했|"
-    r"is |are |was |were |said|announced|reported|found)"
+    r"(?:니다|다)\s*[.!?]?\s*$"
+    r"|(?:\bis\b|\bare\b|\bwas\b|\bwere\b|said|announced|reported|rose|fell|reached)"
 )
 # 의견·감상·인사말처럼 사실 확인 대상이 아닌 문장을 걸러낸다.
 _OPINION_RE = re.compile(
@@ -58,7 +62,9 @@ _SPECULATION_RE = re.compile(
     r"할 것입니다|할 전망|우려됩니다|가능성이 (있|높|커)|"
     r"is expected to|is likely to|will likely|forecast)"
 )
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+|\n+")
+# 자막에는 마침표가 없는 경우가 많다(줄 단위로 끊겨 들어온다). 문장 부호만으로
+# 나누면 여러 문장이 통째로 붙거나 조각이 남으므로, 한국어 종결형 뒤도 경계로 본다.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+|\n+|(?<=니다)\s+|(?<=습니다)\s+")
 
 
 @dataclass
@@ -233,63 +239,153 @@ def _verdict_from_rating(rating: str | None) -> tuple[str, str] | None:
     return None
 
 
+# 자막 앞머리에 붙는 화자 표기. 주장 문장에 남으면 검색어와 화면 표시가 지저분해진다.
+_SPEAKER_PREFIX_RE = re.compile(r"^[-–—\s]*\(?\s*(기자|앵커|리포터|인터뷰|현장음|내레이션)\s*\)?\s*[:：]?\s*")
+
+
+def _clean_sentence(raw: str) -> str:
+    """문장에서 화자 표기와 중복 공백을 걷어낸다."""
+    sentence = _SPEAKER_PREFIX_RE.sub("", raw.strip())
+    return re.sub(r"\s+", " ", sentence).strip()
+
+
+def _candidate_score(sentence: str) -> float:
+    """이 문장이 사실 확인 대상으로 얼마나 적합한지. 2점 미만이면 후보에서 뺀다."""
+    if not (15 <= len(sentence) <= 300):
+        return 0.0
+    if _OPINION_RE.search(sentence.lower()):
+        return 0.0
+    if _SPECULATION_RE.search(sentence):
+        return 0.0
+    if not _ASSERTION_RE.search(sentence):
+        return 0.0
+
+    score = 0.0
+    if _PERCENT_RE.search(sentence):
+        score += 3
+    if _QUANTITY_RE.search(sentence):
+        score += 2
+    if _YEAR_RE.search(sentence):
+        score += 2
+    if _NUMERIC_RE.search(sentence):
+        score += 1
+    # 고유명사(대문자로 시작하는 낱말, 따옴표로 인용한 대상)가 있으면 검색이 쉬워진다.
+    if re.search(r"[A-Z][a-z]{2,}|[「\"'][^」\"']{2,}[」\"']", sentence):
+        score += 1
+    return score if score >= 2 else 0.0
+
+
+def _is_duplicate(sentence: str, chosen: list[str]) -> bool:
+    """이미 고른 주장과 사실상 같은 말인지 본다.
+
+    뉴스는 앵커가 말한 것을 기자가 다시 말한다. 같은 사실이 두 슬롯을 차지하면
+    영상의 다른 내용을 검증할 기회가 줄어든다.
+    """
+    tokens = set(_key_tokens(sentence)[:8])
+    if not tokens:
+        return False
+    for other in chosen:
+        other_tokens = set(_key_tokens(other)[:8])
+        if not other_tokens:
+            continue
+        overlap = len(tokens & other_tokens) / min(len(tokens), len(other_tokens))
+        if overlap >= 0.7:
+            return True
+    return False
+
+
 def extract_claims(text: str, segments: list[dict] | None = None,
                    max_claims: int | None = None) -> list[Claim]:
     """발언 텍스트에서 검증 가능한 주장을 고른다.
 
-    지금은 규칙 기반이다. 숫자·연도·수량이 들어 있고 단정적으로 서술한 문장을
-    검증 대상으로 본다. 의견이나 인사말은 제외한다. 이 방식은 LLM 없이 동작하고
-    결과를 설명할 수 있다는 장점이 있지만, 문맥을 넘는 주장(대명사로 지칭한 대상
-    등)은 놓친다. 개선하려면 이 함수만 교체하면 된다.
+    한 영상에 여러 내용이 나오므로 두 가지를 함께 처리한다.
+
+    - **분산**: 점수 상위만 뽑으면 숫자가 몰린 한 대목이 슬롯을 다 차지하고 영상
+      뒷부분이 통째로 누락된다. 전사를 구간으로 나눠 각 구간에서 먼저 한 건씩 뽑고,
+      남는 자리를 점수순으로 채운다.
+    - **중복 제거**: 같은 사실을 앵커와 기자가 반복하면 슬롯만 낭비한다.
+
+    규칙 기반이라 LLM 없이 동작하고 왜 뽑혔는지 설명할 수 있다. 대신 대명사로
+    지칭한 대상처럼 문맥을 넘는 주장은 여전히 놓친다. 개선하려면 이 함수를 교체한다.
     """
     limit = max_claims if max_claims is not None else config.max_claims
     if not text or limit <= 0:
         return []
 
-    scored: list[tuple[float, str]] = []
-    for raw in _SENTENCE_SPLIT_RE.split(text):
-        sentence = raw.strip()
-        if not (15 <= len(sentence) <= 300):
-            continue
-        if _OPINION_RE.search(sentence.lower()):
-            continue
-        if _SPECULATION_RE.search(sentence):
-            continue
-        if not _ASSERTION_RE.search(sentence):
-            continue
+    sentences = [_clean_sentence(s) for s in _SENTENCE_SPLIT_RE.split(text)]
+    sentences = [s for s in sentences if s]
+    candidates: list[tuple[int, float, str]] = []
+    for position, sentence in enumerate(sentences):
+        score = _candidate_score(sentence)
+        if score:
+            candidates.append((position, score, sentence))
 
-        score = 0.0
-        if _PERCENT_RE.search(sentence):
-            score += 3
-        if _QUANTITY_RE.search(sentence):
-            score += 2
-        if _YEAR_RE.search(sentence):
-            score += 2
-        if _NUMERIC_RE.search(sentence):
-            score += 1
-        # 고유명사(대문자로 시작하는 낱말, 따옴표로 인용한 대상)가 있으면 검색이 쉬워진다.
-        if re.search(r"[A-Z][a-z]{2,}|[「\"'][^」\"']{2,}[」\"']", sentence):
-            score += 1
-        if score < 2:
-            continue
-        scored.append((score, sentence))
+    if not candidates:
+        logger.info("검증 대상 주장 없음 (문장 %d개 검토)", len(sentences))
+        return []
 
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    claims = [Claim(text=sentence) for _, sentence in scored[:limit]]
+    chosen: list[tuple[int, str]] = []
+    chosen_texts: list[str] = []
+
+    # 1단계: 영상을 limit개 구간으로 나눠 각 구간의 최고 점수를 하나씩 가져온다.
+    span = max(len(sentences) / limit, 1)
+    for bucket in range(limit):
+        low, high = bucket * span, (bucket + 1) * span
+        in_bucket = [c for c in candidates if low <= c[0] < high and c[2] not in chosen_texts]
+        if not in_bucket:
+            continue
+        best = max(in_bucket, key=lambda c: c[1])
+        if _is_duplicate(best[2], chosen_texts):
+            continue
+        chosen.append((best[0], best[2]))
+        chosen_texts.append(best[2])
+
+    # 2단계: 남은 자리는 점수가 높은 순으로 채운다.
+    for position, _score, sentence in sorted(candidates, key=lambda c: c[1], reverse=True):
+        if len(chosen) >= limit:
+            break
+        if sentence in chosen_texts or _is_duplicate(sentence, chosen_texts):
+            continue
+        chosen.append((position, sentence))
+        chosen_texts.append(sentence)
+
+    chosen.sort(key=lambda pair: pair[0])  # 영상에 나온 순서대로 돌려준다
+    claims = [Claim(text=sentence) for _, sentence in chosen]
     _attach_timestamps(claims, segments or [])
-    logger.info("검증 대상 주장 %d건 추출 (후보 %d건)", len(claims), len(scored))
+    logger.info("검증 대상 주장 %d건 추출 (후보 %d건, 문장 %d개)",
+                len(claims), len(candidates), len(sentences))
     return claims
 
 
 def _attach_timestamps(claims: list[Claim], segments: list[dict]) -> None:
-    """주장이 영상 어디쯤에서 나온 말인지 붙인다. 사용자가 원문을 확인할 수 있게."""
+    """주장이 영상 어디쯤에서 나온 말인지 붙인다. 사용자가 원문을 확인할 수 있게.
+
+    주장 문장은 화자 표기를 걷어내고 공백을 정리한 상태라 자막 원문과 글자가
+    그대로 맞지 않는다. 양쪽을 같은 방식으로 정규화한 뒤 비교하고, 그래도 안 맞으면
+    핵심어가 가장 많이 겹치는 자막 줄을 고른다.
+    """
+    if not segments:
+        return
+
+    normalized = [(_clean_sentence(s.get("text", "")), s) for s in segments]
+
     for claim in claims:
-        head = claim.text[:20]
-        for segment in segments:
-            if head and head in segment.get("text", ""):
-                claim.start = segment.get("start")
-                claim.end = segment.get("end")
-                break
+        head = claim.text[:12]
+        matched = next((s for text, s in normalized if head and head in text), None)
+
+        if matched is None:
+            # 자막은 한 문장이 여러 줄에 걸쳐 끊기므로 글자 매칭이 실패할 수 있다.
+            tokens = set(_key_tokens(claim.text)[:6])
+            best, best_overlap = None, 0
+            for text, segment in normalized:
+                overlap = len(tokens & set(_key_tokens(text)[:6]))
+                if overlap > best_overlap:
+                    best, best_overlap = segment, overlap
+            matched = best if best_overlap >= 2 else None
+
+        if matched is not None:
+            claim.start = matched.get("start")
+            claim.end = matched.get("end")
 
 
 # 검색에 도움이 안 되는 흔한 낱말과 서술어. 한국어는 조사가 붙어 오므로 접미 제거도 함께 한다.
@@ -305,7 +401,10 @@ _PARTICLE_RE = re.compile(r"(이|가|은|는|을|를|의|에|에서|으로|로|�
 
 def _key_tokens(claim_text: str) -> list[str]:
     """주장에서 식별력이 높은 낱말만 뽑는다. 검색어와 관련성 판정에 함께 쓴다."""
-    cleaned = re.sub(r"[^\w가-힣%\s]", " ", claim_text)
+    # 숫자 사이의 마침표는 남긴다. 사실 확인의 핵심이 수치인데 "6.0%"가 "6"과 "0%"로
+    # 쪼개지면 검색어가 망가진다.
+    cleaned = re.sub(r"(?<!\d)[.](?!\d)", " ", claim_text)
+    cleaned = re.sub(r"[^\w가-힣%.\s]", " ", cleaned)
     scored: list[tuple[float, str]] = []
     seen: set[str] = set()
     for raw in cleaned.split():

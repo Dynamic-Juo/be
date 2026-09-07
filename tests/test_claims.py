@@ -232,3 +232,62 @@ class TestSpeculationFilter:
     def test_이미_일어난_일은_그대로_뽑는다(self):
         text = "6월 소비자물가 상승률이 6%를 기록했다고 통계청이 발표했다."
         assert len(claims.extract_claims(text)) == 1
+
+
+class TestKoreanExtraction:
+    """실측 사례: 2분짜리 물가 뉴스에서 검증 가능한 사실이 8개인데 1건만 뽑히던 문제."""
+
+    NEWS = (
+        "MBC 정오 뉴스입니다. "
+        "소비자 물가 상승률이 IMF 외환위기때인 지난 1998년 이후 최고치를 기록했습니다. "
+        "-(기자) 지난달 소비자 물가 상승률이 6.0%로 집계됐습니다. "
+        "지난해 10월부터 3%대를 유지하던 소비자 물가 상승률은 지난 4월 4%를 넘어선 뒤 매달 뛰고 있습니다. "
+        "공업 제품은 경유 50.7%, 휘발유 31.4% 등에 오르며 전년 대비 9.3% 상승했습니다. "
+        "전기, 가스, 수도도 지난 4월과 5월 인상 영향으로 9.6%나 올랐습니다. "
+        "MBC 뉴스 이덕영입니다."
+    )
+
+    def test_뉴스체_종결어미를_잡는다(self):
+        # "집계됐습니다", "올랐습니다"처럼 -습니다로 끝나는 서술문을 놓치면
+        # 한국어 뉴스에서 사실을 거의 못 잡는다.
+        found = claims.extract_claims(self.NEWS, max_claims=5)
+        assert len(found) >= 4
+        joined = " ".join(c.text for c in found)
+        assert "집계됐습니다" in joined
+        assert "올랐습니다" in joined
+
+    def test_화자_표기를_걷어낸다(self):
+        found = claims.extract_claims(self.NEWS, max_claims=5)
+        assert all(not c.text.startswith("-") for c in found)
+        assert all("(기자)" not in c.text for c in found)
+
+    def test_소수점이_있는_수치가_검색어에서_깨지지_않는다(self):
+        # 사실 확인의 핵심이 수치인데 "6.0%"가 "6"과 "0%"로 쪼개지면 검색이 망가진다.
+        query = claims._search_query("지난달 소비자 물가 상승률이 6.0%로 집계됐습니다")
+        assert "6.0%" in query or "6.0" in query
+
+    def test_한_대목에_쏠리지_않고_영상_전체에_분산된다(self):
+        # 숫자가 몰린 문장이 슬롯을 다 차지하면 뒷부분 내용이 통째로 누락된다.
+        found = claims.extract_claims(self.NEWS, max_claims=3)
+        texts = [c.text for c in found]
+        positions = [self.NEWS.index(t[:15]) for t in texts]
+        assert positions == sorted(positions)  # 영상 순서대로 반환
+        assert max(positions) > len(self.NEWS) * 0.4  # 뒷부분에서도 뽑혔다
+
+    def test_같은_사실의_반복은_한_번만_센다(self):
+        repeated = (
+            "지난달 소비자 물가 상승률이 6.0%로 집계됐습니다. "
+            "지난달 소비자 물가 상승률은 6.0%로 집계된 것으로 나타났습니다. "
+            "전기, 가스, 수도도 인상 영향으로 9.6%나 올랐습니다."
+        )
+        found = claims.extract_claims(repeated, max_claims=5)
+        assert len(found) == 2
+
+    def test_화자_표기가_있어도_발언_위치를_찾는다(self):
+        # 주장에서 "-(기자)"를 떼면 자막 원문과 글자가 안 맞아 타임스탬프가 비었다.
+        # 발언 위치는 사용자가 원문을 확인하는 수단이라 비면 안 된다.
+        text = "-(기자) 지난달 소비자 물가 상승률이 6.0%로 집계됐습니다."
+        segments = [{"start": 31.0, "end": 35.0,
+                     "text": "-(기자) 지난달 소비자 물가 상승률이  6.0%로 집계됐습니다"}]
+        found = claims.extract_claims(text, segments)
+        assert found[0].start == 31.0
