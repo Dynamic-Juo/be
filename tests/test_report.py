@@ -92,7 +92,16 @@ class TestFaceManipulationUnavailable:
     def test_일부_프레임에서만_얼굴을_찾으면_경고를_남기고_판정한다(self):
         axis = report.build_face_manipulation(_deepfake(avg=40.0, frames_with_face=3), _text())
         assert axis.status != report.ManipulationState.UNAVAILABLE.value
-        assert "3장에서만" in axis.detail
+        assert "3장에서 얼굴을 찾았다" in axis.detail
+        assert "정확도가 낮을 수 있다" in axis.detail
+
+    def test_분석_범위는_정상일_때도_남긴다(self):
+        """화면이 이 축에 "분석한 구간·프레임 범위"를 함께 보여준다. 무엇을 봤는지
+        모르면 사용자가 결과의 범위를 가늠할 수 없다."""
+        axis = report.build_face_manipulation(_deepfake(avg=10.0), _text())
+        assert axis.detail and "프레임" in axis.detail
+        # 한계가 없으면 경고 문구는 붙지 않는다
+        assert "정확도가 낮을 수 있다" not in axis.detail
 
 
 class TestFaceManipulationScoring:

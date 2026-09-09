@@ -157,13 +157,14 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         })
 
         progress(0.45, "발언 텍스트 확보 중...", "transcribing")
-        transcript_text, language, coverage_pct, segments = _collect_transcript(
-            media, opts, tracker
-        )
+        transcript = _collect_transcript(media, opts, tracker)
+        transcript_text = transcript.text
+        segments = transcript.segments
 
         progress(0.65, "텍스트 신호 분석 중...", "transcribing")
         txt_report = analyzer.analyze(
-            transcript_text, language, title=media.title, description=media.description
+            transcript_text, transcript.language,
+            title=media.title, description=media.description
         )
 
         progress(0.70, "주장 추출 중...", "extracting_claims")
@@ -179,8 +180,11 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
             "uploader": media.uploader,
             "duration": media.duration,
             "video_id": media.video_id,
-            "language": language,
-            "stt_coverage_pct": coverage_pct,
+            "thumbnail": media.thumbnail,
+            "upload_date": media.upload_date,
+            "language": transcript.language,
+            "stt_coverage_pct": transcript.coverage_pct,
+            "transcript_source": transcript.source,
         }
         final = report.build(
             meta, det_report.__dict__, txt_report.__dict__,
@@ -282,9 +286,26 @@ def _detect_manipulation(frames: list[str], opts: AnalysisOptions,
     return det_report
 
 
+@dataclass
+class TranscriptResult:
+    """발언 텍스트 확보 결과.
+
+    항목이 다섯 개가 되면서 튜플로는 호출부에서 무엇이 무엇인지 읽기 어려워졌다.
+
+    `source`는 화면에서 발언 위치 옆에 "음성 인식" / "자막"으로 표시한다.
+    같은 타임스탬프라도 자막에서 온 것과 음성 인식에서 온 것은 정확도가 달라서,
+    사용자가 원문을 확인하러 갈 때 알고 있어야 한다.
+    """
+
+    text: str = ""
+    language: str | None = None
+    coverage_pct: float | None = None
+    segments: list[dict] = field(default_factory=list)
+    source: str | None = None  # stt | caption
+
+
 def _collect_transcript(media: downloader.VideoMedia, opts: AnalysisOptions,
-                        tracker: StageTracker
-                        ) -> tuple[str, str | None, float | None, list[dict]]:
+                        tracker: StageTracker) -> TranscriptResult:
     """발언 텍스트를 확보한다.
 
     설계 문서의 분기를 그대로 따른다: 쓸 수 있는 자막이 있으면 자막을 쓰고,
@@ -305,19 +326,20 @@ def _collect_transcript(media: downloader.VideoMedia, opts: AnalysisOptions,
                 f"{track.word_count}단어",
                 round(time.monotonic() - started, 2),
             )
-            return track.text, track.language, coverage_pct, track.segments
+            return TranscriptResult(track.text, track.language, coverage_pct,
+                                   track.segments, source="caption")
         logger.info("자막을 읽지 못해 STT로 넘어간다")
 
     return _transcribe(media, opts, tracker)
 
 
 def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
-                tracker: StageTracker) -> tuple[str, str | None, float | None, list[dict]]:
-    """(텍스트, 언어, STT 커버리지 %, 세그먼트)를 반환한다. 실패해도 예외를 올리지 않는다."""
+                tracker: StageTracker) -> TranscriptResult:
+    """음성 인식으로 발언 텍스트를 확보한다. 실패해도 예외를 올리지 않는다."""
     started = time.monotonic()
-    source = media.audio_path or media.video_path
+    audio = media.audio_path or media.video_path
     try:
-        result = transcriber.transcribe(source, model_size=opts.model_size)
+        result = transcriber.transcribe(audio, model_size=opts.model_size)
     except Exception as e:
         # STT가 실패해도 영상 분석 결과는 돌려줄 수 있다. 다만 "무음 영상"과
         # 구분되도록 실패 사실을 stages에 남긴다.
@@ -325,7 +347,7 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
         tracker.mark("transcript", StageState.FAILED, error["message"],
                      round(time.monotonic() - started, 2), error=error)
         logger.error("STT 실패 (%s)", error["code"], exc_info=True)
-        return "", None, None, []
+        return TranscriptResult()
 
     coverage_pct = None
     if media.duration and result.duration:
@@ -345,7 +367,8 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
         f"STT {result.word_count}단어" + (f", 커버리지 {coverage_pct}%" if coverage_pct else ""),
         round(time.monotonic() - started, 2),
     )
-    return result.text, result.language, coverage_pct, result.segments
+    return TranscriptResult(result.text, result.language, coverage_pct,
+                            result.segments, source="stt")
 
 
 def _save_transcript(path: str, media: downloader.VideoMedia,
@@ -378,9 +401,13 @@ def _claim_verification_snapshot(claim_list: list[claims.Claim]) -> report.Claim
         claims=[c.to_dict() for c in claim_list],
         summary={
             "total": len(claim_list),
+            # 처리 상태별 개수. 화면 요약의 "완료 8 · 미완료 0 · 시간 초과 0"이 여기서 나온다.
             "pending": status_counts[claims.PENDING],
             "verifying": status_counts[claims.VERIFYING],
             "done": status_counts[claims.DONE],
+            "failed": status_counts[claims.FAILED],
+            "timed_out": status_counts[claims.TIMED_OUT],
+            # 판정별 개수. 처리 상태와는 별개 축이라 섞지 않는다.
             "supported": verdict_counts[claims.SUPPORTED],
             "refuted": verdict_counts[claims.REFUTED],
             "unverified": verdict_counts[claims.UNVERIFIED],
@@ -438,7 +465,9 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
             status=report.AxisStatus.ANALYZED.value,
             # 주장이 없어도 summary 모양은 유지한다. 소비하는 쪽이 키 유무로
             # 분기하지 않게.
-            summary={"total": 0, "supported": 0, "refuted": 0, "unverified": 0},
+            summary={"total": 0, "pending": 0, "verifying": 0, "done": 0,
+                     "failed": 0, "timed_out": 0,
+                     "supported": 0, "refuted": 0, "unverified": 0},
             detail="검증 가능한 사실 주장을 찾지 못했다. 의견이나 일상 대화 위주의 영상일 수 있다.",
         )
 

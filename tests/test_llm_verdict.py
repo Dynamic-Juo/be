@@ -57,7 +57,7 @@ def test_전문기관_판정이_있으면_LLM을_부르지_않는다():
     rated = claims.Evidence(title="팩트체크", url="https://x", source="factcheck",
                             snippet="확인 결과", rating="거짓",
                             source_type=claims.FACTCHECK)
-    fake = FakeLLM({"verdict": "일치", "reason": "...", "quote": ""})
+    fake = FakeLLM({"verdict": "일치", "reason": "...", "cited": []})
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
     claims.verify_one_claim(claim, [StubProvider([rated])], llm_provider=fake)
@@ -68,7 +68,7 @@ def test_전문기관_판정이_있으면_LLM을_부르지_않는다():
 
 
 def test_근거가_없으면_LLM을_부르지_않고_사유를_남긴다():
-    fake = FakeLLM({"verdict": "일치", "reason": "...", "quote": ""})
+    fake = FakeLLM({"verdict": "일치", "reason": "...", "cited": []})
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
     claims.verify_one_claim(claim, [StubProvider([])], llm_provider=fake)
@@ -83,8 +83,8 @@ def test_LLM이_인용까지_맞으면_판정이_그대로_반영된다():
     fake = FakeLLM({
         "verdict": "일치",
         "reason": "통계청 자료가 같은 수치를 제시한다.",
-        "quote": "소비자물가 상승률은 6.0%로 집계됐다.",
-        "evidence_index": 1,
+        "cited": [{"index": 1, "quote": "소비자물가 상승률은 6.0%로 집계됐다.",
+                   "reason": "같은 기간 수치를 그대로 제시한다."}],
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
@@ -96,13 +96,68 @@ def test_LLM이_인용까지_맞으면_판정이_그대로_반영된다():
     assert claim.insufficient_reason is None
     assert len(fake.calls) == 1
 
+    # 화면은 근거 카드마다 이유를 보여준다 — 근거 쪽에도 붙어 있어야 한다.
+    used = claim.evidence[0]
+    assert used.cited is True
+    assert used.cite_reason == "같은 기간 수치를 그대로 제시한다."
+    assert used.quote == "소비자물가 상승률은 6.0%로 집계됐다."
+
+
+def test_인용은_지목한_근거_안에_있어야_한다():
+    """A 자료의 문장을 B 자료의 근거인 것처럼 붙이면 화면에 틀린 정보가 나간다."""
+    a = _evidence("소비자물가 상승률은 6.0%로 집계됐다.")
+    b = _evidence("추석 성수품 공급을 늘린다.")
+    fake = FakeLLM({
+        "verdict": "일치",
+        "reason": "...",
+        # 2번 근거를 지목하면서 1번 근거의 문장을 인용했다.
+        "cited": [{"index": 2, "quote": "소비자물가 상승률은 6.0%로 집계됐다.",
+                   "reason": "..."}],
+    })
+    claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
+
+    claims.verify_one_claim(claim, [StubProvider([a, b])], llm_provider=fake)
+
+    assert claim.verdict == claims.UNVERIFIED
+    assert claim.insufficient_reason == claims.WEAK_SOURCE
+    assert not any(e.cited for e in claim.evidence)
+
+
+def test_없는_근거_번호를_지목하면_무시한다():
+    fake = FakeLLM({
+        "verdict": "일치", "reason": "...",
+        "cited": [{"index": 99, "quote": "소비자물가 상승률은 6.0%로 집계됐다.",
+                   "reason": "..."}],
+    })
+    claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
+
+    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+
+    assert claim.verdict == claims.UNVERIFIED
+
+
+def test_근거부족이면_붙은_자료는_참고_자료로_남는다():
+    """판정 근거와 참고 자료를 섞으면, 판정하지 않은 것을 판정한 것처럼 보여주게 된다."""
+    fake = FakeLLM({
+        "verdict": "부족", "reason": "직접 확인하지 못했다.",
+        "cited": [], "insufficient_reason": "not_direct",
+    })
+    claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
+
+    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+
+    assert claim.verdict == claims.UNVERIFIED
+    assert claim.evidence  # 참고 자료로는 남는다
+    assert not any(e.cited for e in claim.evidence)
+
 
 def test_인용이_근거에_없으면_판정을_근거부족으로_강등한다():
     """환각 방지의 핵심 — 지어낸 인용은 판정을 통째로 무효화한다."""
     fake = FakeLLM({
         "verdict": "불일치",
         "reason": "자료와 다르다.",
-        "quote": "실제 상승률은 12.7%였다고 한국은행이 발표했다.",  # 근거에 없는 문장
+        "cited": [{"index": 1, "reason": "다르다.",
+                   "quote": "실제 상승률은 12.7%였다고 한국은행이 발표했다."}],  # 근거에 없는 문장
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
@@ -117,7 +172,8 @@ def test_인용_검증은_공백과_따옴표_차이를_허용한다():
     fake = FakeLLM({
         "verdict": "일치",
         "reason": "같은 수치다.",
-        "quote": '"소비자물가  상승률은 6.0%로 집계됐다"',
+        "cited": [{"index": 1, "reason": "같은 수치다.",
+                   "quote": '"소비자물가  상승률은 6.0%로 집계됐다"'}],
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
@@ -130,7 +186,7 @@ def test_근거부족_판정에는_인용_검증을_요구하지_않는다():
     fake = FakeLLM({
         "verdict": "부족",
         "reason": "자료의 기준 시점이 다르다.",
-        "quote": "",
+        "cited": [],
         "insufficient_reason": "time_mismatch",
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
@@ -235,7 +291,8 @@ def test_인용_검증을_끄면_강등하지_않는다(monkeypatch):
     """디버깅용 스위치가 실제로 동작하는지. 운영에서는 켜둔다."""
     monkeypatch.setattr(claims, "config", replace(config, llm_quote_check=False))
     fake = FakeLLM({"verdict": "불일치", "reason": "다르다.",
-                    "quote": "근거에 전혀 없는 문장이다."})
+                    "cited": [{"index": 1, "reason": "다르다.",
+                               "quote": "근거에 전혀 없는 문장이다."}]})
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
     claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)

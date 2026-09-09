@@ -72,6 +72,10 @@ INSUFFICIENT_LABELS = {
 
 # 카드 처리 상태. verdict(지지/반박/유보)와는 별개 축이다 — result-ui.md가 이
 # 둘을 분리해서 표시하라고 정했다: "처리 상태와 검증 판정을 분리한다."
+# 발언 위치의 정확도.
+TIME_EXACT = "exact"
+TIME_APPROX = "approx"
+
 PENDING = "pending"
 VERIFYING = "verifying"
 DONE = "done"
@@ -136,6 +140,19 @@ SOURCE_TYPE_LABELS = {
 PRIMARY_SOURCE_TYPES = (STATISTICS, OFFICIAL)
 
 
+def _publisher_from_url(url: str | None) -> str | None:
+    """원문 링크의 도메인을 발행처로 쓴다.
+
+    네이버 검색 응답에는 언론사명 필드가 없다. 도메인은 정확한 회사명은 아니지만
+    사용자가 어디서 온 자료인지 알아보기에는 충분하고, 언론사명 매핑 표를 코드에
+    박아두는 것보다 낫다. 예쁜 이름이 필요해지면 그건 코드가 아니라 데이터다.
+    """
+    if not url:
+        return None
+    host = urllib.parse.urlparse(url).netloc
+    return host[4:] if host.startswith("www.") else host or None
+
+
 @dataclass
 class Evidence:
     """주장과 대조할 외부 자료 한 건."""
@@ -152,10 +169,22 @@ class Evidence:
     source_type_label: str = ""
     # 1차 출처인지. 화면에서 근거의 무게를 구분해 보여줄 때 쓴다.
     is_primary: bool = False
+    # 발행처. 네이버 검색 응답에는 언론사명이 없어서 원문 링크의 도메인을 쓴다.
+    publisher: str | None = None
+    # 이 자료가 실제로 판정에 쓰였는지. 근거 부족일 때 붙는 자료는 "참고 자료"이지
+    # 판정 근거가 아니다. 화면에서 이 둘을 섞으면 판정하지 않은 것을 판정한 것처럼
+    # 보여주게 된다.
+    cited: bool = False
+    # 이 자료가 주장을 어떻게 뒷받침·반박하는지. 판정에 쓰인 자료에만 채워진다.
+    cite_reason: str | None = None
+    # 위 이유의 근거가 된 원문 발췌. 실제로 이 자료 안에 있는지 대조한 것만 남는다.
+    quote: str | None = None
 
     def __post_init__(self):
         self.source_type_label = SOURCE_TYPE_LABELS.get(self.source_type, "기타")
         self.is_primary = self.source_type in PRIMARY_SOURCE_TYPES
+        if not self.publisher:
+            self.publisher = _publisher_from_url(self.url)
 
 
 @dataclass
@@ -176,6 +205,10 @@ class Claim:
     insufficient_label: str | None = None
     # 판정 근거로 실제 인용한 문장. 인용 검증을 통과한 것만 들어간다.
     quote: str | None = None
+    # 발언 위치의 정확도. exact=자막·세그먼트와 글자가 맞음, approx=핵심어 겹침으로
+    # 추정, None=못 찾음. 화면에서 "00:12 ~ 00:19"와 "약 00:28"을 가르는 값이다.
+    # 음성 인식이 준 구간은 몇 초 어긋날 수 있어서 단정해 보이면 안 된다(U-02).
+    time_precision: str | None = None
     # 이 주장이 영상에서 언급된 모든 위치(M-04: 같은 의미는 병합하고 위치 보관).
     mentions: list[dict] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
@@ -704,6 +737,7 @@ def _attach_timestamps(claims: list[Claim], segments: list[dict]) -> None:
     for claim in claims:
         head = claim.text[:12]
         matched = next((s for text, s in normalized if head and head in text), None)
+        precision = TIME_EXACT if matched is not None else None
 
         if matched is None:
             # 자막은 한 문장이 여러 줄에 걸쳐 끊기므로 글자 매칭이 실패할 수 있다.
@@ -714,10 +748,14 @@ def _attach_timestamps(claims: list[Claim], segments: list[dict]) -> None:
                 if overlap > best_overlap:
                     best, best_overlap = segment, overlap
             matched = best if best_overlap >= 2 else None
+            if matched is not None:
+                # 글자가 아니라 핵심어 겹침으로 고른 줄이라 몇 초 어긋날 수 있다.
+                precision = TIME_APPROX
 
         if matched is not None:
             claim.start = matched.get("start")
             claim.end = matched.get("end")
+            claim.time_precision = precision
 
 
 # 검색에 도움이 안 되는 흔한 낱말과 서술어. 한국어는 조사가 붙어 오므로 접미 제거도 함께 한다.
@@ -844,16 +882,20 @@ _VERDICT_SYSTEM = (
     "1. 제공된 근거 안에 있는 내용만 사용한다. 당신이 알고 있는 다른 지식은 쓰지 않는다.\n"
     "2. 주장이 사실인지 아닌지를 판정하는 것이 아니라, 주어진 근거와 일치하는지를 판정한다.\n"
     "3. 근거가 주장을 직접 확인해주지 못하면 반드시 '부족'으로 답한다. 추측하지 않는다.\n"
-    "4. quote에는 근거 원문에 실제로 있는 문장을 글자 그대로 옮긴다. 요약하거나 "
-    "다시 쓰지 않는다. 인용할 문장이 없으면 빈 문자열로 둔다.\n"
-    "5. 주장과 근거의 기준 시점이 다르면 수치가 달라도 '불일치'가 아니라 '부족'이며 "
+    "4. 판정에 실제로 쓴 근거만 cited에 담는다. 각 항목에는 그 근거의 원문에 실제로 "
+    "있는 문장을 글자 그대로 옮기고(quote), 그 자료가 주장을 어떻게 뒷받침하거나 "
+    "반박하는지 한 문장으로 적는다(reason). 요약하거나 다시 쓰지 않는다.\n"
+    "5. 판정에 쓰지 않은 근거는 cited에 넣지 않는다. 부족으로 판정하면 cited는 "
+    "빈 배열이다.\n"
+    "6. 주장과 근거의 기준 시점이 다르면 수치가 달라도 '불일치'가 아니라 '부족'이며 "
     "사유는 time_mismatch다.\n"
-    "6. 신뢰할 만한 근거들이 서로 다른 값을 말하면 한쪽을 고르지 말고 '부족', "
+    "7. 신뢰할 만한 근거들이 서로 다른 값을 말하면 한쪽을 고르지 말고 '부족', "
     "사유는 source_conflict다.\n"
-    "7. 복합 주장의 일부만 확인되면 '부족', 사유는 partial이다.\n"
+    "8. 복합 주장의 일부만 확인되면 '부족', 사유는 partial이다.\n"
     "JSON 객체 하나만 출력한다:\n"
     '{"verdict":"일치|불일치|부족","reason":"판정 이유 한두 문장",'
-    '"quote":"근거 원문에서 그대로 발췌한 문장","evidence_index":근거번호(정수),'
+    '"cited":[{"index":근거번호(정수),"quote":"그 근거 원문에서 그대로 발췌한 문장",'
+    '"reason":"이 자료가 주장을 뒷받침·반박하는 이유 한 문장"}],'
     '"insufficient_reason":"no_source|not_direct|time_mismatch|source_conflict|weak_source|partial"}'
 )
 
@@ -870,21 +912,45 @@ def _normalize_for_quote(text: str) -> str:
     return _NORMALIZE_RE.sub("", text or "").lower()
 
 
-def _quote_found(quote: str, evidence: list[Evidence]) -> bool:
-    """LLM이 인용한 문장이 실제 근거 원문에 있는지 대조한다.
+def _quote_found_in(quote: str, item: Evidence) -> bool:
+    """인용한 문장이 바로 그 근거 안에 있는지 대조한다.
 
-    이게 환각을 막는 장치다. LLM이 근거에 없는 말을 지어내면 여기서 걸러서
-    판정을 통째로 버린다 — 생성의 위험을 검증으로 막는다.
+    이게 환각을 막는 장치다. LLM이 근거에 없는 말을 지어내면 여기서 걸러낸다.
+
+    "아무 근거에나 있으면 통과"가 아니라 **지목한 근거 안에** 있어야 한다.
+    느슨하게 보면 A 자료의 문장을 B 자료의 근거인 것처럼 붙여도 통과해버리는데,
+    화면은 근거 카드마다 이유를 따로 보여주므로 그건 틀린 정보가 된다.
     """
     needle = _normalize_for_quote(quote)
     # 너무 짧은 인용은 우연히 일치할 수 있어 근거로 인정하지 않는다.
     if len(needle) < 8:
         return False
-    for item in evidence:
-        haystack = _normalize_for_quote(f"{item.title} {item.snippet or ''}")
-        if needle in haystack:
-            return True
-    return False
+    haystack = _normalize_for_quote(f"{item.title} {item.snippet or ''}")
+    return needle in haystack
+
+
+def _apply_citations(raw: object, evidence: list[Evidence]) -> list[Evidence]:
+    """LLM이 지목한 근거에 인용과 이유를 붙인다. 검증을 통과한 것만 돌려준다."""
+    if not isinstance(raw, list):
+        return []
+    cited: list[Evidence] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("index")
+        if not isinstance(index, int) or not 1 <= index <= len(evidence):
+            logger.warning("LLM이 없는 근거 번호를 지목: %r", index)
+            continue
+        item = evidence[index - 1]
+        quote = str(entry.get("quote", "")).strip()
+        if config.llm_quote_check and not _quote_found_in(quote, item):
+            logger.warning("인용 검증 실패 — 근거 %d에 없는 문장: %s", index, quote[:60])
+            continue
+        item.cited = True
+        item.quote = quote or None
+        item.cite_reason = str(entry.get("reason", "")).strip() or None
+        cited.append(item)
+    return cited
 
 
 def _llm_verdict(claim: Claim, evidence: list[Evidence], provider) -> dict | None:
@@ -913,20 +979,19 @@ def _llm_verdict(claim: Claim, evidence: list[Evidence], provider) -> dict | Non
         return None
 
     reason = str(data.get("reason", "")).strip()
-    quote = str(data.get("quote", "")).strip()
+    cited = _apply_citations(data.get("cited"), evidence)
 
-    # 지지·반박을 선언하려면 인용이 실제 근거에 있어야 한다. 없으면 강등한다.
-    if verdict in (SUPPORTED, REFUTED) and config.llm_quote_check:
-        if not _quote_found(quote, evidence):
-            logger.warning(
-                "인용 검증 실패 — 판정 %s를 근거 부족으로 강등 (주장: %s / 인용: %s)",
-                verdict, claim.text[:40], quote[:60])
-            return {
-                "verdict": UNVERIFIED,
-                "reason": "근거 자료에서 판정을 뒷받침하는 문장을 확인하지 못해 판단을 유보한다.",
-                "quote": None,
-                "insufficient_reason": WEAK_SOURCE,
-            }
+    # 일치·불일치를 선언하려면 검증을 통과한 인용이 하나는 있어야 한다.
+    # 하나도 남지 않았다면 근거를 읽고 판단했다고 볼 수 없으므로 강등한다.
+    if verdict in (SUPPORTED, REFUTED) and config.llm_quote_check and not cited:
+        logger.warning("인용 검증을 통과한 근거가 없어 판정 %s를 근거 부족으로 강등: %s",
+                       verdict, claim.text[:40])
+        return {
+            "verdict": UNVERIFIED,
+            "reason": "근거 자료에서 판정을 뒷받침하는 문장을 확인하지 못해 판단을 유보한다.",
+            "quote": None,
+            "insufficient_reason": WEAK_SOURCE,
+        }
 
     insufficient = None
     if verdict == UNVERIFIED:
@@ -936,7 +1001,8 @@ def _llm_verdict(claim: Claim, evidence: list[Evidence], provider) -> dict | Non
     return {
         "verdict": verdict,
         "reason": reason or VERDICT_LABELS[verdict],
-        "quote": quote or None,
+        # 카드 요약에 쓸 대표 인용. 자세한 것은 근거별 quote에 있다.
+        "quote": cited[0].quote if cited else None,
         "insufficient_reason": insufficient,
     }
 

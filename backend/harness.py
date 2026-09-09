@@ -15,6 +15,7 @@ import logging
 import queue
 import threading
 import time
+from datetime import datetime
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -43,6 +44,11 @@ _TERMINAL = (COMPLETED, COMPLETED_WITH_LIMITATIONS, FAILED, TIMED_OUT)
 _STOP = object()
 
 
+def _isoformat(epoch: float) -> str:
+    """epoch 초를 로컬 시간 ISO 문자열로 바꾼다(화면 표시용)."""
+    return datetime.fromtimestamp(epoch).isoformat(timespec="seconds")
+
+
 @dataclass
 class Job:
     id: str
@@ -62,8 +68,31 @@ class Job:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
+    @property
+    def display_id(self) -> str:
+        """사람이 옮겨 적을 수 있는 분석 ID(`CN-A1B2-C3D4`).
+
+        M-06이 "결과 화면에 표시된 분석 ID를 피드백 폼에 첨부"하도록 정했는데,
+        32자 hex는 사람이 옮겨 적을 수 없다. job id 앞부분에서 만들어 짧게 줄이되
+        서버 로그의 job_id로 되짚을 수 있도록 계산식을 고정한다.
+
+        앞 8자만 쓰므로 이론상 충돌할 수 있다. 사용자 신고를 job과 잇는 용도이지
+        조회 키가 아니므로(조회는 job_id로 한다) 이 정도로 충분하다.
+        """
+        head = self.id[:8].upper()
+        return f"CN-{head[:4]}-{head[4:]}"
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        # 화면이 분석 ID와 분석 시각을 결과 요약에 함께 표시한다. epoch 실수는
+        # 그대로 쓰기 어려우므로 표시용 문자열을 같이 내려준다.
+        data["display_id"] = self.display_id
+        data["created_at_iso"] = _isoformat(self.created_at)
+        data["updated_at_iso"] = _isoformat(self.updated_at)
+        data["elapsed_sec"] = round(
+            (time.time() if not self.finished else self.updated_at) - self.created_at, 1
+        )
+        return data
 
     @property
     def finished(self) -> bool:

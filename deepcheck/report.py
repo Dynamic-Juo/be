@@ -115,6 +115,9 @@ class TranscriptInfo:
     language: str | None = None
     word_count: int | None = None
     coverage_pct: float | None = None
+    # 이 텍스트를 어디서 얻었는지(stt | caption). 발언 위치의 정확도가 달라서
+    # 화면에서 "음성 인식" / "자막"으로 함께 보여준다.
+    source: str | None = None
     # 클릭베이트·주장 강도는 미디어 조작의 근거가 아니므로 점수에 반영하지 않고
     # 참고 정보로만 노출한다. 자극적인 제목의 진짜 영상이 AI 가짜 쪽으로 밀리던
     # 개편 전 동작을 막기 위한 구분이다.
@@ -233,14 +236,17 @@ def build_face_manipulation(deepfake: dict, text: dict) -> ManipulationAxis:
     risk = min(round(risk, 1), 100.0)
     signals["combined_risk"] = risk
 
-    detail = None
+    # 화면은 이 축에 "판단 근거 요약과 분석한 구간·프레임 범위"를 함께 보여준다.
+    # 무엇을 봤는지 모르면 사용자가 결과의 범위를 가늠할 수 없으므로, 정상일 때도
+    # 분석 범위를 남긴다. 한계가 있으면 그 뒤에 덧붙인다.
     if visual_risk is None:
         detail = f"{visual_unavailable_reason} 제목·설명의 자가표기만으로 판단했다."
-    elif not classifier_used:
-        detail = "딥페이크 분류기를 사용하지 못해 휴리스틱만으로 영상을 판단했다."
-    elif frames_with_face < frames_analyzed:
-        detail = (f"프레임 {frames_analyzed}장 중 {frames_with_face}장에서만 얼굴을 찾았다. "
-                  "나머지는 전체 프레임으로 분석해 정확도가 낮을 수 있다.")
+    else:
+        detail = f"프레임 {frames_analyzed}장을 분석해 그중 {frames_with_face}장에서 얼굴을 찾았다."
+        if not classifier_used:
+            detail += " 딥페이크 분류기를 사용하지 못해 휴리스틱만으로 판단했다."
+        elif frames_with_face < frames_analyzed:
+            detail += " 얼굴을 찾지 못한 프레임은 전체 화면으로 분석해 정확도가 낮을 수 있다."
 
     evidence = list(deepfake.get("evidence", [])) + list(text.get("self_disclosure_evidence", []))
     status = categorize(risk)
@@ -277,7 +283,9 @@ def build_whole_video_generation(text: dict) -> ManipulationAxis:
     return ManipulationAxis(
         status=ManipulationState.UNAVAILABLE.value,
         status_label=MANIPULATION_LABELS[ManipulationState.UNAVAILABLE.value],
-        detail="영상 전체 AI 생성 탐지 모델이 아직 선정되지 않았다.",
+        detail=("영상 전체가 AI로 생성됐는지 판별하는 모델이 아직 선정되지 않았다. "
+                "제목·설명의 자가표기만 확인했으며, 표기가 없다고 해서 AI 생성이 "
+                "아니라는 뜻은 아니다."),
         signals=signals,
     )
 
@@ -334,6 +342,7 @@ def build(meta: dict, deepfake: dict, text: dict, stages: dict,
             language=meta.get("language"),
             word_count=text.get("word_count"),
             coverage_pct=meta.get("stt_coverage_pct"),
+            source=meta.get("transcript_source"),
             signals={
                 "clickbait": text.get("clickbait_risk", 0),
                 "claim_strength": text.get("claim_risk", 0),
