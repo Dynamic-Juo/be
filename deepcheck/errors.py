@@ -46,6 +46,18 @@ class UnsupportedURLError(DeepCheckError):
     http_status = 422
 
 
+class UnsupportedVideoError(DeepCheckError):
+    """URL은 정상이지만 우리가 지원하는 영상 조건에 맞지 않는다.
+
+    M-02가 정한 지원 범위는 "주 사용 언어가 한국어이고 공개 상태가 public인
+    YouTube Shorts(최대 3분)"다. 조건 밖 영상은 시스템 실패가 아니라 정상적인
+    거절이므로, 다운로드 실패와 구분해서 사용자에게 이유를 알려준다.
+    """
+
+    code = "unsupported_video"
+    http_status = 422
+
+
 class DownloadError(DeepCheckError):
     """영상을 받지 못했다. 비공개·삭제·지역제한·네트워크 등 외부 원인이 대부분이다."""
 

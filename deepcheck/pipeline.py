@@ -14,15 +14,18 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-from . import analyzer, captions, claims, deepfake, downloader, report, transcriber
+from . import analyzer, captions, claims, deepfake, downloader, llm, report, transcriber
 from .config import config, default_vlm_model
-from .errors import DeepCheckError, UnsupportedURLError, as_error_dict
+from .errors import (DeepCheckError, UnsupportedURLError, UnsupportedVideoError,
+                     as_error_dict)
 from .report import StageState, StageStatus
 
 logger = logging.getLogger(__name__)
@@ -50,6 +53,8 @@ class AnalysisOptions:
     enable_claim_verification: bool = True
     # manual: 사람이 단 자막만 사용 / any: 자동 자막까지 / off: 항상 STT
     caption_policy: str = field(default_factory=lambda: config.caption_policy)
+    # M-02의 지원 조건(길이 등)을 강제할지. CLI로 긴 영상을 실험할 때는 끌 수 있다.
+    enforce_input_limits: bool = True
     workdir: str | None = None
     keep_workdir: bool = False
     save_transcript: str | None = None
@@ -130,6 +135,7 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         progress(0.05, "영상 다운로드 중...", "collecting")
         with tracker.run("download"):
             media = downloader.download(url, tmp, caption_policy=opts.caption_policy)
+        _check_supported_video(media, opts)
 
         progress(0.25, "프레임 추출 중...", "collecting")
         frames = _extract_frames(media, tmp, opts, tracker)
@@ -208,6 +214,27 @@ def _is_supported_url(url: str) -> bool:
     except ValueError:
         return False
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _check_supported_video(media: downloader.VideoMedia, opts: AnalysisOptions) -> None:
+    """M-02의 지원 조건을 확인한다. 조건 밖이면 분석하지 않고 이유를 알려준다.
+
+    비공개·삭제·연령 제한은 다운로드 단계에서 이미 실패하므로 여기까지 오지 않는다.
+    여기서 보는 건 받아온 뒤에야 알 수 있는 것(길이)이다.
+
+    한국어 여부는 분석 전에 확인할 방법이 없어서 검사하지 않는다. 인식된 언어는
+    결과에 담겨 나가므로 화면에서 사후 안내로 처리한다(팀 결정).
+    """
+    if not opts.enforce_input_limits:
+        return
+    limit = config.max_video_sec
+    if limit > 0 and media.duration and media.duration > limit:
+        minutes = int(media.duration // 60)
+        seconds = int(media.duration % 60)
+        raise UnsupportedVideoError(
+            f"{minutes}분 {seconds}초 영상이다. 지금은 {limit // 60}분 이하의 "
+            "YouTube Shorts만 분석할 수 있다."
+        )
 
 
 def _extract_frames(media: downloader.VideoMedia, tmp: str, opts: AnalysisOptions,
@@ -385,8 +412,14 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
             detail="발언 텍스트를 확보하지 못해 검증할 주장을 뽑을 수 없다.",
         )
 
+    # LLM 제공자는 주장당 새로 만들지 않고 한 번만 만들어 재사용한다.
+    llm_provider = llm.get_provider()
+    if llm_provider is not None:
+        logger.info("LLM 제공자 활성: %s (%s)", config.llm_provider, config.llm_model)
+
     try:
-        extracted = claims.extract_claims(text, segments, max_claims=config.max_claims)
+        extract = claims.select_extractor(llm_provider)
+        extracted = extract(text, segments, config.max_claims)
     except Exception as e:
         error = as_error_dict(e, stage="claim_verification")
         tracker.mark("claim_verification", StageState.FAILED, error["message"],
@@ -414,19 +447,42 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
     progress(0.75, f"주장 {len(extracted)}건 검증 중...", "verifying")
 
     active_providers = claims.default_providers()
-    timed_out_count = 0
-    for i, claim in enumerate(extracted):
-        if time.monotonic() > deadline:
-            # 소프트 타임아웃: 이미 진행 중인 단계를 강제로 끊진 않지만, 남은 주장은
-            # 검색을 시도하지 않고 시간 초과로 채운다.
-            for remaining in extracted[i:]:
-                remaining.status = claims.TIMED_OUT
-                timed_out_count += 1
-            logger.warning("전체 처리 시간(%.0fs) 초과 — 남은 주장 %d건은 시간 초과로 처리",
-                           config.max_processing_sec, timed_out_count)
-            break
+    # 카드 갱신 통지가 서로 겹쳐서 반쯤 만들어진 스냅샷이 나가지 않도록 잠근다.
+    notify_lock = threading.Lock()
 
-        claims.verify_one_claim(claim, active_providers)
+    def verify_and_notify(claim: claims.Claim) -> bool:
+        """주장 하나를 검증하고 그 시점의 전체 스냅샷을 통지한다. 시간 초과면 False."""
+        if time.monotonic() > deadline:
+            # 소프트 타임아웃: 이미 시작한 검증을 끊지는 않고, 아직 시작하지 않은
+            # 주장만 시간 초과로 채운다.
+            claim.status = claims.TIMED_OUT
+            claim.insufficient_reason = claims.TIMEOUT
+            claim.insufficient_label = claims.INSUFFICIENT_LABELS[claims.TIMEOUT]
+            return False
+        try:
+            claims.verify_one_claim(claim, active_providers, llm_provider=llm_provider)
+        except Exception:
+            # 주장 하나가 실패해도 나머지는 계속한다(U-05).
+            claim.status = claims.FAILED
+            logger.exception("주장 검증 실패: %s", claim.text[:40])
+        with notify_lock:
+            partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
+        return True
+
+    workers = max(1, min(config.claim_workers, len(extracted)))
+    logger.info("주장 %d건 검증 시작 (동시 %d건)", len(extracted), workers)
+    if workers == 1:
+        for claim in extracted:
+            verify_and_notify(claim)
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="claim") as pool:
+            list(pool.map(verify_and_notify, extracted))
+
+    timed_out_count = sum(1 for c in extracted if c.status == claims.TIMED_OUT)
+    if timed_out_count:
+        logger.warning("전체 처리 시간(%.0fs) 초과 — 주장 %d건은 시간 초과로 처리",
+                       config.max_processing_sec, timed_out_count)
+    with notify_lock:
         partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
 
     counts = Counter(c.verdict for c in extracted if c.status == claims.DONE)

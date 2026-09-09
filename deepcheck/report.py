@@ -69,11 +69,9 @@ LEVEL_CAUTION = "주의 필요"
 LEVEL_LOW = "낮음"
 LEVEL_UNKNOWN = "판단 불가"
 
-_VERDICT_LABELS = {
-    "supported": "지지",
-    "refuted": "반박",
-    "unverified": "판단 유보",
-}
+# 판정 이름은 claims.py가 유일한 정의처다. 여기서 복제하면 예전처럼 두 곳이
+# 조용히 어긋난다(등급 경계가 텍스트 출력과 HTML에서 달랐던 사고와 같은 종류).
+from .claims import INSUFFICIENT_LABELS, VERDICT_LABELS  # noqa: E402
 
 
 @dataclass
@@ -409,13 +407,20 @@ def format_text(r: AnalysisReport) -> str:
         if claim.get("start") is not None:
             minutes, seconds = divmod(int(claim["start"]), 60)
             when = f"[{minutes:02d}:{seconds:02d}] "
-        lines.append(f"    · ({_VERDICT_LABELS.get(claim.get('verdict'), '판단 유보')}) "
-                     f"{when}{claim.get('text', '')[:80]}")
+        label = claim.get("verdict_label") or VERDICT_LABELS.get(
+            claim.get("verdict"), "근거 부족")
+        lines.append(f"    · ({label}) {when}{claim.get('text', '')[:80]}")
         if claim.get("reason"):
             lines.append(f"        사유: {claim['reason']}")
+        if claim.get("insufficient_label"):
+            lines.append(f"        근거 부족 사유: {claim['insufficient_label']}")
+        if claim.get("quote"):
+            lines.append(f"        인용: \"{claim['quote'][:100]}\"")
         for item in claim.get("evidence", [])[:2]:
             rating = f" — {item['rating']}" if item.get("rating") else ""
-            lines.append(f"        근거: [{item.get('source')}] {item.get('title', '')[:60]}{rating}")
+            kind = item.get("source_type_label") or item.get("source_type") or ""
+            tag = f"{item.get('source')}/{kind}" if kind else str(item.get("source"))
+            lines.append(f"        근거: [{tag}] {item.get('title', '')[:60]}{rating}")
             if item.get("url"):
                 lines.append(f"              {item['url']}")
     lines.append("")
@@ -446,7 +451,8 @@ def _claims_html(cv: ClaimVerification, esc) -> str:
         return ""
     rows = []
     for claim in cv.claims:
-        label = _VERDICT_LABELS.get(claim.get("verdict"), "판단 유보")
+        label = claim.get("verdict_label") or VERDICT_LABELS.get(
+            claim.get("verdict"), "근거 부족")
         links = "".join(
             f'<li><a href="{esc(item.get("url"))}" rel="noopener noreferrer" '
             f'target="_blank">{esc(item.get("title"))}</a> '
