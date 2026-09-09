@@ -96,6 +96,19 @@ class ServerBusyError(DeepCheckError):
     retryable = True
 
 
+class SessionBusyError(DeepCheckError):
+    """이 세션이 이미 분석을 하나 돌리고 있다.
+
+    M-07이 "브라우저 세션별 활성 분석도 1건으로 제한한다"로 정했다. 대기열
+    포화(ServerBusyError)와는 원인이 달라서 구분한다 — 사용자에게 "서버가
+    바쁩니다"가 아니라 "먼저 하던 분석이 끝나야 합니다"라고 말해야 한다.
+    """
+
+    code = "session_busy"
+    http_status = 429
+    retryable = True
+
+
 def as_error_dict(exc: BaseException, stage: str | None = None) -> dict:
     """예외를 응답·job 기록에 쓸 dict로 바꾼다.
 

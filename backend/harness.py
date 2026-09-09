@@ -15,14 +15,14 @@ import logging
 import queue
 import threading
 import time
-from datetime import datetime
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import Any
 
 from deepcheck.config import config
-from deepcheck.errors import as_error_dict
+from deepcheck.errors import SessionBusyError, as_error_dict
 from deepcheck.logging_setup import current_job_id
 from deepcheck.pipeline import AnalysisOptions, analyze_url
 
@@ -119,6 +119,13 @@ class Harness:
         logger.info("Hermes 시작: 워커 %d, 대기열 상한 %d", self.max_workers, self.backlog)
 
     # ---- submission ----
+    def _active_job_for_session_locked(self, session_id: str) -> Job | None:
+        """이 세션이 아직 끝나지 않은 분석을 갖고 있으면 그 job. 락 안에서 부른다."""
+        for job in self._jobs.values():
+            if not job.finished and session_id in job.session_ids:
+                return job
+        return None
+
     def submit(self, url: str, session_id: str, params: dict[str, Any]) -> tuple[Job, bool]:
         """작업을 큐에 넣는다. (job, 재사용여부)를 반환한다.
 
@@ -133,6 +140,16 @@ class Harness:
                     existing.session_ids.append(session_id)
                 logger.info("중복 URL 요청 — 기존 job 재사용: %s", existing_id)
                 return existing, True
+
+            # 같은 URL 재사용은 위에서 걸렀으니, 여기 걸리는 건 이 세션이 다른
+            # 영상을 이미 돌리고 있는 경우다(M-07: 세션별 활성 분석 1건).
+            active = self._active_job_for_session_locked(session_id)
+            if active is not None:
+                logger.info("세션 %s가 이미 분석 중(job %s) — 새 요청 거절",
+                            session_id, active.id)
+                raise SessionBusyError(
+                    "이미 분석 중인 영상이 있습니다. 완료된 뒤에 다시 시도해주세요."
+                )
 
             job = Job(id=uuid.uuid4().hex, session_id=session_id, url=url, params=params,
                       session_ids=[session_id])

@@ -477,3 +477,35 @@ def test_분석_ID는_사람이_옮겨_적을_수_있는_길이다():
     assert data["display_id"] == "CN-AC6A-500F"
     assert data["created_at_iso"]
     assert isinstance(data["elapsed_sec"], float)
+
+
+# --- 검증할 주장이 없을 때 (U-03) ---------------------------------------
+
+def test_검증할_주장이_없으면_분석_불가와_구분한다(monkeypatch):
+    """카드가 0개인 것과 분석을 못 한 것은 사용자에게 완전히 다른 이야기다."""
+    from deepcheck import pipeline, report
+
+    tracker = pipeline.StageTracker()
+    result = pipeline._verify_claims(
+        "안녕하세요. 오늘 날씨가 참 좋네요. 다들 좋은 하루 보내세요.",
+        [], pipeline.AnalysisOptions(), tracker,
+        deadline=float("inf"), progress=lambda *a: None, partial=lambda *a: None,
+    )
+
+    assert result.status == report.AxisStatus.NO_CLAIMS.value
+    assert result.status != report.AxisStatus.UNAVAILABLE.value
+    assert result.summary["total"] == 0
+    assert result.detail  # 왜 없는지 안내가 있다
+
+
+def test_발언_텍스트가_없으면_분석_불가다():
+    """주장이 없는 것과 발언 텍스트를 못 얻은 것은 다르다."""
+    from deepcheck import pipeline, report
+
+    tracker = pipeline.StageTracker()
+    result = pipeline._verify_claims(
+        "", [], pipeline.AnalysisOptions(), tracker,
+        deadline=float("inf"), progress=lambda *a: None, partial=lambda *a: None,
+    )
+
+    assert result.status == report.AxisStatus.UNAVAILABLE.value

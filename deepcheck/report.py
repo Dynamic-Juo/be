@@ -34,6 +34,10 @@ class StageState(str, Enum):
 class AxisStatus(str, Enum):
     ANALYZED = "analyzed"
     UNAVAILABLE = "unavailable"
+    # 분석은 정상이었지만 검증할 주장이 하나도 없었다. U-03이 이 경우를 개별 주장
+    # 판정이 아니라 화면 상태로 구분하라고 정했다 — 카드가 0개인 것과 분석을 못 한
+    # 것은 사용자에게 완전히 다른 이야기다.
+    NO_CLAIMS = "no_claims"
 
 
 class AnalysisState(str, Enum):

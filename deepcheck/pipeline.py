@@ -462,7 +462,7 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
         tracker.mark("claim_verification", StageState.OK, "검증 대상 주장 없음",
                      round(time.monotonic() - started, 2))
         return report.ClaimVerification(
-            status=report.AxisStatus.ANALYZED.value,
+            status=report.AxisStatus.NO_CLAIMS.value,
             # 주장이 없어도 summary 모양은 유지한다. 소비하는 쪽이 키 유무로
             # 분기하지 않게.
             summary={"total": 0, "pending": 0, "verifying": 0, "done": 0,

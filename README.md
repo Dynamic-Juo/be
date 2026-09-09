@@ -132,8 +132,23 @@ pytest
 | GET | `/health` | `{status, harness:{...}}` |
 
 분석은 무거우므로 job 방식입니다. POST로 `job_id`를 받고 2~3초 간격으로 폴링하세요.
-같은 URL이 이미 처리 중이면 새 job을 만들지 않고 기존 job을 재사용합니다(`deduplicated: true`).
-대기열이 가득 차면 `429`를 반환하니 잠시 후 재시도하면 됩니다.
+같은 URL이 이미 처리 중이면 새 job을 만들지 않고 기존 job을 재사용합니다(`deduplicated: true`) —
+사용자가 새로고침해도 거절당하지 않습니다.
+
+`429`는 두 가지 원인으로 나옵니다. `error.code`로 구분해서 안내해주세요.
+
+| code | 원인 | 안내 |
+| --- | --- | --- |
+| `session_busy` | 이 세션이 **다른 영상**을 이미 분석 중 (M-07: 세션당 1건) | "이미 분석 중인 영상이 있습니다" |
+| `server_busy` | 서버 대기열이 가득 참 | "요청이 많습니다. 잠시 후 다시" |
+
+`GET /api/jobs/{job_id}` 응답에는 결과 외에 화면에 필요한 값이 함께 옵니다.
+
+| 필드 | 용도 |
+| --- | --- |
+| `display_id` | `CN-A1B2-C3D4` — 화면에 표시하고 피드백 폼에 첨부할 분석 ID |
+| `created_at_iso` | 분석 시각 |
+| `elapsed_sec` | 경과 시간(초). 완료되면 총 소요 시간으로 고정됩니다 |
 
 ### job 상태값
 
@@ -191,7 +206,7 @@ pytest
     "signals": { "self_disclosure_risk": 0, "model": null }
   },
   "claim_verification": {
-    "status": "analyzed",                // 또는 "unavailable"
+    "status": "analyzed",                // analyzed | no_claims | unavailable
     "summary": {
       "total": 8,
       // 처리 상태별 — 화면 요약의 "완료 8 · 미완료 0 · 시간 초과 0"
@@ -293,6 +308,16 @@ pytest
   서버가 별도 신호를 주지 않습니다.
 - 출처 유형 라벨이 시안과 조금 다릅니다. 시안의 `정부·공공기관`은 서버에서 `공식 발표`(`official`)로
   나갑니다. 화면 문구를 바꾸실지, 서버 라벨을 맞출지 정해주시면 맞추겠습니다.
+
+#### `claim_verification.status`
+
+| 값 | 의미 | 화면 |
+| --- | --- | --- |
+| `analyzed` | 주장을 뽑아 검증했다 | 카드 목록 |
+| `no_claims` | 분석은 정상이었지만 **검증할 주장이 없었다** | 카드 목록 대신 안내 문구(`detail`) |
+| `unavailable` | 발언 텍스트를 못 얻어 **검증 자체를 못 했다** | 분석 불가 안내 |
+
+`no_claims`와 `unavailable`을 같게 다루면 안 됩니다. 앞은 "볼 게 없었다"이고 뒤는 "보지 못했다"입니다.
 
 #### 근거 부족 사유 (`insufficient_reason`)
 
