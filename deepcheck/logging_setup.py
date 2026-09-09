@@ -18,12 +18,40 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from contextlib import contextmanager
 from contextvars import ContextVar
 
 from .config import config
 
 current_job_id: ContextVar[str] = ContextVar("current_job_id", default="-")
 current_request_id: ContextVar[str] = ContextVar("current_request_id", default="-")
+
+def carry_context():
+    """지금의 job/request 식별자를 캡처해, 다른 스레드에서 되살리는 컨텍스트 매니저를 만든다.
+
+    contextvar는 새 스레드로 자동 전파되지 않는다. 그대로 두면 병렬 구간의 로그가
+    전부 `job:-`로 남아서 어느 작업의 로그인지 알 수 없다 — 워커가 여러 개 도는
+    서버에서는 사실상 디버깅이 불가능해진다.
+
+    `contextvars.copy_context()`를 그대로 넘기면 안 된다. Context 객체 하나는 동시에
+    두 스레드가 진입할 수 없어서 `cannot enter context ... is already entered`로
+    터진다. 값만 캡처해서 각 스레드가 자기 컨텍스트에 다시 심는다.
+    """
+    job = current_job_id.get()
+    request = current_request_id.get()
+
+    @contextmanager
+    def apply():
+        job_token = current_job_id.set(job)
+        request_token = current_request_id.set(request)
+        try:
+            yield
+        finally:
+            current_request_id.reset(request_token)
+            current_job_id.reset(job_token)
+
+    return apply
+
 
 _TEXT_FORMAT = "%(asctime)s %(levelname)-7s [req:%(request_id)s job:%(job_id)s] %(name)s | %(message)s"
 _LOGGER_ROOTS = ("deepcheck", "backend", "uvicorn.error", "uvicorn.access")

@@ -267,3 +267,44 @@ def test_출처_유형에_따라_1차_출처가_구분된다():
                            source_type=claims.NEWS)
     assert stat.is_primary and stat.source_type_label == "통계 원문"
     assert not news.is_primary and news.source_type_label == "언론 보도"
+
+
+# --- 병렬 검증 시 로그 상관관계 -------------------------------------------
+
+def test_병렬_검증에도_job_id가_로그에_남는다(monkeypatch, caplog):
+    """워커가 여러 개 도는 서버에서 job_id 없는 로그는 추적이 불가능하다."""
+    from deepcheck import pipeline
+    from deepcheck.logging_setup import current_job_id
+
+    import threading
+    seen = []
+    seen_lock = threading.Lock()
+    barrier = threading.Barrier(3)
+
+    def fake_verify(claim, providers, evidence_per_claim=None, llm_provider=None):
+        # 실제로 겹쳐 돌게 만든다. 순차로 끝나버리면 동시 진입 버그를 못 잡는다
+        # (처음 작성한 테스트가 정확히 그래서 통과했고, 컨테이너에서만 터졌다).
+        barrier.wait(timeout=5)
+        with seen_lock:
+            seen.append(current_job_id.get())
+        claim.status = claims.DONE
+        return claim
+
+    monkeypatch.setattr(claims, "verify_one_claim", fake_verify)
+    monkeypatch.setattr(claims, "default_providers", lambda *a, **k: [])
+    monkeypatch.setattr(pipeline, "config", replace(config, claim_workers=3))
+
+    token = current_job_id.set("job-abc")
+    try:
+        tracker = pipeline.StageTracker()
+        pipeline._verify_claims(
+            "소비자물가가 6.0% 올랐습니다. 성수품 공급을 1.4배로 늘립니다. "
+            "42조원 규모의 보증자금을 공급합니다.",
+            [], pipeline.AnalysisOptions(), tracker,
+            deadline=float("inf"), progress=lambda *a: None, partial=lambda *a: None,
+        )
+    finally:
+        current_job_id.reset(token)
+
+    assert seen, "검증이 한 건도 실행되지 않았다"
+    assert all(job == "job-abc" for job in seen), f"job_id가 유실됨: {seen}"

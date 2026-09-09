@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
 import time
 import urllib.error
 import urllib.parse
@@ -190,24 +192,59 @@ class EvidenceProvider(Protocol):
         """주장과 관련된 자료를 찾는다. 실패하면 빈 목록을 반환한다."""
 
 
+# 호스트별 요청 간격. 주장을 3건 병렬로 검증하면서 같은 호스트를 동시에 때리자
+# 위키백과가 429를 돌려주기 시작했고, 근거가 통째로 비었다. 병렬은 유지하되
+# 같은 호스트로 나가는 요청만 줄 세운다 — 서로 다른 제공자는 여전히 동시에 돈다.
+_HOST_LOCKS: dict[str, threading.Lock] = {}
+_HOST_LAST_CALL: dict[str, float] = {}
+_HOST_REGISTRY_LOCK = threading.Lock()
+
+
+def _host_gate(host: str) -> threading.Lock:
+    with _HOST_REGISTRY_LOCK:
+        return _HOST_LOCKS.setdefault(host, threading.Lock())
+
+
 def _http_get_json(url: str, timeout: int, headers: dict | None = None) -> dict | None:
     endpoint = url.split("?")[0]
-    merged = {"User-Agent": "ConanAI/0.2 (research)"}
+    host = urllib.parse.urlparse(url).netloc
+    merged = {
+        # 위키미디어는 연락처가 없는 요청을 더 강하게 제한한다.
+        "User-Agent": "ConanAI/0.2 (hackathon research; https://github.com/Dynamic-Juo)",
+        "Accept": "application/json",
+    }
     if headers:
         merged.update(headers)
-    request = urllib.request.Request(url, headers=merged)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            logger.warning("근거 검색이 속도 제한에 걸렸습니다(%s) — 이번 주장은 건너뜁니다", endpoint)
-        else:
-            logger.warning("근거 검색 요청 실패(%s): HTTP %s", endpoint, e.code)
-    except urllib.error.URLError as e:
-        logger.warning("근거 검색 요청 실패(%s): %s", endpoint, e.reason)
-    except Exception as e:
-        logger.warning("근거 검색 응답 처리 실패(%s): %s", endpoint, e)
+
+    attempts = config.evidence_retry + 1
+    for attempt in range(attempts):
+        with _host_gate(host):
+            gap = config.evidence_min_interval_sec - (
+                time.monotonic() - _HOST_LAST_CALL.get(host, 0.0))
+            if gap > 0:
+                time.sleep(gap)
+            _HOST_LAST_CALL[host] = time.monotonic()
+            try:
+                request = urllib.request.Request(url, headers=merged)
+                with urllib.request.urlopen(request, timeout=timeout) as resp:
+                    return json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt < attempts - 1:
+                    backoff = config.evidence_min_interval_sec * (attempt + 2)
+                    logger.info("속도 제한(%s) — %.1f초 후 재시도 %d/%d",
+                                endpoint, backoff, attempt + 1, attempts - 1)
+                    time.sleep(backoff)
+                    continue
+                if e.code == 429:
+                    logger.warning("근거 검색이 속도 제한에 걸렸습니다(%s) — 이번 주장은 건너뜁니다",
+                                   endpoint)
+                else:
+                    logger.warning("근거 검색 요청 실패(%s): HTTP %s", endpoint, e.code)
+            except urllib.error.URLError as e:
+                logger.warning("근거 검색 요청 실패(%s): %s", endpoint, e.reason)
+            except Exception as e:
+                logger.warning("근거 검색 응답 처리 실패(%s): %s", endpoint, e)
+        return None
     return None
 
 

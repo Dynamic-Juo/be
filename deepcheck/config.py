@@ -113,6 +113,11 @@ class Config:
     claim_workers: int = 3
     evidence_per_claim: int = 3
     evidence_timeout_sec: int = 8
+    # 같은 호스트로 나가는 근거 검색 요청의 최소 간격(초)과 429 재시도 횟수.
+    # 주장을 병렬로 검증하면 같은 API를 동시에 때리게 되고, 위키백과는 그걸
+    # 429로 막는다. 병렬은 유지하되 호스트 단위로만 줄을 세운다.
+    evidence_min_interval_sec: float = 0.35
+    evidence_retry: int = 2
     # 주장 전체에 쓸 수 있는 근거 검색 시간 총량. 넘기면 남은 주장은 검색 없이 유보한다.
     # 응답이 하염없이 늦어지는 것보다 "일부는 확인하지 못했다"고 말하는 편이 낫다.
     evidence_budget_sec: int = 30
@@ -186,6 +191,9 @@ def load_config() -> Config:
         claim_workers=_env_int("CLAIM_WORKERS", Config.claim_workers),
         evidence_per_claim=_env_int("EVIDENCE_PER_CLAIM", Config.evidence_per_claim),
         evidence_timeout_sec=_env_int("EVIDENCE_TIMEOUT_SEC", Config.evidence_timeout_sec),
+        evidence_min_interval_sec=_env_float(
+            "EVIDENCE_MIN_INTERVAL_SEC", Config.evidence_min_interval_sec),
+        evidence_retry=_env_int("EVIDENCE_RETRY", Config.evidence_retry),
         evidence_providers=_env_str("EVIDENCE_PROVIDERS", Config.evidence_providers),
         naver_client_id=_env_str("NAVER_CLIENT_ID", Config.naver_client_id),
         naver_client_secret=_env_str("NAVER_CLIENT_SECRET", Config.naver_client_secret),

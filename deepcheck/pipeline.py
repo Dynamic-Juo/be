@@ -24,6 +24,7 @@ from typing import Callable
 
 from . import analyzer, captions, claims, deepfake, downloader, llm, report, transcriber
 from .config import config, default_vlm_model
+from .logging_setup import carry_context
 from .errors import (DeepCheckError, UnsupportedURLError, UnsupportedVideoError,
                      as_error_dict)
 from .report import StageState, StageStatus
@@ -475,8 +476,16 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
         for claim in extracted:
             verify_and_notify(claim)
     else:
+        # job_id는 새 스레드로 자동 전파되지 않는다. 안 넘기면 병렬 구간의 로그가
+        # 전부 job:- 로 남아 어느 작업의 로그인지 알 수 없게 된다.
+        with_context = carry_context()
+
+        def run_in_worker(claim: claims.Claim) -> bool:
+            with with_context():
+                return verify_and_notify(claim)
+
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="claim") as pool:
-            list(pool.map(verify_and_notify, extracted))
+            list(pool.map(run_in_worker, extracted))
 
     timed_out_count = sum(1 for c in extracted if c.status == claims.TIMED_OUT)
     if timed_out_count:
