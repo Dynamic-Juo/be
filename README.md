@@ -158,17 +158,27 @@ pytest
 ```jsonc
 {
   "url": "...",
-  "media": { "title": "...", "uploader": "...", "duration": 26, "video_id": "..." },
+  "media": {
+    "title": "...", "uploader": "...",       // 제목 · 채널
+    "duration": 123,                          // 길이(초)
+    "upload_date": "2026-09-01",              // 게시일 (없으면 null)
+    "thumbnail": "https://i.ytimg.com/...",   // 썸네일 URL (없으면 null)
+    "video_id": "...", "language": "ko",
+    "transcript_source": "stt",               // stt | caption — 발언 위치 옆에 표시할 출처
+    "stt_coverage_pct": 99.8
+  },
   "analysis_status": "complete",        // 한 단계라도 실패/건너뜀이면 "partial". job.status가 최종 상태의 기준
   "stages": {                            // 무엇을 했고 무엇을 못 했는지
     "download":  { "status": "ok", "detail": null, "elapsed_sec": 6.1 },
     "frames":    { "status": "ok", "detail": "8장 추출", "elapsed_sec": 1.2 },
-    "transcript":{ "status": "ok", "detail": "24단어, 커버리지 99.5%", "elapsed_sec": 12.0 }
+    "transcript":{ "status": "ok", "detail": "STT 226단어, 커버리지 99.8%", "elapsed_sec": 58.4 },
+    "media_manipulation":  { "status": "ok", "detail": null, "elapsed_sec": 10.0 },
+    "claim_verification":  { "status": "ok", "detail": "주장 8건 (...)", "elapsed_sec": 14.2 }
   },
   "face_manipulation": {
     "status": "suspected",               // suspected / no_clear_signs / inconclusive / unavailable
     "status_label": "조작 의심",          // 화면에 그대로 쓸 수 있는 한국어 문구
-    "detail": null,                      // 강등되거나 판정 사유가 있으면 여기
+    "detail": "프레임 8장을 분석해 그중 4장에서 얼굴을 찾았다. ...",  // 분석 범위. 한계가 있으면 뒤에 덧붙는다
     "evidence": ["frame_000.jpg: fake 98.4% (라벨 Fake)", "제목/설명에 자가표기 발견: \"ai generated\""],
     "signals": { "combined_risk": 63.0, "frames_analyzed": 8, "frames_with_face": 6, "..." : "..." }
     // signals는 디버그용이다. 확률처럼 보이는 숫자를 사용자에게 보여주지 않는다 — status만 표시할 것.
@@ -182,24 +192,40 @@ pytest
   },
   "claim_verification": {
     "status": "analyzed",                // 또는 "unavailable"
-    "summary": { "total": 3, "supported": 0, "refuted": 1, "unverified": 2 },
+    "summary": {
+      "total": 8,
+      // 처리 상태별 — 화면 요약의 "완료 8 · 미완료 0 · 시간 초과 0"
+      "pending": 0, "verifying": 0, "done": 8, "failed": 0, "timed_out": 0,
+      // 판정별 — 화면 요약의 "일치 2 · 불일치 3 · 근거 부족 3"
+      "supported": 2, "refuted": 3, "unverified": 3
+    },
     "claims": [
       {
         "text": "2024년 실업률이 3.2% 감소했다",
-        "start": 12.5, "end": 18.0,      // 영상에서 이 말이 나온 위치 (없으면 null)
+        "start": 12.5, "end": 18.0,      // 발언 위치 (못 찾으면 null)
+        "time_precision": "exact",       // exact | approx | null — approx면 "약 00:28"처럼 표시할 것
         "mentions": [],                  // 같은 주장이 반복될 때의 문맥·횟수
         "status": "done",                // pending / verifying / done / failed / timed_out (카드 처리 상태)
         "verdict": "refuted",            // supported / refuted / unverified (status가 done일 때만 의미 있음)
         "verdict_label": "근거와 불일치",  // 화면에 그대로 쓰면 되는 문구
-        "reason": "통계청 자료는 같은 기간 실업률이 올랐다고 밝히고 있다.",
-        "quote": "2024년 연간 실업률은 전년 대비 0.4%p 상승했다.",  // 근거 원문에서 실제로 확인한 문장
+        "reason": "통계청 자료는 같은 기간 실업률이 올랐다고 밝히고 있다.",  // 카드의 "판정 근거"
+        "quote": "2024년 연간 실업률은 전년 대비 0.4%p 상승했다.",  // 대표 인용 (근거별 인용은 아래)
         "insufficient_reason": null,     // 근거 부족일 때만 채워짐 (아래 표 참고)
         "insufficient_label": null,
         "evidence": [
-          { "title": "...", "url": "https://...", "source": "naver_news",
-            "published_at": "2024-03-01", "rating": null,
-            "source_type": "news", "source_type_label": "언론 보도",
-            "is_primary": false }
+          {
+            "title": "...", "url": "https://...",
+            "source": "naver_news",            // 어느 검색 수단에서 왔는지 (내부 식별용)
+            "publisher": "kostat.go.kr",       // 발행처 — 화면의 "발행 기관 · 언론사"
+            "published_at": "2024-03-01",
+            "source_type": "official",
+            "source_type_label": "공식 발표",   // 화면의 출처 유형 배지
+            "is_primary": true,                // 1차 출처(통계 원문·공식 발표)면 true
+            "rating": null,                    // 전문 기관 판정 표기가 있을 때만
+            "cited": true,                     // 판정에 실제로 쓰였는지. false면 "참고 자료"
+            "cite_reason": "이 자료가 주장을 반박하는 이유.",  // 근거 카드에 그대로 표시
+            "quote": "2024년 연간 실업률은 전년 대비 0.4%p 상승했다."  // 원문 대조를 통과한 발췌
+          }
         ]
       }
     ],
@@ -226,11 +252,47 @@ pytest
 5. **판정 문구는 `verdict_label`을 쓰세요.** 코드값(`supported` 등)을 직접 매핑하지 않아도 됩니다.
    `근거와 일치`는 "이 주장이 참"이 아니라 "우리가 찾은 근거와 일치한다"는 뜻입니다 — 주어가
    주장이 아니라 근거입니다. 화면 문구도 그렇게 읽히게 써주세요.
-6. `quote`는 근거 원문에서 **실제로 확인한 문장**입니다. LLM이 인용한 문장이 원문에 없으면 서버가
-   판정을 `근거 부족`으로 강등하므로, `quote`가 있는 판정은 원문 대조를 통과한 것입니다.
-7. `evidence[].is_primary`가 `true`면 통계 원문·공식 발표 같은 1차 출처입니다. 근거를 나열할 때
+6. **`evidence[].cited`가 `false`인 자료는 "참고 자료"이지 판정 근거가 아닙니다.** 근거 부족 카드에
+   붙은 자료가 여기 해당합니다. 판정 근거와 같은 자리에 섞어 보여주면, 판정하지 않은 것을 판정한
+   것처럼 보여주게 됩니다.
+7. `quote`와 `cite_reason`은 근거 원문에서 **실제로 확인한 것**입니다. LLM이 인용한 문장이 그
+   자료 안에 없으면 서버가 판정을 `근거 부족`으로 강등하므로, `cited: true`인 근거는 원문 대조를
+   통과한 것입니다.
+8. `evidence[].is_primary`가 `true`면 통계 원문·공식 발표 같은 1차 출처입니다. 근거를 나열할 때
    앞에 두거나 표시를 다르게 하면 신뢰도 차이가 전달됩니다.
-8. `analysis_status === "partial"`이면 `stages`에서 실패한 단계를 확인해 안내해주세요.
+9. **`time_precision`이 `"approx"`면 정확한 위치가 아닙니다.** 핵심어 겹침으로 추정한 값이라 몇 초
+   어긋날 수 있습니다. `"약 00:28"`처럼 근삿값임이 드러나게 표시해주세요. `null`이면 위치를 찾지
+   못한 것이라 표시를 빼면 됩니다.
+10. `analysis_status === "partial"`이면 `stages`에서 실패한 단계를 확인해 안내해주세요.
+
+#### 화면별로 어디를 보면 되는지
+
+조정준 팀장이 공유한 시안(S-01 ~ S-04D) 기준입니다.
+
+| 화면 | 표시할 것 | 어디서 |
+| --- | --- | --- |
+| S-02 상단 | 썸네일 · 채널 · 길이 · 게시일 | `result.media.thumbnail` / `uploader` / `duration` / `upload_date` |
+| S-02 진행 | 단계 문구 | `job.message`, 단계 구분은 `job.status`(`processing:*`) |
+| S-02 하단 | 분석 ID · 시각 | `job.display_id`(`CN-A1B2-C3D4`) / `job.created_at_iso` |
+| S-02·S-03 경과 | "경과 01:52" | `job.elapsed_sec` (서버 기준. 완료되면 총 소요 시간으로 고정된다) |
+| S-03 ① | "검증할 주장 8개를 찾았습니다" | `claim_verification.summary.total` |
+| S-03 ② | "3/8개 완료" | `summary.done` / `summary.total` |
+| S-03 ⑦ | "00:12 ~ 00:19 · 음성 인식" | `claim.start`·`end`·`time_precision`, 출처는 `media.transcript_source` |
+| S-03 접힘 | "근거 2건 · 정부·공공기관 원문 포함" | `claim.evidence.length`, `evidence[].is_primary` |
+| S-04 요약 | "일치 2 · 불일치 3 · 근거 부족 3" | `summary.supported` / `refuted` / `unverified` |
+| S-04 요약 | "완료 8 · 미완료 0 · 시간 초과 0" | `summary.done` / `pending`+`verifying` / `timed_out` |
+| S-04 미디어 축 | 판단 근거와 분석 범위 | `face_manipulation.status_label` + `detail` |
+| S-04D 근거 카드 | 출처 유형 배지 · 발행일 · 발행 기관 | `evidence[].source_type_label` / `published_at` / `publisher` |
+| S-04D 근거 카드 | "이 자료가 주장을 반박하는 이유" | `evidence[].cite_reason` |
+| S-04 근거 부족 | "판정하지 못한 이유" | `claim.insufficient_label` |
+| S-04 근거 부족 | "참고 자료 2건 (판정에는 사용하지 않음)" | `evidence` 중 `cited: false`인 것 |
+
+**아직 서버가 주지 않는 것**
+
+- `S-03 ④ "분석이 예상보다 오래 걸리고 있습니다"` — `job.elapsed_sec`로 프런트에서 판단해주세요.
+  서버가 별도 신호를 주지 않습니다.
+- 출처 유형 라벨이 시안과 조금 다릅니다. 시안의 `정부·공공기관`은 서버에서 `공식 발표`(`official`)로
+  나갑니다. 화면 문구를 바꾸실지, 서버 라벨을 맞출지 정해주시면 맞추겠습니다.
 
 #### 근거 부족 사유 (`insufficient_reason`)
 
