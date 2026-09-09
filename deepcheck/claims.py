@@ -26,6 +26,8 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 import time
 import urllib.error
 import urllib.parse
@@ -140,6 +142,33 @@ SOURCE_TYPE_LABELS = {
 PRIMARY_SOURCE_TYPES = (STATISTICS, OFFICIAL)
 
 
+def _normalize_published_at(raw: str | None) -> str | None:
+    """근거의 발행일을 YYYY-MM-DD로 맞춘다.
+
+    검색 수단마다 형식이 다르다. 네이버는 RFC 2822("Wed, 02 Sep 2026 07:00:00 +0900"),
+    위키백과는 ISO("2026-08-12T08:58:57Z")를 준다. 형식이 섞이면 화면 표시도
+    지저분하지만, 더 큰 문제는 판정이다 — evidence-policy.md가 주장과 자료의 시점을
+    비교하라고 요구하는데, 프롬프트에 형식이 뒤섞인 날짜가 들어가면 모델이 비교를
+    제대로 하기 어렵다.
+
+    어느 형식으로도 못 읽으면 버리지 않고 원문을 그대로 둔다. 표시가 어색한 것이
+    발행일 정보가 사라지는 것보다 낫다.
+    """
+    if not raw:
+        return None
+    text = str(raw).strip()
+    try:
+        return parsedate_to_datetime(text).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).strftime("%Y-%m-%d")
+    except ValueError:
+        pass
+    logger.debug("읽지 못한 발행일 형식: %r", raw)
+    return text
+
+
 def _publisher_from_url(url: str | None) -> str | None:
     """원문 링크의 도메인을 발행처로 쓴다.
 
@@ -185,6 +214,7 @@ class Evidence:
         self.is_primary = self.source_type in PRIMARY_SOURCE_TYPES
         if not self.publisher:
             self.publisher = _publisher_from_url(self.url)
+        self.published_at = _normalize_published_at(self.published_at)
 
 
 @dataclass

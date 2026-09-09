@@ -308,6 +308,14 @@ def _is_degraded(stage_payload: dict, face_manipulation: ManipulationAxis) -> bo
     return False
 
 
+# 응답의 media 블록에 담을 항목. 파이프라인이 meta에 넣어 준 것 중 화면이 쓰는 것만.
+_MEDIA_KEYS = (
+    "title", "uploader", "duration", "video_id",
+    "thumbnail", "upload_date", "language",
+    "transcript_source", "stt_coverage_pct",
+)
+
+
 def build(meta: dict, deepfake: dict, text: dict, stages: dict,
           claim_verification: ClaimVerification | None = None) -> AnalysisReport:
     face_manipulation = build_face_manipulation(deepfake, text)
@@ -324,12 +332,9 @@ def build(meta: dict, deepfake: dict, text: dict, stages: dict,
 
     return AnalysisReport(
         url=meta.get("url", ""),
-        media={
-            "title": meta.get("title"),
-            "uploader": meta.get("uploader"),
-            "duration": meta.get("duration"),
-            "video_id": meta.get("video_id"),
-        },
+        # 화면에 필요한 영상 정보. 키를 하나씩 골라 담다가 나중에 추가한 필드가
+        # 조용히 버려진 적이 있어, 무엇을 담는지 목록으로 두고 한 번에 채운다.
+        media={key: meta.get(key) for key in _MEDIA_KEYS},
         analysis_status=(AnalysisState.PARTIAL if degraded else AnalysisState.COMPLETE).value,
         stages=stage_payload,
         face_manipulation=face_manipulation,

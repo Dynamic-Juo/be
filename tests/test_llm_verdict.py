@@ -414,3 +414,66 @@ def test_지원하지_않는_네이버_카테고리는_거른다():
     # 개인 게시물은 판정 근거로 쓰지 않기로 했다(evidence-policy.md).
     assert claims._build_provider("naver_blog", cfg) is None
     assert claims._build_provider("naver_cafe", cfg) is None
+
+
+# --- 응답 스키마 (FE 와이어프레임 계약) ---------------------------------
+
+def test_media_블록은_목록에_있는_항목을_빠짐없이_담는다():
+    """키를 하나씩 골라 담다가 나중에 추가한 필드가 조용히 버려진 적이 있다."""
+    from deepcheck import report
+
+    meta = {key: f"v-{key}" for key in report._MEDIA_KEYS}
+    meta["url"] = "https://example.com"
+    built = report.build(meta, {"frames_analyzed": 0, "method": "none"},
+                         {"summary": "", "keywords": [], "tone": ""}, {})
+
+    for key in report._MEDIA_KEYS:
+        assert built.media.get(key) == f"v-{key}", f"{key}가 응답에서 빠졌다"
+
+
+def test_발행일은_검색_수단이_달라도_같은_형식으로_나온다():
+    """네이버는 RFC 2822, 위키백과는 ISO를 준다. 형식이 섞이면 화면도 지저분하고
+    LLM이 주장과 자료의 시점을 비교하기도 어려워진다."""
+    naver = claims.Evidence(title="t", url="https://a.co.kr/1", source="naver_news",
+                            published_at="Wed, 02 Sep 2026 07:00:00 +0900")
+    wiki = claims.Evidence(title="t", url="https://ko.wikipedia.org/wiki/X",
+                           source="wikipedia", published_at="2026-08-12T08:58:57Z")
+
+    assert naver.published_at == "2026-09-02"
+    assert wiki.published_at == "2026-08-12"
+
+
+def test_읽지_못한_발행일은_버리지_않는다():
+    e = claims.Evidence(title="t", url="https://a.co.kr/1", source="s",
+                        published_at="언젠가")
+    assert e.published_at == "언젠가"
+
+
+def test_발행처는_원문_링크의_도메인을_쓴다():
+    e = claims.Evidence(title="t", url="https://www.yna.co.kr/view/AKR1", source="naver_news")
+    assert e.publisher == "yna.co.kr"
+
+
+def test_발언_위치의_정확도를_구분한다():
+    segments = [{"text": "소비자물가 상승률이 6.0%를 넘었습니다", "start": 12.4, "end": 18.9},
+                {"text": "정부는 성수품 공급을 늘린다고 밝혔습니다", "start": 20.0, "end": 26.0}]
+    exact = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
+    approx = claims.Claim(text="성수품 공급을 정부가 늘린다")
+    missing = claims.Claim(text="전혀 관계없는 다른 문장입니다")
+
+    claims._attach_timestamps([exact, approx, missing], segments)
+
+    assert exact.time_precision == claims.TIME_EXACT
+    assert approx.time_precision == claims.TIME_APPROX
+    assert missing.time_precision is None and missing.start is None
+
+
+def test_분석_ID는_사람이_옮겨_적을_수_있는_길이다():
+    from backend.harness import Job
+
+    job = Job(id="ac6a500f7fa94cf696cb19527b9c06ca", session_id="s", url="u", params={})
+    data = job.to_dict()
+
+    assert data["display_id"] == "CN-AC6A-500F"
+    assert data["created_at_iso"]
+    assert isinstance(data["elapsed_sec"], float)
