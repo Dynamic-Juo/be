@@ -2,7 +2,7 @@
 
 설계 문서(`design/ai-pipeline.md`)의 흐름을 따른다.
 
-    발언 텍스트 → 검증 가능한 주장 추출 → 주장별 외부 근거 검색 → 지지·반박·판단 유보
+    발언 텍스트 → 검증 가능한 주장 추출 → 주장별 외부 근거 검색 → 근거와 일치·불일치·근거 부족
 
 판정에 대한 태도가 이 모듈의 핵심이다. PRD와 설계 문서가 못 박아 둔 두 가지를
 그대로 구현한다.
@@ -10,10 +10,13 @@
 1. 검색 결과가 없다는 이유만으로 주장을 거짓으로 판정하지 않는다.
 2. 근거가 부족하거나 서로 충돌하면 판단을 유보한다.
 
-그래서 기본 동작은 보수적이다. 우리가 직접 "지지/반박"을 선언하는 경우는 이미
-전문 기관이 검증해 공개한 판정을 찾았을 때뿐이고, 나머지는 관련 근거를 모아
-보여주되 판정은 유보한다. 키워드가 겹친다는 이유로 참·거짓을 단정하면 그럴듯한
-오답을 만들어낼 뿐이다.
+우리가 내는 판정은 주장의 진위가 아니라 주장과 근거의 관계다. `근거와 일치`는
+"이 주장은 참"이 아니라 "우리가 찾은 근거와 일치한다"는 뜻이다.
+
+판정은 신뢰도 순으로 시도한다. 전문 기관의 공개 판정이 있으면 그대로 옮기고,
+없으면 LLM에게 근거를 주고 관계를 판정하게 하며, 그것도 못 쓰면 근거만 붙이고
+유보한다. LLM 판정은 인용 검증을 통과해야 인정한다 — 모델이 제출한 발췌 문장이
+실제 근거에 없으면 판정을 버리고 근거 부족으로 강등한다.
 """
 
 from __future__ import annotations
@@ -320,8 +323,8 @@ class GDELTProvider:
 class FactCheckProvider:
     """Google Fact Check Tools API.
 
-    전문 기관이 이미 검증해 공개한 판정을 찾는다. 우리가 유일하게 지지/반박을
-    선언하는 근거이므로 다른 제공자와 구분해서 다룬다. API 키가 필요하다.
+    전문 기관이 이미 검증해 공개한 판정을 찾는다. 판정 사다리의 1순위라 다른
+    제공자와 구분해서 다룬다. API 키가 필요하다.
     """
 
     name = "factcheck"
@@ -814,8 +817,8 @@ def _build_provider(name: str, cfg) -> EvidenceProvider | None:
 def default_providers(cfg=None) -> list[EvidenceProvider]:
     """설정(`DEEPCHECK_EVIDENCE_PROVIDERS`)에 적힌 순서대로 검색 수단을 만든다.
 
-    전문 기관 판정(factcheck)을 앞에 두는 이유는, 우리가 지지·반박을 선언할 수 있는
-    유일한 근거라서 먼저 확인하는 편이 낫기 때문이다.
+    전문 기관 판정(factcheck)을 앞에 두는 이유는 판정 사다리의 1순위라서다. 이미
+    검증된 주장이면 우리가 다시 판단할 필요가 없다.
 
     설정을 인자로 받는 이유는 테스트에서 다른 조합을 넣어보기 위해서다. Config는
     frozen dataclass라 속성을 덮어쓸 수 없다.
@@ -824,7 +827,7 @@ def default_providers(cfg=None) -> list[EvidenceProvider]:
     names = [n.strip() for n in cfg.evidence_providers.split(",") if n.strip()]
     providers = [p for p in (_build_provider(name, cfg) for name in names) if p is not None]
     if not providers:
-        logger.warning("사용 가능한 근거 검색 제공자가 없다 — 모든 주장이 판단 유보로 남는다")
+        logger.warning("사용 가능한 근거 검색 제공자가 없다 — 모든 주장이 근거 부족으로 남는다")
     return providers
 
 

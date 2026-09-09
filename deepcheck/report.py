@@ -396,9 +396,10 @@ def format_text(r: AnalysisReport) -> str:
     lines.append(f"    상태   : {cv.status}")
     if cv.summary:
         lines.append(
-            f"    판정   : 지지 {cv.summary.get('supported', 0)} · "
-            f"반박 {cv.summary.get('refuted', 0)} · "
-            f"판단 유보 {cv.summary.get('unverified', 0)} (총 {cv.summary.get('total', 0)}건)"
+            f"    판정   : {VERDICT_LABELS['supported']} {cv.summary.get('supported', 0)} · "
+            f"{VERDICT_LABELS['refuted']} {cv.summary.get('refuted', 0)} · "
+            f"{VERDICT_LABELS['unverified']} {cv.summary.get('unverified', 0)} "
+            f"(총 {cv.summary.get('total', 0)}건)"
         )
     if cv.detail:
         lines.append(f"    사유   : {cv.detail}")
