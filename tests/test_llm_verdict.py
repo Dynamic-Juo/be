@@ -308,3 +308,52 @@ def test_병렬_검증에도_job_id가_로그에_남는다(monkeypatch, caplog):
 
     assert seen, "검증이 한 건도 실행되지 않았다"
     assert all(job == "job-abc" for job in seen), f"job_id가 유실됨: {seen}"
+
+
+# --- NAVER API HUB 규격 ----------------------------------------------------
+
+def test_네이버_검색은_API_HUB_규격으로_호출한다(monkeypatch):
+    """2026-07-31에 도메인·경로·인증 헤더가 모두 바뀌었다. 예전 규격으로
+    돌아가면 조용히 401이 나고 근거가 비므로 고정해둔다."""
+    captured = {}
+
+    def fake_get(url, timeout, headers=None):
+        captured["url"] = url
+        captured["headers"] = headers or {}
+        return {"items": [{"title": "물가 <b>6.3%</b> 상승", "description": "본문",
+                           "originallink": "https://news.example/1",
+                           "pubDate": "Mon, 02 Sep 2026 09:00:00 +0900"}]}
+
+    monkeypatch.setattr(claims, "_http_get_json", fake_get)
+    provider = claims.NaverSearchProvider("news", "cid", "csecret")
+    results = provider.search("소비자물가", 3)
+
+    assert captured["url"].startswith(
+        "https://naverapihub.apigw.ntruss.com/search/v1/news?")
+    assert captured["headers"]["X-NCP-APIGW-API-KEY-ID"] == "cid"
+    assert captured["headers"]["X-NCP-APIGW-API-KEY"] == "csecret"
+    # 예전 헤더가 남아 있으면 안 된다
+    assert "X-Naver-Client-Id" not in captured["headers"]
+
+    assert results[0].title == "물가 6.3% 상승"  # <b> 태그 제거
+    assert results[0].source_type == claims.NEWS
+    assert results[0].source_type_label == "언론 보도"
+
+
+def test_네이버_카테고리별로_출처_유형이_달라진다():
+    news = claims.NaverSearchProvider("news", "a", "b")
+    encyc = claims.NaverSearchProvider("encyc", "a", "b")
+    assert news.source_type == claims.NEWS
+    assert encyc.source_type == claims.ENCYCLOPEDIA
+
+
+def test_자격_정보가_없으면_네이버_제공자는_조용히_빠진다(monkeypatch):
+    cfg = replace(config, naver_client_id="", naver_client_secret="")
+    assert claims._build_provider("naver_news", cfg) is None
+
+
+def test_지원하지_않는_네이버_카테고리는_거른다():
+    cfg = replace(config, naver_client_id="a", naver_client_secret="b")
+    # 개인 게시물은 판정 근거로 쓰지 않기로 했다(evidence-policy.md).
+    assert claims._build_provider("naver_blog", cfg) is None
+    assert claims._build_provider("naver_cafe", cfg) is None

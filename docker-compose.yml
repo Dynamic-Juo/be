@@ -41,7 +41,7 @@ services:
       # rule=정규식, llm=LLM. llm인데 제공자가 없으면 조용히 rule로 떨어진다.
       DEEPCHECK_CLAIM_EXTRACTOR: "${DEEPCHECK_CLAIM_EXTRACTOR:-rule}"
       # 근거 검색 수단. 네이버 자격 정보가 없으면 그 항목만 자동으로 빠진다.
-      DEEPCHECK_EVIDENCE_PROVIDERS: "${DEEPCHECK_EVIDENCE_PROVIDERS:-factcheck,naver_news,wikipedia,wikipedia_en}"
+      DEEPCHECK_EVIDENCE_PROVIDERS: "${DEEPCHECK_EVIDENCE_PROVIDERS:-factcheck,naver_news,naver_encyc,wikipedia,wikipedia_en}"
       HF_TOKEN: "${HF_TOKEN:-}"
     volumes:
       # 모델 가중치(faster-whisper + HF 분류기)를 재시작해도 다시 받지 않게 보존한다.

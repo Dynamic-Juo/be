@@ -353,37 +353,52 @@ class FactCheckProvider:
         return results
 
 
-class NaverNewsProvider:
-    """네이버 뉴스 검색 API.
+class NaverSearchProvider:
+    """NAVER API HUB 검색 API.
 
     위키백과가 못 덮는 국내 시사 영역을 메우는 게 목적이다. 우리가 뽑는 주장은
     대부분 한국 뉴스의 수치·정책 발언인데, 그건 백과사전에 없고 기사에 있다.
 
-    블로그·카페는 쓰지 않는다. 신뢰도가 낮은 자료를 근거로 붙이면 판정 자체가
+    블로그·카페·지식iN은 쓰지 않는다. 개인 게시물을 판정 근거로 붙이면 결과가
     오염된다(evidence-policy.md의 출처 선택 기준).
+
+    2026년 7월 31일에 기존 개발자센터 검색 API가 종료되고 네이버 클라우드의
+    NAVER API HUB로 이관됐다. 도메인·경로·인증 헤더가 전부 바뀌어서 예전 코드는
+    도메인만 갈아끼워도 동작하지 않는다.
+      옛것: openapi.naver.com/v1/search/news.json + X-Naver-Client-Id
+      지금: naverapihub.apigw.ntruss.com/search/v1/news + X-NCP-APIGW-API-KEY-ID
     """
 
-    name = "naver_news"
+    # 카테고리별로 무엇을 근거로 삼을지. 검색 결과의 성격이 달라서 출처 유형도 다르다.
+    CATEGORIES = {
+        "news": ("naver_news", NEWS),
+        "encyc": ("naver_encyc", ENCYCLOPEDIA),
+        "webkr": ("naver_web", UNKNOWN_SOURCE),
+    }
 
-    def __init__(self, client_id: str, client_secret: str, timeout: int | None = None):
+    def __init__(self, category: str, client_id: str, client_secret: str,
+                 timeout: int | None = None, base_url: str | None = None):
+        self.category = category
+        self.name, self.source_type = self.CATEGORIES[category]
         self.client_id = client_id
         self.client_secret = client_secret
         self.timeout = timeout or config.evidence_timeout_sec
+        self.base_url = (base_url or config.naver_base_url).rstrip("/")
 
     def search(self, query: str, limit: int) -> list[Evidence]:
         params = urllib.parse.urlencode({
             "query": query, "display": limit, "sort": "sim",
         })
-        url = f"https://openapi.naver.com/v1/search/news.json?{params}"
+        url = f"{self.base_url}/search/v1/{self.category}?{params}"
         data = _http_get_json(url, self.timeout, headers={
-            "X-Naver-Client-Id": self.client_id,
-            "X-Naver-Client-Secret": self.client_secret,
+            "X-NCP-APIGW-API-KEY-ID": self.client_id,
+            "X-NCP-APIGW-API-KEY": self.client_secret,
         })
         if not data:
             return []
         results = []
         for item in data.get("items", [])[:limit]:
-            # 네이버는 검색어 강조를 <b> 태그로 넣어 준다. 그대로 두면 인용 대조가
+            # 검색어 강조를 <b> 태그로 넣어 준다. 그대로 두면 LLM 판정의 인용 대조가
             # 어긋나므로 제거한다.
             title = _strip_tags(item.get("title", ""))
             desc = _strip_tags(item.get("description", ""))
@@ -396,7 +411,7 @@ class NaverNewsProvider:
                 source=self.name,
                 published_at=item.get("pubDate"),
                 snippet=desc or None,
-                source_type=NEWS,
+                source_type=self.source_type,
             ))
         return results
 
@@ -781,11 +796,16 @@ def _build_provider(name: str, cfg) -> EvidenceProvider | None:
             return FactCheckProvider(cfg.google_factcheck_api_key, cfg.evidence_timeout_sec)
         logger.info("Google Fact Check API 키가 없어 전문 기관 판정 검색은 건너뛴다")
         return None
-    if name == "naver_news":
+    if name.startswith("naver_"):
+        category = name[len("naver_"):]
+        if category not in NaverSearchProvider.CATEGORIES:
+            logger.warning("지원하지 않는 네이버 검색 카테고리: %s", category)
+            return None
         if cfg.naver_client_id and cfg.naver_client_secret:
-            return NaverNewsProvider(cfg.naver_client_id, cfg.naver_client_secret,
-                                     cfg.evidence_timeout_sec)
-        logger.info("네이버 검색 API 자격 정보가 없어 국내 뉴스 검색은 건너뛴다")
+            return NaverSearchProvider(category, cfg.naver_client_id,
+                                       cfg.naver_client_secret,
+                                       cfg.evidence_timeout_sec, cfg.naver_base_url)
+        logger.info("NAVER API HUB 자격 정보가 없어 %s 검색은 건너뜁니다", category)
         return None
     logger.warning("알 수 없는 근거 검색 제공자: %s", name)
     return None

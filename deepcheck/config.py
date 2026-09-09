@@ -123,10 +123,14 @@ class Config:
     evidence_budget_sec: int = 30
     # 사용할 근거 검색 수단(쉼표 구분, 앞에서부터 순서대로 조회).
     # gdelt는 실측에서 16초 이상 걸리고 429가 잦아 기본에서 제외했다.
-    evidence_providers: str = "factcheck,naver_news,wikipedia,wikipedia_en"
-    # 네이버 검색 API(뉴스). 국내 시사 주장은 백과사전에 없고 기사에 있다.
+    # 조회 순서대로 적는다. naver_* 는 NAVER API HUB의 검색 카테고리다
+    # (news / encyc / webkr). 자격 정보가 없는 항목은 자동으로 빠진다.
+    evidence_providers: str = "factcheck,naver_news,naver_encyc,wikipedia,wikipedia_en"
+    # NAVER API HUB. 2026-07-31에 기존 개발자센터 검색 API가 종료되고 이관됐다.
+    # 콘솔에서 발급한 Client ID/Secret을 그대로 넣는다.
     naver_client_id: str = ""
     naver_client_secret: str = ""
+    naver_base_url: str = "https://naverapihub.apigw.ntruss.com"
     # 전문 기관의 공개 판정 검색(Google Fact Check Tools). 키가 있을 때만 사용한다.
     google_factcheck_api_key: str = ""
 
@@ -197,6 +201,7 @@ def load_config() -> Config:
         evidence_providers=_env_str("EVIDENCE_PROVIDERS", Config.evidence_providers),
         naver_client_id=_env_str("NAVER_CLIENT_ID", Config.naver_client_id),
         naver_client_secret=_env_str("NAVER_CLIENT_SECRET", Config.naver_client_secret),
+        naver_base_url=_env_str("NAVER_BASE_URL", Config.naver_base_url),
         evidence_budget_sec=_env_int("EVIDENCE_BUDGET_SEC", Config.evidence_budget_sec),
         google_factcheck_api_key=_env_str(
             "GOOGLE_FACTCHECK_API_KEY", Config.google_factcheck_api_key
