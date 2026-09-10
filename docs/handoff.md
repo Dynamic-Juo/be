@@ -4,6 +4,8 @@
 
 ## 먼저 읽을 것
 
+키 반영 갱신: 사용자가 서버 .env에 입력해 둔 세 provider 키를 .env.home에 안전하게 동기화하고 개발계 API만 재생성했다. 이전 키 누락 기록은 당시 상태다. 키 유효성과 provider 실제 호출은 후속 검증이 필요하다.
+
 최신 실측: 사용자 영상 cYRkZmBuDqI는 내부 API에서 25.1초에 completed였다. 다운로드/미디어 실행은 확인했지만 STT 3단어·coverage 100%와 no_claims 결과로 내용 품질은 미검증이다. 배포 키 세 개가 없어 DeepSeek·NAVER 성공도 미검증이다. 상세는 worklog의 사용자 지정 영상 실측을 확인한다. DNS는 모든 직접 resolver 질의 성공/새 도메인의 macOS 조회 실패로 로컬 캐시·resolver 경로가 의심되며 아직 해결하지 않았다.
 
 추가 상태: `.github/workflows/backend-ci.yml`에 ARM64 이미지 빌드·격리 테스트·main GHCR 게시 초안을 준비했다. 원격 Actions 실행·게시 권한과 맥미니 자동 배포는 미검증이다. 운영 hostname·공개 범위 및 FE Origin을 정한 뒤 환경 분리와 인증/CORS를 연결한다.

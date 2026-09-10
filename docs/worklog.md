@@ -261,3 +261,8 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - .env.home과 실행 컨테이너에서 DeepSeek·NAVER 키 세 개가 모두 비어 있음을 값 없이 확인했다. 따라서 LLM/검색 provider 성공은 검증하지 못했다. 완료 상태를 전체 기능 성공으로 해석하지 않는다.
 - 분석 후 메모리 약 1.545GiB(피크 아님), healthy·재시작 0·OOM false였다. 기존 컨테이너도 실행 상태를 유지했다.
 - 공개/Tailscale/공유기 및 설정된 IPv6 DNS 서버들은 새 API A 레코드를 반환했다. macOS dscacheutil과 일반 curl은 새 도메인에 실패하지만 기존 lunchpick·cloudflare.com은 성공했다. 로컬 부정 캐시 또는 macOS resolver 경로 문제로 좁혀졌으나 캐시 초기화 전후 비교는 하지 않아 원인을 확정하지 않았다. DNS·VPN 설정은 변경하지 않았다.
+
+### 2026-09-11 — 기존 입력 키의 배포 반영
+
+- 사용자는 서버 .env에 이미 provider 키를 입력했다. 배포 Compose가 별도 .env.home만 읽는 차이를 해소하기 위해 세 provider 설정만 빈 배포 항목에 반영했다. 비밀값은 출력하지 않았고 두 파일 권한을 600으로 맞췄다.
+- 활성 job 0을 확인한 뒤 conan-staging API만 up --no-build로 재생성했다. 기존 다른 서비스와 DNS/Access는 변경하지 않았다. 이전 키 없는 영상 테스트는 provider 검증을 대체하지 않는다.
