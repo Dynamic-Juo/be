@@ -231,3 +231,10 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - /health·/ready, Docker healthy, CPU torch 2.14.0+cpu, 얼굴 검출기, 실제 ViT·Whisper small 로딩을 확인했다. 모델 파일 캐시는 준비됐으나 API 프로세스의 최초 모델 로딩과 실제 영상 처리 시간·피크 메모리는 미측정이다. 기존 7개 서비스는 실행 상태를 유지했다.
 - 사용자가 키를 직접 넣을 .env.home을 권한 600으로 생성했다. 값은 출력하지 않았으며 Git ignore를 확인했다. 키·도메인이 없어 실제 외부 provider·Tunnel·FE 연결은 대기한다. 개발계/운영계 분리와 GitHub-hosted ARM64 CI, 이미지 승격 배포는 제안으로 문서에 기록했고 운영계·Actions runner는 생성하지 않았다.
 - 후속으로 개발계 hostname을 conan-api-dev.dotseven.cloud로 확정했다. DNS는 아직 해석되지 않고 Cloudflare 로그인·Access 허용 이메일·API 키 입력을 기다린다. 현재 staging은 healthy이며 외부 연결은 미실행이다.
+
+### 2026-09-11 — 개발계 Access·Tunnel 연결
+
+- 사용자 승인으로 Conan API Dev 앱과 본인 이메일 한 개만 허용하는 Conan Dev Owner Only 정책을 먼저 저장한 뒤 기존 dotseven-server Tunnel에 개발계 hostname route를 추가했다. DNS 자동 생성과 정책 저장값을 확인했다.
+- 기존 cloudflared에 conan-staging-ingress를 재시작 없이 연결하고 관리 Compose에 external network를 영속화했다. Compose 정적 검증과 Tunnel 네트워크에서 내부 /health 응답을 확인했다. 토큰 포함 Compose는 Git에 복사하지 않았다. 기존 7개 컨테이너와 다른 hostname 경로는 유지됐다.
+- 공개 DNS 두 곳의 응답을 확인했다. 맥미니 기본 resolver는 아직 이름 해석에 실패해 공개 DNS IP를 --resolve로 지정하고 TLS 검증을 유지했다. 미인증 /health·/api/jobs GET 및 /api/analyze POST는 모두 Access 로그인으로 HTTP 302를 반환했다.
+- 본인 인증 후 응답·다른 이메일 거부·키 입력 후 실제 영상 분석·FE CORS는 미검증이다. 운영계 및 Actions는 이번에도 생성하지 않았다.

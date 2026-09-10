@@ -1,6 +1,6 @@
 # M4 맥미니 배포 인수인계
 
-상태: 2026-09-11 맥미니 conan-staging 내부 기동과 얼굴·ViT·Whisper 모델 로딩을 확인했다. 키 입력·실제 영상·Tunnel·FE 연결은 대기 중이다. 실제 운영 명령은 [배포 점검 기록](deployment-log.md)의 -p conan-staging을 사용한다. 아래 기본 예시의 conan-home과 구분한다.
+상태: 2026-09-11 맥미니 conan-staging 내부 기동과 얼굴·ViT·Whisper 모델 로딩을 확인했다. conan-api-dev.dotseven.cloud의 Tunnel·본인 이메일 한정 Access 연결 및 미인증 HTTPS 302를 확인했다. 기본 DNS 해석·본인 로그인 후 응답·키 입력·실제 영상·FE 연결은 추가 확인이 필요하다. 실제 운영 명령은 [배포 점검 기록](deployment-log.md)의 -p conan-staging을 사용한다. 아래 기본 예시의 conan-home과 구분한다.
 
 사용자 확인 환경은 M4·16GB·OrbStack이다. 기존 cloudflared·Laravel·모니터링 컨테이너가 있으므로 Conan을 별도 Compose 프로젝트로 실행한다. 프론트는 Vercel 예정이며 실제 주소는 미정이다. 개발 맥의 Docker 컨텍스트를 원격 맥미니로 간주하지 않는다.
 

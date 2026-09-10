@@ -13,14 +13,14 @@
 | 프로젝트·컨테이너 | conan-staging / conan-staging-deepcheck-api-1 |
 | 전용 자원 | conan-staging-ingress 네트워크, conan-staging_model-cache 볼륨 |
 | 실행 제한 | CPU 2개, 메모리 3GiB, uvicorn 1 프로세스, 분석 worker 1개 |
-| 노출 | 호스트 published port 없음, cloudflared 미연결, 외부 라우트 미생성 |
+| 노출 | 호스트 published port 없음. 기존 Tunnel 연결 및 본인 이메일 한정 Access 적용 완료 |
 | 상태 | /health ok, /ready ready, Docker healthy, 재시작 0, OOMKilled false |
 | 모델 | MediaPipe 얼굴 검출기 초기화 성공, torch 2.14.0+cpu / CUDA 없음, ViT와 Whisper small CPU/int8 로딩 성공 |
 | 로딩 시간 | 별도 검증 프로세스에서 ViT까지 13.6초, Whisper까지 누적 24.7초. 실제 영상 처리 시간 아님 |
 | 메모리 관측 | 모델 검증 프로세스 종료 뒤 컨테이너 약 65MiB. 피크 및 실제 분석 메모리는 미측정 |
-| 기존 서비스 | 기존 7개 컨테이너 Up 유지. 재시작 명령과 설정 변경 없음 |
+| 기존 서비스 | 기존 7개 컨테이너 Up 유지. Tunnel 재시작 없이 Conan 네트워크만 추가 연결하고 Compose에 영속화 |
 
-검증 프로세스는 종료됐다. 모델 파일 캐시는 유지되지만 API 프로세스의 모델 객체가 미리 로딩된 것은 아니므로 첫 실제 요청의 모델 메모리 로딩 시간은 별도로 측정한다. 실제 Shorts E2E, DeepSeek·NAVER 인증, 외부 HTTPS, FE CORS 검증은 미완료다.
+검증 프로세스는 종료됐다. 모델 파일 캐시는 유지되지만 API 프로세스의 모델 객체가 미리 로딩된 것은 아니므로 첫 실제 요청의 모델 메모리 로딩 시간은 별도로 측정한다. 실제 Shorts E2E, DeepSeek·NAVER 인증, Access 로그인 후 API 응답, FE CORS 검증은 미완료다.
 
 서버 be/.env.home을 새로 만들고 권한 600 및 Git ignore를 확인했다. DEEPCHECK_LLM_API_KEY, DEEPCHECK_NAVER_CLIENT_ID, DEEPCHECK_NAVER_CLIENT_SECRET은 점검 시 비어 있다. 키 값은 채팅·문서·Git에 넣지 않는다. CONAN_NETWORK는 conan-staging-ingress, CONAN_IMAGE는 conan-be:472aff7이다. 사용자가 키를 저장하면 아래 up 명령으로 컨테이너 환경에 반영한다. 기존 컨테이너의 단순 restart는 변경된 env_file 값을 반영하지 않는다.
 
@@ -35,13 +35,20 @@ docker compose -p conan-staging --env-file .env.home -f compose.home.yml stop de
 
 마지막 stop은 중지·복구가 필요할 때만 실행한다. 첫 배포라 이전 검증 이미지가 없으며 현재 이미지와 모델 볼륨을 보존한다.
 
-### Cloudflare 연결 대기
+### Cloudflare 연결 완료
 
-사용자가 개발계 API hostname을 `conan-api-dev.dotseven.cloud`로 확정했다. API 키 세 항목은 아직 비어 있고 Access 허용 이메일은 확인 대기다. 대시보드 로그인 화면까지 확인했으며 DNS·Access·Tunnel route는 아직 변경하지 않았다. API hostname을 프론트 CORS Origin으로 대신 입력하지 않는다.
+사용자 승인으로 `conan-api-dev.dotseven.cloud` 전체 경로에 Access 앱 `Conan API Dev`를 생성했다. `Conan Dev Owner Only` 정책은 Allow / Include Emails에 사용자가 지정한 본인 이메일 한 개만 포함한다. 저장 후 정책을 다시 열어 확인했다. 이메일 원문은 이 문서에 기록하지 않는다. 세션은 24시간이며 MFA 요구는 추가하지 않았다. API hostname을 프론트 CORS Origin으로 대신 입력하지 않는다.
 
-확정한 hostname의 Access 앱을 먼저 만들고 기존 Tunnel의 published application route를 추가한다. Access는 팀원 이메일 등 허용 대상을 정하고 Tunnel은 hostname에서 내부 서비스까지의 경로를 정한다. 허용 대상과 대시보드 로그인이 대기 중이라 이 단계는 실행하지 않았다. 서버 curl 점검에서 해당 hostname은 아직 DNS 해석되지 않았고 staging 컨테이너는 healthy였다.
+Access 앱을 먼저 생성한 뒤 기존 `dotseven-server` Tunnel에 hostname route를 추가했다. DNS 레코드 자동 생성과 저장 성공을 대시보드에서 확인했다. 기존 SSH·lunchpick·monitoring 경로와 catch-all은 유지했다.
 
-기존 cloudflared를 conan-staging-ingress에 연결한 이후 staging 목적지는 `http://conan-staging-deepcheck-api-1:8000`을 사용한다. 향후 운영 네트워크도 같은 Tunnel에 연결할 때 공통 별칭 conan-api가 중복되지 않도록 환경별 고유 컨테이너명을 사용한다. 현재 목적지는 cloudflared에서 아직 접근할 수 없다.
+기존 cloudflared를 `conan-staging-ingress`에 무중단 연결하고 staging 목적지를 `http://conan-staging-deepcheck-api-1:8000`으로 설정했다. 기존 Tunnel 관리 디렉터리의 `docker-compose.yml`에는 서비스 network와 external network 선언만 추가했으며 `config --quiet` 검증을 통과했다. 토큰이 포함된 해당 파일은 이 저장소에 복사하지 않는다. 향후 운영 네트워크도 같은 Tunnel에 연결할 때 공통 별칭 conan-api가 중복되지 않도록 환경별 고유 컨테이너명을 사용한다.
+
+검증 결과:
+
+- Tunnel 컨테이너의 네트워크 네임스페이스에서 staging `/health`가 `{"status":"ok"}`로 응답했다. 임시 진단 컨테이너는 실행 후 자동 삭제됐다.
+- 공개 DNS 1.1.1.1과 8.8.8.8에서 A 레코드가 확인됐다. 맥미니 기본 resolver에서는 아직 이름 해석에 실패했다. 캐시 또는 전파 지연 가능성이 있으나 원인은 확정하지 않았다.
+- 공개 DNS 응답 IP를 curl `--resolve`에 지정하고 TLS 인증서 검증을 유지한 HTTPS 요청에서 미인증 GET `/health`, GET `/api/jobs`, POST `/api/analyze` 모두 HTTP 302로 Access 로그인 페이지로 이동했다.
+- 저장된 단일 이메일 정책과 staging healthy 상태를 확인했다. 본인 로그인 후 응답, 다른 이메일 로그인 거부, 실제 분석은 아직 시험하지 않았다. API 키 세 항목은 앞선 점검에서 비어 있었으며 사용자 입력 후 재확인이 필요하다.
 
 대시보드 경로는 공식 문서 기준으로 Zero Trust > Access controls > Applications에서 Self-hosted and private 앱과 public hostname·Allow 정책을 설정한다. 이후 Networking > Tunnels > 기존 Tunnel > Routes > Add route > Published application에서 hostname과 위 Service URL을 입력한다. UI 버전에 따라 Zero Trust > Networks > Connectors 아래에 기존 Tunnel이 보일 수 있다. Cloudflare 관리 도메인의 대시보드 route 생성은 DNS도 자동 연결하므로 같은 이름의 레코드를 중복 생성하지 않는다.
 

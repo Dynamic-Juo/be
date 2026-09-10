@@ -1,6 +1,6 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
-기준일: 2026-09-11. 맥미니에 main 472aff7 이미지로 conan-staging을 기동했다. /health·/ready·얼굴·ViT·Whisper 로딩을 확인했으며 키와 외부 도메인은 대기 중이다. 실제 배포 상태와 -p conan-staging 명령은 [배포 점검 기록](deployment-log.md)을 먼저 확인한다. 과거 작업 로그는 당시 기록이며 최신 상태를 덮어쓰지 않는다.
+기준일: 2026-09-11. 맥미니에 main 472aff7 이미지로 conan-staging을 기동했다. /health·/ready·얼굴·ViT·Whisper 로딩과 conan-api-dev.dotseven.cloud의 Tunnel·본인 이메일 한정 Access 연결을 확인했다. 미인증 HTTPS는 302이며 기본 DNS 해석·본인 로그인 후 응답·키 입력·실제 분석은 추가 확인이 필요하다. 실제 배포 상태와 -p conan-staging 명령은 [배포 점검 기록](deployment-log.md)을 먼저 확인한다. 과거 작업 로그는 당시 기록이며 최신 상태를 덮어쓰지 않는다.
 
 ## 먼저 읽을 것
 
