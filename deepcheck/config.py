@@ -63,6 +63,10 @@ class Config:
     # 단순 평균은 강한 단일 프레임 신호를 희석시킨다(실측: 8프레임 중 1장이 98.4%
     # fake인데 평균이 13/100까지 떨어졌다). 평균과 최댓값을 섞어 완화한다.
     # 이 가중치는 실측으로 튜닝해야 할 판단값이지 검증된 최적값이 아니다.
+    # 프레임 점수를 영상 점수로 합치는 방식. blend | trimmed_mean
+    # 두 방식이 정반대 위험을 감수한다(deepcheck/deepfake.py 참고). 정답을 아는
+    # 영상 세트가 나오기 전에는 확정할 수 없어 설정으로 열어둔다.
+    frame_aggregation: str = "blend"
     frame_mean_weight: float = 0.6
     frame_peak_weight: float = 0.4
     fake_frame_threshold: float = 0.5
@@ -169,6 +173,7 @@ def load_config() -> Config:
         whisper_model_size=_env_str("WHISPER_MODEL_SIZE", Config.whisper_model_size),
         vlm_provider=_env_str("VLM_PROVIDER", Config.vlm_provider),
         ollama_url=_env_str("OLLAMA_URL", Config.ollama_url).rstrip("/"),
+        frame_aggregation=_env_str("FRAME_AGGREGATION", Config.frame_aggregation).lower(),
         frame_mean_weight=_env_float("FRAME_MEAN_WEIGHT", Config.frame_mean_weight),
         frame_peak_weight=_env_float("FRAME_PEAK_WEIGHT", Config.frame_peak_weight),
         fake_frame_threshold=_env_float("FAKE_FRAME_THRESHOLD", Config.fake_frame_threshold),

@@ -219,6 +219,10 @@ def build_face_manipulation(deepfake: dict, text: dict) -> ManipulationAxis:
         "classifier_used": classifier_used,
         "frames_with_face": frames_with_face,
         "face_model_available": bool(deepfake.get("face_model_available")),
+        # 프레임별 원점수. 집계 방식을 튜닝하거나 결과가 이상할 때 어느 프레임
+        # 때문인지 보려면 필요하다.
+        "frame_scores": list(deepfake.get("frame_scores") or []),
+        "frame_aggregation": config.frame_aggregation,
         "self_disclosure_risk": self_disclosure_risk,
         "vlm_summary": deepfake.get("vlm_summary"),
     }
