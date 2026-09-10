@@ -64,9 +64,10 @@ class Config:
     # fake인데 평균이 13/100까지 떨어졌다). 평균과 최댓값을 섞어 완화한다.
     # 이 가중치는 실측으로 튜닝해야 할 판단값이지 검증된 최적값이 아니다.
     # 프레임 점수를 영상 점수로 합치는 방식. blend | trimmed_mean
-    # 두 방식이 정반대 위험을 감수한다(deepcheck/deepfake.py 참고). 정답을 아는
-    # 영상 세트가 나오기 전에는 확정할 수 없어 설정으로 열어둔다.
-    frame_aggregation: str = "blend"
+    # 실측에서 절사평균이 진짜 영상과 AI 영상 모두에서 옳은 등급을 냈다. 블렌드는
+    # 진짜 뉴스 영상을 계속 "판단 보류"로 올렸다(분류기 오탐 2장 때문).
+    # 다만 표본이 2편이라 M-08 데모 점검표가 나오면 다시 검증해야 한다.
+    frame_aggregation: str = "trimmed_mean"
     frame_mean_weight: float = 0.6
     frame_peak_weight: float = 0.4
     fake_frame_threshold: float = 0.5

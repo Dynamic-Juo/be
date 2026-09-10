@@ -261,3 +261,42 @@ class TestFormatting:
         text_out = report.format_text(r)
         assert "얼굴 합성·변형" in text_out
         assert "영상 전체 AI 생성" in text_out
+
+
+class TestFrameAggregation:
+    """프레임 점수 집계. 방식에 따라 같은 영상이 다른 등급을 받는다."""
+
+    def _aggregate(self, mode, scores):
+        from dataclasses import replace
+        from deepcheck import deepfake
+        original = deepfake.config
+        deepfake.config = replace(config, frame_aggregation=mode)
+        try:
+            return deepfake.aggregate_frame_scores(scores)
+        finally:
+            deepfake.config = original
+
+    def test_절사평균은_오탐_한두장에_휘둘리지_않는다(self):
+        # 실측: 진짜 뉴스 영상의 얼굴 crop 4장 중 2장이 분류기 오탐이었다.
+        real_news = [0.997, 0.835, 0.002, 0.002]
+        assert self._aggregate("trimmed_mean", real_news) * 100 < config.level_moderate
+        assert self._aggregate("blend", real_news) * 100 > config.level_moderate
+
+    def test_여러_장이_높으면_두_방식이_모두_잡는다(self):
+        ai_video = [0.999, 0.998, 0.997, 0.997, 0.996, 0.909, 0.061]
+        assert self._aggregate("trimmed_mean", ai_video) * 100 > config.level_high
+        assert self._aggregate("blend", ai_video) * 100 > config.level_high
+
+    def test_프레임이_세_장_미만이면_절사하지_않는다(self):
+        # 양 끝을 버리면 남는 게 없다. 평균을 그대로 쓴다.
+        assert self._aggregate("trimmed_mean", [0.8, 0.2]) == 0.5
+        assert self._aggregate("trimmed_mean", [0.6]) == 0.6
+
+    def test_점수가_없으면_0이다(self):
+        assert self._aggregate("trimmed_mean", []) == 0.0
+        assert self._aggregate("blend", []) == 0.0
+
+    def test_기본값은_절사평균이다(self):
+        """실측 근거로 정한 값이다. 바꾸려면 M-08 점검표로 재검증해야 한다."""
+        from deepcheck import deepfake
+        assert config.frame_aggregation == deepfake.AGG_TRIMMED_MEAN
