@@ -20,9 +20,9 @@
 | playground | 백엔드를 시작하기 위해 만든 초기 실험 저장소. 현행 API의 기준이 아니다. |
 | fe | 아직 저장소·배포 주소 미확인. 조정준 팀장이 와이어프레임을 기준으로 만들고 Vercel에 배포할 예정이다. |
 
-이번 작업 시작 당시 be의 로컬 main은 `8a11b46`, 원격 main은 `cfe37fc`로 로컬이 16커밋 앞섰다. 현재 작업 브랜치는 이 기반의 `fix/prompt-handoff`다. 사용자 요청으로 에이전트 이름이 들어간 브랜치명을 변경하고 미공유 커밋을 한국어 제목과 변경 목적별로 정리했다. 다른 기기에서 원격 main만 받으면 기존 DeepSeek·네이버 작업도 빠질 수 있다. 원격 동기화 여부와 현재 커밋은 아래 명령으로 다시 확인한다.
+2026-09-10 재확인한 로컬·원격 main은 `472aff7201a834102d6ec2c27096dabb22a5ae4f`다. `fix/prompt-handoff`는 PR #1로 main에 병합됐으며 DeepSeek·NAVER·배포 구성도 main에 포함된다. 과거 미공유·병합 대기 기록은 worklog에 당시 이력으로 보존한다.
 
-사용자의 명시적 승인 후 `fix/prompt-handoff`를 `Dynamic-Juo/be`에 push했다. 맥미니는 이 브랜치에서 시작한다. 원격 main에는 아직 병합하지 않았다. 검증된 구현·배포 구성의 기준 커밋은 `370749f`이며 이후 인수인계 문서 수정은 별도 커밋이다.
+현재 서버 점검 문서 브랜치는 main에서 분기한 `docs/mac-mini-readiness`다. 구현 기준은 472aff7이며 문서 변경이 운영 배포를 뜻하지 않는다. 다른 기기에서는 아래 명령으로 원격 동기화와 현재 커밋을 다시 확인한다.
 
 ```bash
 git status --short --branch
@@ -45,7 +45,7 @@ git branch -vv
 
 - 나정균 팀원은 맥북 에어·맥미니·맥북 프로를 오가며 개발한다.
 - 배포 대상은 M4 맥미니·메모리 16GB·OrbStack이다. cloudflared, Laravel, 모니터링이 기존 Docker 컨테이너로 돌아간다. 사용자에게 직접 확인했다.
-- API 도메인·기존 cloudflared 컨테이너 이름·관리 Compose 위치·SSH 접근 경로·Vercel 주소는 미확인이다. 임의로 만들거나 현재 기기와 동일하다고 가정하지 않는다.
+- 2026-09-10 실제 맥미니의 OrbStack·16GiB 메모리와 실행 서비스 7개를 확인했다. cloudflared 컨테이너는 `lunchpick-tunnel-cloudflared-1`이며 관리 Compose·현재 네트워크는 [배포 점검 기록](deployment-log.md)에 남겼다. API 도메인·Access 정책·Vercel 주소는 여전히 미확인이다. 이번 점검은 현지 Docker 소켓으로 했으며 SSH 경로는 확인하지 않았다.
 - 현재 개발 기기의 OrbStack에서 ARM64 빌드·모델 초기화·HTTP/CORS를 검증했다. 맥미니 부하나 외부 Tunnel 연결을 검증한 것은 아니다.
 
 ## 현재 실행 흐름
