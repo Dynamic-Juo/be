@@ -1,5 +1,13 @@
 # be 저장소 작업 지침
 
+## 새 기기·세션에서 시작할 때
+
+- 먼저 `docs/handoff.md`를 읽고 현재 브랜치·커밋·원격 반영 상태를 확인한다. 로컬 main과 원격 main이 같다고 가정하지 않는다.
+- 구현 기준은 이 저장소 코드와 최신 PR 리뷰다. playground와 과거 평가 기록의 미구현 목록을 현재 구현으로 취급하지 않는다.
+- 프롬프트 변경은 `deepcheck/prompts.py`에서 하고 버전·고정 사례·실제 실행 결과를 `docs/prompt-evaluation.md`와 `docs/worklog.md`에 남긴다. 모의 테스트, 실모델 가상 사례, 실제 영상 평가를 구분한다.
+- 맥미니 운영 작업 전에는 `docs/deployment-mac-mini.md`를 읽는다. 기존 cloudflared·Laravel·모니터링이 운영 중이다. 현재 개발 기기를 배포 서버로 가정하지 않고 기존 서비스의 전체 재시작·정리 명령을 실행하지 않는다.
+- 기기가 바뀌어도 절대 경로·`.venv`에 의존하지 않도록 명령은 저장소 루트 기준으로 적는다. 작업 종료 시 handoff의 현재 상태·남은 작업과 worklog를 갱신한다. `.env*`와 토큰은 문서·Git·로그에 넣지 않는다.
+
 ## 기준 문서
 
 - 제품 요구사항과 설계 기준은 `Dynamic-Juo/docs` 레포(`project/prd.md`, `design/ai-pipeline.md`)를 따른다. 이 레포에는 기획 문서를 복사하지 않고 필요하면 링크한다.
@@ -37,8 +45,11 @@
 
 ## 커밋
 
-- Conventional Commits 형식(`<type>: <summary>`)을 쓴다. `type`은 `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore` 중에서 고른다.
+- 기존 기록처럼 Conventional Commits 형식(`<type>(<scope>): <한국어 요약>`)을 쓴다. `type`은 `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore` 중에서 고른다. 제목은 변경 결과가 드러나게 쓰고 마침표를 붙이지 않는다.
+- 커밋 제목과 작업 브랜치에는 에이전트 이름을 붙이지 않는다. 작업 브랜치는 `fix/<작업 주제>`, `feat/<작업 주제>`, `docs/<작업 주제>`처럼 목적에 맞게 이름을 짓는다.
+- scope는 이 백엔드 저장소의 기존 기록을 참고해 변경 영역에 맞춘다. docs 저장소의 문서 전용 scope 목록을 백엔드 코드에 그대로 적용하지 않는다.
 - 서로 무관한 변경을 한 커밋에 묶지 않는다.
+- `docs`는 문서만 바꾸는 커밋에 사용한다. Dockerfile·Compose 등 빌드·배포 설정 변경은 문서와 분리한다.
 - 검증했다면 실제로 실행한 검사만 커밋 메시지나 PR에 기록한다.
 
 ## 배포

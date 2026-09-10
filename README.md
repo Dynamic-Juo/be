@@ -5,6 +5,9 @@
 기획·설계 기준은 [docs 레포](https://github.com/Dynamic-Juo/docs)를 따릅니다
 (`project/prd.md`, `design/ai-pipeline.md`). 작업 규칙은 [AGENTS.md](AGENTS.md)를 참고하세요.
 
+새 기기에서 이어서 작업할 때는 [현재 상태와 읽는 순서](docs/handoff.md)부터 확인하세요.
+[프롬프트·평가 결과](docs/prompt-evaluation.md)와 [M4 맥미니·OrbStack 배포 절차](docs/deployment-mac-mini.md)를 별도로 관리합니다.
+
 > **[파이프라인 해부도](docs/pipeline.md)** — 단계별 흐름도, 각 단계의 라이브러리와 실패 처리,
 > 모델·라이브러리를 갈아끼울 때 건드릴 곳, 구간별 실측 성능. 검증하거나 무언가를 교체할 때 여기부터 보세요.
 
@@ -45,8 +48,8 @@
 2. 없으면 **LLM에게 근거를 주고 관계를 판정**하게 합니다.
 3. LLM도 못 쓰면 근거만 붙이고 판단을 유보합니다.
 
-2번에는 환각을 막는 장치가 있습니다. LLM은 판정과 함께 **근거 원문에서 발췌한 문장**을
-제출해야 하고, 서버가 그 문장이 실제 근거에 있는지 대조합니다. 없으면 판정을 통째로 버리고
+2번에는 인용 검증 장치가 있습니다. LLM은 판정과 함께 **제공한 자료에서 발췌한 문장**을
+제출해야 하고, 서버가 그 문장이 해당 자료에 있는지 대조합니다. 현재 수집 범위는 검색 제목·요약문이며 기사 전체 원문 수집은 미구현입니다. 인용이 없으면 판정을 통째로 버리고
 `근거 부족`으로 강등합니다. 생성의 위험을 검증으로 막는 구조입니다.
 
 - 검색 결과가 없다는 이유만으로 주장을 거짓으로 판정하지 않습니다.
@@ -75,7 +78,7 @@ URL ─► 다운로드(yt-dlp) ─┤
 | 얼굴 crop | `deepcheck/face.py` | MediaPipe |
 | 조작 탐지 | `deepcheck/deepfake.py` | ViT 분류기 + 휴리스틱 + 선택적 VLM |
 | 텍스트 신호 | `deepcheck/analyzer.py` | 자가표기·합성음성·클릭베이트 |
-| 주장 검증 | `deepcheck/claims.py` | 규칙 기반 추출 + 위키백과·GDELT·팩트체크 API |
+| 주장 검증 | `deepcheck/claims.py`, `deepcheck/prompts.py` | LLM/규칙 추출 + 네이버·위키백과 등 검색 + LLM 판정·인용 검증 |
 | 결과 조립 | `deepcheck/report.py` | 두 축 분리, text/JSON/HTML 출력 |
 | API | `backend/app.py`, `backend/harness.py` | FastAPI + 워커 풀 |
 | 에러·로그 | `deepcheck/errors.py`, `deepcheck/logging_setup.py` | 도메인 예외, request_id 로깅 |
@@ -287,15 +290,15 @@ pytest
 | 화면 | 표시할 것 | 어디서 |
 | --- | --- | --- |
 | S-02 상단 | 썸네일 · 채널 · 길이 · 게시일 | `result.media.thumbnail` / `uploader` / `duration` / `upload_date` |
-| S-02 진행 | 단계 문구 | `job.message`, 단계 구분은 `job.status`(`processing:*`) |
+| S-02 진행 | 단계 문구 | `job.message`, 단계 구분은 `job.stage` (부분 결과 이후에도 갱신) |
 | S-02 하단 | 분석 ID · 시각 | `job.display_id`(`CN-A1B2-C3D4`) / `job.created_at_iso` |
-| S-02·S-03 경과 | "경과 01:52" | `job.elapsed_sec` (서버 기준. 완료되면 총 소요 시간으로 고정된다) |
+| S-02·S-03 경과 | "경과 01:52" | `job.processing_elapsed_sec`, 대기 시간은 `job.queue_wait_sec` |
 | S-03 ① | "검증할 주장 8개를 찾았습니다" | `claim_verification.summary.total` |
 | S-03 ② | "3/8개 완료" | `summary.done` / `summary.total` |
 | S-03 ⑦ | "00:12 ~ 00:19 · 음성 인식" | `claim.start`·`end`·`time_precision`, 출처는 `media.transcript_source` |
 | S-03 접힘 | "근거 2건 · 정부·공공기관 원문 포함" | `claim.evidence.length`, `evidence[].is_primary` |
 | S-04 요약 | "일치 2 · 불일치 3 · 근거 부족 3" | `summary.supported` / `refuted` / `unverified` |
-| S-04 요약 | "완료 8 · 미완료 0 · 시간 초과 0" | `summary.done` / `pending`+`verifying` / `timed_out` |
+| S-04 요약 | "완료 8 · 미완료 0 · 시간 초과 0" | `summary.done` / `pending`+`verifying`+`failed` / `timed_out` |
 | S-04 미디어 축 | 판단 근거와 분석 범위 | `face_manipulation.status_label` + `detail` |
 | S-04D 근거 카드 | 출처 유형 배지 · 발행일 · 발행 기관 | `evidence[].source_type_label` / `published_at` / `publisher` |
 | S-04D 근거 카드 | "이 자료가 주장을 반박하는 이유" | `evidence[].cite_reason` |
@@ -304,7 +307,7 @@ pytest
 
 **아직 서버가 주지 않는 것**
 
-- `S-03 ④ "분석이 예상보다 오래 걸리고 있습니다"` — `job.elapsed_sec`로 프런트에서 판단해주세요.
+- `S-03 ④ "분석이 예상보다 오래 걸리고 있습니다"` — `job.processing_elapsed_sec`로 프런트에서 판단해주세요.
   서버가 별도 신호를 주지 않습니다.
 - 출처 유형 라벨이 시안과 조금 다릅니다. 시안의 `정부·공공기관`은 서버에서 `공식 발표`(`official`)로
   나갑니다. 화면 문구를 바꾸실지, 서버 라벨을 맞출지 정해주시면 맞추겠습니다.
