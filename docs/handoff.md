@@ -4,6 +4,8 @@
 
 ## 먼저 읽을 것
 
+최신 실측: 사용자 영상 cYRkZmBuDqI는 내부 API에서 25.1초에 completed였다. 다운로드/미디어 실행은 확인했지만 STT 3단어·coverage 100%와 no_claims 결과로 내용 품질은 미검증이다. 배포 키 세 개가 없어 DeepSeek·NAVER 성공도 미검증이다. 상세는 worklog의 사용자 지정 영상 실측을 확인한다. DNS는 모든 직접 resolver 질의 성공/새 도메인의 macOS 조회 실패로 로컬 캐시·resolver 경로가 의심되며 아직 해결하지 않았다.
+
 추가 상태: `.github/workflows/backend-ci.yml`에 ARM64 이미지 빌드·격리 테스트·main GHCR 게시 초안을 준비했다. 원격 Actions 실행·게시 권한과 맥미니 자동 배포는 미검증이다. 운영 hostname·공개 범위 및 FE Origin을 정한 뒤 환경 분리와 인증/CORS를 연결한다.
 
 공개 범위는 일반 사용자 서비스로 확정됐으나 실제 운영 공개는 보류한다. 프론트가 나오기 전 준비와 팀장님에게 받을 정보는 [프론트 연동](frontend-integration.md)에 정리했다. Compose 환경 파일·네트워크 별칭 분리를 정적으로 검증했다. 기존 이미지의 로컬 테스트는 167개 통과했지만 종료 뒤 백그라운드 다운로드와 닫힌 로그 스트림 오류가 있어 테스트 작업 종료 격리를 보완해야 한다. 서버 `.env.home` 키 세 개는 재확인 시에도 비어 있었고 DNS 일반 요청도 실패했다.

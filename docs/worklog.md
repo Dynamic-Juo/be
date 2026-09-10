@@ -252,3 +252,12 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 프론트 연동 문서에 API 접수·폴링, 오류 처리, 정확한 Origin, Access 쿠키/OPTIONS, 팀장님에게 받을 정보를 정리했다.
 - 임시 ARM64 컨테이너에서 기존 배포 이미지와 현재 테스트로 167 passed, 2 warnings, exit 0을 확인했다. macOS bind mount 권한 실패로 docker cp 방식으로 재실행했다. 종료 뒤 테스트의 백그라운드 다운로드가 계속되어 닫힌 스트림 로그 오류가 발생했다. 완전히 격리된 테스트로 간주하지 않으며 fixture 종료 처리가 후속 과제다. 실제 GitHub Actions 실행·새 이미지 빌드 검증은 아니다.
 - 서버 .env.home 키 세 항목은 비어 있었고 일반 curl은 DNS 해석 실패였다. API 키 값은 출력하지 않았다. 따라서 실제 provider·영상 분석 검증은 진행하지 않았다.
+
+### 2026-09-11 — 사용자 지정 영상 개발계 실측
+
+- 사용자 지정 YouTube cYRkZmBuDqI(140초)를 배포 컨테이너 내부 API로 접수했다. job 0dd9b0fd4ce543d5bf51d38a3490c1ee는 25.1초에 completed로 종료했다. 외부 브라우저/Access E2E가 아니다.
+- 다운로드 4.24초, 프레임 추출 6.16초, 미디어 분석 8.99초, 전사 5.7초였다. 8개 프레임 중 5개에서 얼굴을 검출했고 2개 프레임 점수는 약 99%였지만 집계 위험도 25.7로 뚜렷한 조작 징후 없음이 반환됐다. 이 결과만으로 영상 진위나 모델 정확도를 주장하지 않는다.
+- STT는 3단어만 반환했으나 coverage_pct는 100이었다. pipeline.py는 STT duration/영상 duration 비율을 계산하므로 인식된 발언 정확도나 내용 완전성 100%를 뜻하지 않는다. 음성/음악 내용 대조와 인식 실패 원인 검증이 필요하다. 전체 AI 생성은 unavailable, 주장은 no_claims였다.
+- .env.home과 실행 컨테이너에서 DeepSeek·NAVER 키 세 개가 모두 비어 있음을 값 없이 확인했다. 따라서 LLM/검색 provider 성공은 검증하지 못했다. 완료 상태를 전체 기능 성공으로 해석하지 않는다.
+- 분석 후 메모리 약 1.545GiB(피크 아님), healthy·재시작 0·OOM false였다. 기존 컨테이너도 실행 상태를 유지했다.
+- 공개/Tailscale/공유기 및 설정된 IPv6 DNS 서버들은 새 API A 레코드를 반환했다. macOS dscacheutil과 일반 curl은 새 도메인에 실패하지만 기존 lunchpick·cloudflare.com은 성공했다. 로컬 부정 캐시 또는 macOS resolver 경로 문제로 좁혀졌으나 캐시 초기화 전후 비교는 하지 않아 원인을 확정하지 않았다. DNS·VPN 설정은 변경하지 않았다.
