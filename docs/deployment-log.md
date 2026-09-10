@@ -37,7 +37,9 @@ docker compose -p conan-staging --env-file .env.home -f compose.home.yml stop de
 
 ### Cloudflare 연결 대기
 
-보유 도메인의 개발계 API hostname을 정한 뒤 Access 앱을 먼저 만들고 기존 Tunnel의 published application route를 추가한다. Access는 팀원 이메일 등 허용 대상을 정하고 Tunnel은 hostname에서 내부 서비스까지의 경로를 정한다. hostname·허용 대상을 아직 전달받지 않아 이 단계는 실행하지 않았다.
+사용자가 개발계 API hostname을 `conan-api-dev.dotseven.cloud`로 확정했다. API 키 세 항목은 아직 비어 있고 Access 허용 이메일은 확인 대기다. 대시보드 로그인 화면까지 확인했으며 DNS·Access·Tunnel route는 아직 변경하지 않았다. API hostname을 프론트 CORS Origin으로 대신 입력하지 않는다.
+
+확정한 hostname의 Access 앱을 먼저 만들고 기존 Tunnel의 published application route를 추가한다. Access는 팀원 이메일 등 허용 대상을 정하고 Tunnel은 hostname에서 내부 서비스까지의 경로를 정한다. 허용 대상과 대시보드 로그인이 대기 중이라 이 단계는 실행하지 않았다. 서버 curl 점검에서 해당 hostname은 아직 DNS 해석되지 않았고 staging 컨테이너는 healthy였다.
 
 기존 cloudflared를 conan-staging-ingress에 연결한 이후 staging 목적지는 `http://conan-staging-deepcheck-api-1:8000`을 사용한다. 향후 운영 네트워크도 같은 Tunnel에 연결할 때 공통 별칭 conan-api가 중복되지 않도록 환경별 고유 컨테이너명을 사용한다. 현재 목적지는 cloudflared에서 아직 접근할 수 없다.
 
