@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Protocol
 
 from .config import config
+from .prompts import EXTRACT_SYSTEM, VERDICT_SYSTEM, PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,10 @@ class Claim:
     time_precision: str | None = None
     # 이 주장이 영상에서 언급된 모든 위치(M-04: 같은 의미는 병합하고 위치 보관).
     mentions: list[dict] = field(default_factory=list)
+    # 전문에서 대조를 통과한 문맥만 보관한다. 영상 정보는 판정의 시점 해석용이다.
+    context: str = ""
+    video_title: str | None = None
+    video_published_at: str | None = None
     evidence: list[Evidence] = field(default_factory=list)
 
     def __post_init__(self):
@@ -646,22 +651,7 @@ def extract_claims(text: str, segments: list[dict] | None = None,
     return claims
 
 
-_EXTRACT_SYSTEM = (
-    "당신은 한국어 영상의 발언 전문에서 사실 확인이 가능한 주장을 골라내는 도구다.\n"
-    "규칙:\n"
-    "1. 검증 가능한 사실 주장만 고른다. 인물·기관·날짜·수치·사건 등 구체적인 정보가 "
-    "담긴 문장을 우선한다.\n"
-    "2. 의견, 감상, 인사말, 아직 일어나지 않은 미래 전망은 제외한다.\n"
-    "3. text에는 발언 전문에 있는 문장을 글자 그대로 옮긴다. 요약하거나 다듬지 않는다.\n"
-    "4. 대명사('그게', '이것')로 앞을 가리키는 문장은 앞 문맥을 반영해 무엇을 가리키는지 "
-    "context에 적는다. text 자체는 원문 그대로 둔다.\n"
-    "5. 같은 의미의 주장이 여러 번 나오면 하나로 합치고, 반복 횟수를 repeat에 적는다.\n"
-    "6. 영상의 핵심 주제와 관련이 깊은 것, 반복된 것, 구체적인 것, 먼저 나온 것 "
-    "순으로 정렬한다.\n"
-    "JSON 객체 하나만 출력한다:\n"
-    '{"claims":[{"text":"원문 그대로의 문장","context":"대명사가 가리키는 대상(없으면 빈 문자열)",'
-    '"repeat":반복횟수(정수)}]}'
-)
+_EXTRACT_SYSTEM = EXTRACT_SYSTEM
 
 
 def extract_claims_llm(text: str, segments: list[dict] | None = None,
@@ -681,14 +671,12 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
         return extract_claims(text, segments, max_claims)
 
     limit = max_claims if max_claims is not None else config.max_claims
-    hint = (f"최대 {limit}건까지 고른다." if limit and limit > 0
-            else "개수 제한은 없다. 검증 가능한 주장을 빠짐없이 고른다.")
     try:
         data = llm.complete_json(
             llm_provider,
             _EXTRACT_SYSTEM,
-            f"{hint}\n\n발언 전문:\n{text[:12000]}",
-            max_tokens=2048,
+            json.dumps({"max_claims": limit, "transcript": text}, ensure_ascii=False),
+            max_tokens=4096,
         )
     except llm.LLMUnavailable as e:
         logger.warning("LLM 주장 추출 실패 — 규칙 기반으로 폴백: %s", e)
@@ -698,6 +686,10 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
     if not isinstance(raw_items, list):
         logger.warning("LLM 주장 추출 응답에 claims 배열이 없음 — 규칙 기반으로 폴백")
         return extract_claims(text, segments, max_claims)
+
+    # 정상적인 빈 배열은 "주장 없음"이다. 오류 폴백과 구분한다.
+    if not raw_items:
+        return []
 
     # 원문에 실제로 있는 문장만 남긴다. 판정의 인용 검증과 같은 이유로,
     # 발언하지 않은 문장을 검증 대상에 올리면 그 자체가 허위 정보가 된다.
@@ -719,8 +711,11 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
         claim = Claim(text=sentence)
         repeat = item.get("repeat")
         context = str(item.get("context", "")).strip()
-        if context:
+        if context and _normalize_for_quote(context) in haystack:
+            claim.context = context
             claim.mentions.append({"context": context})
+        elif context:
+            logger.warning("발언 전문에 없는 문맥 — 제외")
         if isinstance(repeat, int) and repeat > 1:
             claim.mentions.append({"repeat": repeat})
         claims.append(claim)
@@ -732,7 +727,8 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
         return extract_claims(text, segments, max_claims)
 
     _attach_timestamps(claims, segments or [])
-    logger.info("LLM 주장 추출 %d건 (원문 대조 실패로 제외 %d건)", len(claims), dropped)
+    logger.info("LLM 주장 추출 %d건 (원문 대조 실패 %d건, prompt=%s)",
+                len(claims), dropped, PROMPT_VERSION)
     return claims
 
 
@@ -905,29 +901,7 @@ def default_providers(cfg=None) -> list[EvidenceProvider]:
 # 근거를 읽고 판단하는 단계가 없으면 evidence-policy.md가 정한 절차(시점 확인,
 # 출처 충돌 처리, 근거 부족 사유 구분)를 아예 수행할 수 없다.
 
-_VERDICT_SYSTEM = (
-    "당신은 한국어 팩트체크 보조 도구다. 주어진 근거 자료만 가지고 주장과 근거의 "
-    "관계를 판정한다.\n"
-    "규칙:\n"
-    "1. 제공된 근거 안에 있는 내용만 사용한다. 당신이 알고 있는 다른 지식은 쓰지 않는다.\n"
-    "2. 주장이 사실인지 아닌지를 판정하는 것이 아니라, 주어진 근거와 일치하는지를 판정한다.\n"
-    "3. 근거가 주장을 직접 확인해주지 못하면 반드시 '부족'으로 답한다. 추측하지 않는다.\n"
-    "4. 판정에 실제로 쓴 근거만 cited에 담는다. 각 항목에는 그 근거의 원문에 실제로 "
-    "있는 문장을 글자 그대로 옮기고(quote), 그 자료가 주장을 어떻게 뒷받침하거나 "
-    "반박하는지 한 문장으로 적는다(reason). 요약하거나 다시 쓰지 않는다.\n"
-    "5. 판정에 쓰지 않은 근거는 cited에 넣지 않는다. 부족으로 판정하면 cited는 "
-    "빈 배열이다.\n"
-    "6. 주장과 근거의 기준 시점이 다르면 수치가 달라도 '불일치'가 아니라 '부족'이며 "
-    "사유는 time_mismatch다.\n"
-    "7. 신뢰할 만한 근거들이 서로 다른 값을 말하면 한쪽을 고르지 말고 '부족', "
-    "사유는 source_conflict다.\n"
-    "8. 복합 주장의 일부만 확인되면 '부족', 사유는 partial이다.\n"
-    "JSON 객체 하나만 출력한다:\n"
-    '{"verdict":"일치|불일치|부족","reason":"판정 이유 한두 문장",'
-    '"cited":[{"index":근거번호(정수),"quote":"그 근거 원문에서 그대로 발췌한 문장",'
-    '"reason":"이 자료가 주장을 뒷받침·반박하는 이유 한 문장"}],'
-    '"insufficient_reason":"no_source|not_direct|time_mismatch|source_conflict|weak_source|partial"}'
-)
+_VERDICT_SYSTEM = VERDICT_SYSTEM
 
 _LLM_VERDICT_MAP = {"일치": SUPPORTED, "불일치": REFUTED, "부족": UNVERIFIED}
 _LLM_INSUFFICIENT = {NO_SOURCE, NOT_DIRECT, TIME_MISMATCH, SOURCE_CONFLICT,
@@ -955,8 +929,20 @@ def _quote_found_in(quote: str, item: Evidence) -> bool:
     # 너무 짧은 인용은 우연히 일치할 수 있어 근거로 인정하지 않는다.
     if len(needle) < 8:
         return False
-    haystack = _normalize_for_quote(f"{item.title} {item.snippet or ''}")
+    haystack = _normalize_for_quote(_evidence_content(item))
     return needle in haystack
+
+
+def _evidence_content(item: Evidence) -> str:
+    """모델에 보낸 범위와 서버 인용 검증 범위를 일치시킨다. 아직 검색 발췌다."""
+    return f"{item.title}\n{(item.snippet or '')[:800]}"
+
+
+def _clear_citations(evidence: list[Evidence]) -> None:
+    for item in evidence:
+        item.cited = False
+        item.quote = None
+        item.cite_reason = None
 
 
 def _apply_citations(raw: object, evidence: list[Evidence]) -> list[Evidence]:
@@ -968,17 +954,21 @@ def _apply_citations(raw: object, evidence: list[Evidence]) -> list[Evidence]:
         if not isinstance(entry, dict):
             continue
         index = entry.get("index")
-        if not isinstance(index, int) or not 1 <= index <= len(evidence):
+        if type(index) is not int or not 1 <= index <= len(evidence):
             logger.warning("LLM이 없는 근거 번호를 지목: %r", index)
             continue
         item = evidence[index - 1]
-        quote = str(entry.get("quote", "")).strip()
+        quote = entry.get("quote")
+        reason = entry.get("reason")
+        if not isinstance(quote, str) or not isinstance(reason, str) or not reason.strip():
+            continue
+        quote = quote.strip()
         if config.llm_quote_check and not _quote_found_in(quote, item):
             logger.warning("인용 검증 실패 — 근거 %d에 없는 문장: %s", index, quote[:60])
             continue
         item.cited = True
         item.quote = quote or None
-        item.cite_reason = str(entry.get("reason", "")).strip() or None
+        item.cite_reason = reason.strip()
         cited.append(item)
     return cited
 
@@ -987,18 +977,23 @@ def _llm_verdict(claim: Claim, evidence: list[Evidence], provider) -> dict | Non
     """LLM에게 판정을 묻는다. 못 쓰거나 신뢰할 수 없으면 None을 돌려 폴백시킨다."""
     from . import llm  # 순환 import 방지를 위해 호출 시점에 가져온다.
 
-    lines = []
-    for i, item in enumerate(evidence, 1):
-        published = item.published_at or "발행일 미상"
-        lines.append(
-            f"[근거 {i}] 제목: {item.title}\n"
-            f"  출처: {item.source} ({item.source_type}) / {published}\n"
-            f"  내용: {(item.snippet or '(본문 없음)')[:800]}"
-        )
-    user = f"주장: {claim.text}\n\n" + "\n\n".join(lines)
+    _clear_citations(evidence)
+    user = json.dumps({
+        "claim": claim.text,
+        "context": claim.context,
+        "video_title": claim.video_title,
+        "video_published_at": claim.video_published_at,
+        "evidence": [{
+            "index": i, "title": item.title, "url": item.url,
+            "publisher": item.publisher, "source_type": item.source_type,
+            "published_at": item.published_at,
+            "content_scope": "search_excerpt",
+            "content": _evidence_content(item),
+        } for i, item in enumerate(evidence, 1)],
+    }, ensure_ascii=False)
 
     try:
-        data = llm.complete_json(provider, _VERDICT_SYSTEM, user, max_tokens=512)
+        data = llm.complete_json(provider, _VERDICT_SYSTEM, user, max_tokens=2048)
     except llm.LLMUnavailable as e:
         logger.warning("LLM 판정 실패 — 규칙 기반으로 폴백: %s", e)
         return None
@@ -1009,13 +1004,18 @@ def _llm_verdict(claim: Claim, evidence: list[Evidence], provider) -> dict | Non
         return None
 
     reason = str(data.get("reason", "")).strip()
-    cited = _apply_citations(data.get("cited"), evidence)
+    raw_cited = data.get("cited")
+    # 부족 판정에서 모델이 인용을 잘못 붙여도 참고 자료만으로 남긴다.
+    cited = (_apply_citations(raw_cited, evidence)
+             if verdict in (SUPPORTED, REFUTED) else [])
 
     # 일치·불일치를 선언하려면 검증을 통과한 인용이 하나는 있어야 한다.
     # 하나도 남지 않았다면 근거를 읽고 판단했다고 볼 수 없으므로 강등한다.
-    if verdict in (SUPPORTED, REFUTED) and config.llm_quote_check and not cited:
+    if (verdict in (SUPPORTED, REFUTED) and config.llm_quote_check
+            and (not cited or len(cited) != len(raw_cited))):
         logger.warning("인용 검증을 통과한 근거가 없어 판정 %s를 근거 부족으로 강등: %s",
                        verdict, claim.text[:40])
+        _clear_citations(evidence)
         return {
             "verdict": UNVERIFIED,
             "reason": "근거 자료에서 판정을 뒷받침하는 문장을 확인하지 못해 판단을 유보한다.",
@@ -1065,7 +1065,7 @@ def verify_one_claim(claim: Claim, providers: list[EvidenceProvider],
     per_claim = evidence_per_claim or config.evidence_per_claim
     claim.status = VERIFYING
 
-    query = _search_query(claim.text)
+    query = _search_query(f"{claim.text} {claim.context}")
     collected: list[Evidence] = []
     for provider in providers:
         try:
@@ -1075,11 +1075,12 @@ def verify_one_claim(claim: Claim, providers: list[EvidenceProvider],
             logger.warning("근거 검색 실패(%s): %s", getattr(provider, "name", "?"), e)
 
     # 검색 결과 중 이 주장과 실제로 관련 있는 것만 근거로 삼는다.
-    relevant = [e for e in collected if _is_relevant(claim.text, e)]
+    relevant = [e for e in collected if _is_relevant(f"{claim.text} {claim.context}", e)]
     dropped = len(collected) - len(relevant)
     if dropped:
         logger.info("무관한 검색 결과 %d건 제외 (남은 근거 %d건)", dropped, len(relevant))
-    claim.evidence = relevant[: per_claim * 2]
+    # 판정에 보낸 자료를 응답에서 자르면 인용이나 충돌 출처가 사라진다.
+    claim.evidence = relevant
 
     # 1순위 — 전문 기관이 이미 내린 판정. 우리 추론보다 신뢰도가 높다.
     for evidence in relevant:

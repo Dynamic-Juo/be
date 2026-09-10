@@ -59,6 +59,7 @@ class Job:
     # 나중에 요청한 세션이 자기 목록에서 이 분석을 찾을 수 있어야 한다.
     session_ids: list[str] = field(default_factory=list)
     status: str = QUEUED
+    stage: str | None = None
     progress: float = 0.0
     message: str = "대기 중"
     result: dict[str, Any] | None = None
@@ -67,6 +68,7 @@ class Job:
     error: dict[str, Any] | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    started_at: float | None = None
 
     @property
     def display_id(self) -> str:
@@ -91,6 +93,12 @@ class Job:
         data["updated_at_iso"] = _isoformat(self.updated_at)
         data["elapsed_sec"] = round(
             (time.time() if not self.finished else self.updated_at) - self.created_at, 1
+        )
+        end = time.time() if not self.finished else self.updated_at
+        queue_end = self.started_at if self.started_at is not None else end
+        data["queue_wait_sec"] = round(queue_end - self.created_at, 1)
+        data["processing_elapsed_sec"] = (
+            round(end - self.started_at, 1) if self.started_at is not None else 0.0
         )
         return data
 
@@ -193,6 +201,8 @@ class Harness:
     def _run(self, job: Job) -> None:
         token = current_job_id.set(job.id)
         job.status = f"{PROCESSING_PREFIX}collecting"
+        job.stage = "collecting"
+        job.started_at = time.time()
         job.message = "시작"
         job.result = {}
         job.updated_at = time.time()
@@ -241,6 +251,8 @@ class Harness:
     def _update(self, job: Job, pct: float, msg: str, stage: str | None = None) -> None:
         job.progress = max(0.0, min(1.0, pct))
         job.message = msg
+        if stage and job.status not in _TERMINAL:
+            job.stage = stage
         # partially_completed로 넘어간 뒤에는 세부 단계 태그를 더 이상 반영하지
         # 않는다 — "첫 결과가 준비되면 partially_completed로 전환"이 그 뒤로도
         # processing:* 로 되돌아가지 않는다는 뜻이기 때문이다.
@@ -251,7 +263,9 @@ class Harness:
     def _merge_partial(self, job: Job, patch: dict) -> None:
         with self._lock:
             job.result.update(patch)
-            if job.status not in (PARTIALLY_COMPLETED,) and job.status not in _TERMINAL:
+            has_analysis = any(k in patch for k in (
+                "face_manipulation", "whole_video_generation", "claim_verification"))
+            if has_analysis and job.status not in (PARTIALLY_COMPLETED,) and job.status not in _TERMINAL:
                 job.status = PARTIALLY_COMPLETED
         job.updated_at = time.time()
 

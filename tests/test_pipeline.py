@@ -65,6 +65,21 @@ def _wire_fast_pipeline(monkeypatch):
 
 
 class TestIncrementalDelivery:
+    def test_미디어_정보와_발언_출처가_필요한_단계_전에_전달된다(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+        from deepcheck import llm
+        monkeypatch.setattr(llm, "get_provider", lambda: None)
+        seen = {}
+
+        def progress(pct, message, stage=None):
+            if stage == "transcribing":
+                assert seen["media"]["title"] == "테스트 영상"
+            if stage == "extracting_claims":
+                assert seen["media"]["transcript_source"] == "stt"
+
+        pipeline.analyze_url("https://example.com/v", progress_cb=progress,
+                             on_partial=seen.update)
+
     def test_미디어_결과가_주장_결과보다_먼저_온다(self, monkeypatch):
         _wire_fast_pipeline(monkeypatch)
         events: list[dict] = []

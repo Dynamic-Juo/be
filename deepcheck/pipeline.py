@@ -137,6 +137,12 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         with tracker.run("download"):
             media = downloader.download(url, tmp, caption_policy=opts.caption_policy)
         _check_supported_video(media, opts)
+        meta = {
+            "url": url, "title": media.title, "uploader": media.uploader,
+            "duration": media.duration, "video_id": media.video_id,
+            "thumbnail": media.thumbnail, "upload_date": media.upload_date,
+        }
+        partial({"media": {k: v for k, v in meta.items() if k != "url"}})
 
         progress(0.25, "프레임 추출 중...", "collecting")
         frames = _extract_frames(media, tmp, opts, tracker)
@@ -160,6 +166,9 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         transcript = _collect_transcript(media, opts, tracker)
         transcript_text = transcript.text
         segments = transcript.segments
+        meta.update(language=transcript.language, stt_coverage_pct=transcript.coverage_pct,
+                    transcript_source=transcript.source)
+        partial({"media": {k: v for k, v in meta.items() if k != "url"}})
 
         progress(0.65, "텍스트 신호 분석 중...", "transcribing")
         txt_report = analyzer.analyze(
@@ -171,21 +180,10 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         claim_result = _verify_claims(
             transcript_text, segments, opts, tracker, deadline=started + config.max_processing_sec,
             progress=progress, partial=partial,
+            video_title=media.title, video_published_at=media.upload_date,
         )
 
         progress(0.95, "결과 정리 중...", "verifying")
-        meta = {
-            "url": url,
-            "title": media.title,
-            "uploader": media.uploader,
-            "duration": media.duration,
-            "video_id": media.video_id,
-            "thumbnail": media.thumbnail,
-            "upload_date": media.upload_date,
-            "language": transcript.language,
-            "stt_coverage_pct": transcript.coverage_pct,
-            "transcript_source": transcript.source,
-        }
         final = report.build(
             meta, det_report.__dict__, txt_report.__dict__,
             stages=tracker.as_dict(), claim_verification=claim_result,
@@ -418,7 +416,9 @@ def _claim_verification_snapshot(claim_list: list[claims.Claim]) -> report.Claim
 def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
                    tracker: StageTracker, deadline: float,
                    progress: Callable[[float, str, str | None], None],
-                   partial: Callable[[dict], None]) -> report.ClaimVerification:
+                   partial: Callable[[dict], None],
+                   video_title: str | None = None,
+                   video_published_at: str | None = None) -> report.ClaimVerification:
     """주장 사실성 검증 축: 주장 추출 → 카드 생성(즉시 통지) → 하나씩 검증(통지).
 
     카드가 폴링마다 채워지는 게 목적이라, 여기서 리스트를 한 번에 처리하고 끝에
@@ -472,6 +472,9 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
         )
 
     # 전체 주장 수가 확정된 시점 — 카드를 전부 만들어 즉시 통지한다.
+    for claim in extracted:
+        claim.video_title = video_title
+        claim.video_published_at = video_published_at
     logger.info("주장 %d건 추출, 검증 시작", len(extracted))
     partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
     progress(0.75, f"주장 {len(extracted)}건 검증 중...", "verifying")
@@ -488,7 +491,12 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
             claim.status = claims.TIMED_OUT
             claim.insufficient_reason = claims.TIMEOUT
             claim.insufficient_label = claims.INSUFFICIENT_LABELS[claims.TIMEOUT]
+            with notify_lock:
+                partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
             return False
+        with notify_lock:
+            claim.status = claims.VERIFYING
+            partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
         try:
             claims.verify_one_claim(claim, active_providers, llm_provider=llm_provider)
         except Exception:
@@ -537,15 +545,6 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
         f"시간초과 {timed_out_count})",
         round(time.monotonic() - started, 2),
     )
-    return report.ClaimVerification(
-        status=report.AxisStatus.ANALYZED.value,
-        claims=[c.to_dict() for c in extracted],
-        summary={
-            "total": len(extracted),
-            "supported": counts[claims.SUPPORTED],
-            "refuted": counts[claims.REFUTED],
-            "unverified": counts[claims.UNVERIFIED],
-            "timed_out": timed_out_count,
-        },
-        detail=detail,
-    )
+    final = _claim_verification_snapshot(extracted)
+    final.detail = detail
+    return final
