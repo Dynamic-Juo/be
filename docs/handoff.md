@@ -4,6 +4,8 @@
 
 ## 먼저 읽을 것
 
+추가 상태: `.github/workflows/backend-ci.yml`에 ARM64 이미지 빌드·격리 테스트·main GHCR 게시 초안을 준비했다. 원격 Actions 실행·게시 권한과 맥미니 자동 배포는 미검증이다. 운영 hostname·공개 범위 및 FE Origin을 정한 뒤 환경 분리와 인증/CORS를 연결한다.
+
 1. [작업 규칙](../AGENTS.md)과 이 문서
 2. [기획 PR #6](https://github.com/Dynamic-Juo/docs/pull/6), 특히 PR 머리의 PRD·evidence-policy·analysis-runtime·result-ui와 최신 리뷰
 3. [프롬프트 평가](prompt-evaluation.md), [코드 흐름](pipeline.md)

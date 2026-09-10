@@ -238,3 +238,9 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 기존 cloudflared에 conan-staging-ingress를 재시작 없이 연결하고 관리 Compose에 external network를 영속화했다. Compose 정적 검증과 Tunnel 네트워크에서 내부 /health 응답을 확인했다. 토큰 포함 Compose는 Git에 복사하지 않았다. 기존 7개 컨테이너와 다른 hostname 경로는 유지됐다.
 - 공개 DNS 두 곳의 응답을 확인했다. 맥미니 기본 resolver는 아직 이름 해석에 실패해 공개 DNS IP를 --resolve로 지정하고 TLS 검증을 유지했다. 미인증 /health·/api/jobs GET 및 /api/analyze POST는 모두 Access 로그인으로 HTTP 302를 반환했다.
 - 본인 인증 후 응답·다른 이메일 거부·키 입력 후 실제 영상 분석·FE CORS는 미검증이다. 운영계 및 Actions는 이번에도 생성하지 않았다.
+
+### 2026-09-11 — CI 초안과 프론트 연동 조건
+
+- 사용자 요청으로 GitHub-hosted ARM64에서 Docker 이미지 빌드·격리 테스트 후 main 이미지를 GHCR에 게시하는 Actions 초안을 추가했다. PR에서는 이미지를 게시하지 않고 provider 키를 전달하지 않는다. 실제 Actions 실행 및 GHCR 권한은 미검증이며 main 병합과 맥미니 자동 배포는 하지 않았다.
+- 개발·운영은 별도 Compose 프로젝트·배포 디렉터리·환경 파일·네트워크·모델 볼륨으로 분리하고 테스트한 이미지 digest를 운영에 승격한다. 운영 hostname과 공개 범위, 제한된 배포 인증 경로는 확정이 필요하다. 맥미니에 범용 self-hosted runner를 설치하지 않았다.
+- 프론트 연동에는 정확한 개발/운영 Origin, API base URL, Access 허용 대상과 인증 쿠키·OPTIONS 검증이 필요하다. 현재 본인 이메일 전용 정책은 팀장님 접속을 허용하지 않는다. POST /api/analyze의 job_id로 GET /api/jobs/{job_id}를 폴링하며 DeepSeek·NAVER 키 및 Access 서비스 토큰은 브라우저 코드에 넣지 않는다.
