@@ -1,6 +1,6 @@
 # M4 맥미니 배포 인수인계
 
-상태: 준비 구성과 개발 기기의 ARM64 검증 완료. 2026-09-10 맥미니 실제 Docker·자원·Tunnel 관리 경로와 Compose 정적 검증을 마쳤다. 맥미니 이미지 빌드·기동·외부 공개는 미실행이다. 확인값과 다음 단계는 [배포 점검 기록](deployment-log.md)에 관리한다.
+상태: 2026-09-11 맥미니 conan-staging 내부 기동과 얼굴·ViT·Whisper 모델 로딩을 확인했다. 키 입력·실제 영상·Tunnel·FE 연결은 대기 중이다. 실제 운영 명령은 [배포 점검 기록](deployment-log.md)의 -p conan-staging을 사용한다. 아래 기본 예시의 conan-home과 구분한다.
 
 사용자 확인 환경은 M4·16GB·OrbStack이다. 기존 cloudflared·Laravel·모니터링 컨테이너가 있으므로 Conan을 별도 Compose 프로젝트로 실행한다. 프론트는 Vercel 예정이며 실제 주소는 미정이다. 개발 맥의 Docker 컨텍스트를 원격 맥미니로 간주하지 않는다.
 

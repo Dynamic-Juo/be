@@ -224,3 +224,9 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 실제 서버의 Docker 29.4.0, Compose 5.1.2, linux/arm64, 물리 메모리 16GiB, VM 메모리 약 7.8GiB와 기존 실행 서비스 7개를 확인했다. 1회 stats의 컨테이너 메모리 합계는 약 288MiB이며 피크나 VM 전체 사용량이 아니다.
 - 기존 token 기반 cloudflared의 관리 Compose 경로와 두 네트워크만 조회했다. Conan 네트워크·이미지·환경 파일은 아직 없다. 비밀값 없는 격리 작업 복사본으로 Compose 정적 검증을 통과했고 포트 미노출·전용 네트워크·CPU 2개·메모리 3GiB를 확인했다.
 - 판단과 후속 항목은 [배포 점검 기록](deployment-log.md)에 남겼다. 환경 준비 후 내부 시험 배포가 가능하나, 실제 빌드·분석 부하·Tunnel·FE 인증/CORS는 미검증이다. 기존 컨테이너·네트워크·Cloudflare 설정은 변경하지 않았다.
+
+## 2026-09-11 staging 내부 배포
+
+- 사용자 요청으로 맥미니 main 472aff7의 ARM64 이미지를 실제 빌드하고 conan-staging 프로젝트로 기동했다. 이미지 ID·기동 시각·실행 명령은 [배포 기록](deployment-log.md)에 남겼다. 별도 네트워크·모델 볼륨을 만들고 CPU 2개·메모리 3GiB를 적용했으며 호스트 포트는 열지 않았다.
+- /health·/ready, Docker healthy, CPU torch 2.14.0+cpu, 얼굴 검출기, 실제 ViT·Whisper small 로딩을 확인했다. 모델 파일 캐시는 준비됐으나 API 프로세스의 최초 모델 로딩과 실제 영상 처리 시간·피크 메모리는 미측정이다. 기존 7개 서비스는 실행 상태를 유지했다.
+- 사용자가 키를 직접 넣을 .env.home을 권한 600으로 생성했다. 값은 출력하지 않았으며 Git ignore를 확인했다. 키·도메인이 없어 실제 외부 provider·Tunnel·FE 연결은 대기한다. 개발계/운영계 분리와 GitHub-hosted ARM64 CI, 이미지 승격 배포는 제안으로 문서에 기록했고 운영계·Actions runner는 생성하지 않았다.

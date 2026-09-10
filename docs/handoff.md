@@ -1,6 +1,6 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
-기준일: 2026-09-10. 현재 구현은 이 브랜치의 코드로 확인한다. 과거 작업 로그는 당시 기록이며 최신 상태를 덮어쓰지 않는다.
+기준일: 2026-09-11. 맥미니에 main 472aff7 이미지로 conan-staging을 기동했다. /health·/ready·얼굴·ViT·Whisper 로딩을 확인했으며 키와 외부 도메인은 대기 중이다. 실제 배포 상태와 -p conan-staging 명령은 [배포 점검 기록](deployment-log.md)을 먼저 확인한다. 과거 작업 로그는 당시 기록이며 최신 상태를 덮어쓰지 않는다.
 
 ## 먼저 읽을 것
 
@@ -22,7 +22,7 @@
 
 2026-09-10 재확인한 로컬·원격 main은 `472aff7201a834102d6ec2c27096dabb22a5ae4f`다. `fix/prompt-handoff`는 PR #1로 main에 병합됐으며 DeepSeek·NAVER·배포 구성도 main에 포함된다. 과거 미공유·병합 대기 기록은 worklog에 당시 이력으로 보존한다.
 
-현재 서버 점검 문서 브랜치는 main에서 분기한 `docs/mac-mini-readiness`다. 구현 기준은 472aff7이며 문서 변경이 운영 배포를 뜻하지 않는다. 다른 기기에서는 아래 명령으로 원격 동기화와 현재 커밋을 다시 확인한다.
+현재 서버 점검 문서 브랜치는 main에서 분기한 `docs/mac-mini-readiness`다. 서버 코드 checkout은 main 472aff7로 유지했고 사용자 요청에 따라 해당 이미지로 staging만 기동했다. 문서 브랜치 병합과 실제 운영 공개는 별도다. 다른 기기에서는 아래 명령으로 원격 동기화와 현재 커밋을 다시 확인한다.
 
 ```bash
 git status --short --branch
