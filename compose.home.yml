@@ -12,7 +12,7 @@ services:
     image: ${CONAN_IMAGE:-conan-be:home}
     ports: !reset []
     env_file: !override
-      - path: .env.home
+      - path: ${CONAN_ENV_FILE:-.env.home}
         required: true
     environment:
       DEEPCHECK_CORS_ORIGINS: ${DEEPCHECK_CORS_ORIGINS:?허용할 프론트 오리진을 지정하세요}
@@ -25,7 +25,7 @@ services:
     networks:
       ingress:
         aliases:
-          - conan-api
+          - ${CONAN_NETWORK_ALIAS:-conan-api}
 
 networks:
   ingress:
