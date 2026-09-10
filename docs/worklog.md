@@ -244,3 +244,11 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 사용자 요청으로 GitHub-hosted ARM64에서 Docker 이미지 빌드·격리 테스트 후 main 이미지를 GHCR에 게시하는 Actions 초안을 추가했다. PR에서는 이미지를 게시하지 않고 provider 키를 전달하지 않는다. 실제 Actions 실행 및 GHCR 권한은 미검증이며 main 병합과 맥미니 자동 배포는 하지 않았다.
 - 개발·운영은 별도 Compose 프로젝트·배포 디렉터리·환경 파일·네트워크·모델 볼륨으로 분리하고 테스트한 이미지 digest를 운영에 승격한다. 운영 hostname과 공개 범위, 제한된 배포 인증 경로는 확정이 필요하다. 맥미니에 범용 self-hosted runner를 설치하지 않았다.
 - 프론트 연동에는 정확한 개발/운영 Origin, API base URL, Access 허용 대상과 인증 쿠키·OPTIONS 검증이 필요하다. 현재 본인 이메일 전용 정책은 팀장님 접속을 허용하지 않는다. POST /api/analyze의 job_id로 GET /api/jobs/{job_id}를 폴링하며 DeepSeek·NAVER 키 및 Access 서비스 토큰은 브라우저 코드에 넣지 않는다.
+
+### 2026-09-11 — 환경 분리 준비와 로컬 CI 검증
+
+- 일반 사용자 공개 목표를 사용자에게 확인했다. 공개 전 입력/실행/조회 제한 검증이 남아 있어 개발계 Access를 유지하고 운영 라우트는 생성하지 않았다.
+- compose.home.yml의 서비스 env_file을 CONAN_ENV_FILE로 선택하고 CONAN_NETWORK_ALIAS를 환경별로 지정할 수 있도록 변경했다. 기존 기본값을 보존했다. 비밀값 없는 작업 복사본에서 conan-staging·conan-production 각각 config --quiet를 통과했다. 실제 서버 Compose 교체와 운영 기동은 하지 않았다.
+- 프론트 연동 문서에 API 접수·폴링, 오류 처리, 정확한 Origin, Access 쿠키/OPTIONS, 팀장님에게 받을 정보를 정리했다.
+- 임시 ARM64 컨테이너에서 기존 배포 이미지와 현재 테스트로 167 passed, 2 warnings, exit 0을 확인했다. macOS bind mount 권한 실패로 docker cp 방식으로 재실행했다. 종료 뒤 테스트의 백그라운드 다운로드가 계속되어 닫힌 스트림 로그 오류가 발생했다. 완전히 격리된 테스트로 간주하지 않으며 fixture 종료 처리가 후속 과제다. 실제 GitHub Actions 실행·새 이미지 빌드 검증은 아니다.
+- 서버 .env.home 키 세 항목은 비어 있었고 일반 curl은 DNS 해석 실패였다. API 키 값은 출력하지 않았다. 따라서 실제 provider·영상 분석 검증은 진행하지 않았다.

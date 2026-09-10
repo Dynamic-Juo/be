@@ -6,6 +6,8 @@
 
 추가 상태: `.github/workflows/backend-ci.yml`에 ARM64 이미지 빌드·격리 테스트·main GHCR 게시 초안을 준비했다. 원격 Actions 실행·게시 권한과 맥미니 자동 배포는 미검증이다. 운영 hostname·공개 범위 및 FE Origin을 정한 뒤 환경 분리와 인증/CORS를 연결한다.
 
+공개 범위는 일반 사용자 서비스로 확정됐으나 실제 운영 공개는 보류한다. 프론트가 나오기 전 준비와 팀장님에게 받을 정보는 [프론트 연동](frontend-integration.md)에 정리했다. Compose 환경 파일·네트워크 별칭 분리를 정적으로 검증했다. 기존 이미지의 로컬 테스트는 167개 통과했지만 종료 뒤 백그라운드 다운로드와 닫힌 로그 스트림 오류가 있어 테스트 작업 종료 격리를 보완해야 한다. 서버 `.env.home` 키 세 개는 재확인 시에도 비어 있었고 DNS 일반 요청도 실패했다.
+
 1. [작업 규칙](../AGENTS.md)과 이 문서
 2. [기획 PR #6](https://github.com/Dynamic-Juo/docs/pull/6), 특히 PR 머리의 PRD·evidence-policy·analysis-runtime·result-ui와 최신 리뷰
 3. [프롬프트 평가](prompt-evaluation.md), [코드 흐름](pipeline.md)
