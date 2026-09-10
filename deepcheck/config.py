@@ -33,6 +33,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(f"DEEPCHECK_{name}")
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(f"DEEPCHECK_{name}")
     if raw is None:
@@ -56,6 +63,11 @@ class Config:
     # 단순 평균은 강한 단일 프레임 신호를 희석시킨다(실측: 8프레임 중 1장이 98.4%
     # fake인데 평균이 13/100까지 떨어졌다). 평균과 최댓값을 섞어 완화한다.
     # 이 가중치는 실측으로 튜닝해야 할 판단값이지 검증된 최적값이 아니다.
+    # 프레임 점수를 영상 점수로 합치는 방식. blend | trimmed_mean
+    # 실측에서 절사평균이 진짜 영상과 AI 영상 모두에서 옳은 등급을 냈다. 블렌드는
+    # 진짜 뉴스 영상을 계속 "판단 보류"로 올렸다(분류기 오탐 2장 때문).
+    # 다만 표본이 2편이라 M-08 데모 점검표가 나오면 다시 검증해야 한다.
+    frame_aggregation: str = "trimmed_mean"
     frame_mean_weight: float = 0.6
     frame_peak_weight: float = 0.4
     fake_frame_threshold: float = 0.5
@@ -78,21 +90,58 @@ class Config:
     # off=항상 STT. 자동 자막은 결국 다른 STT의 출력이라 기본값은 manual이다.
     caption_policy: str = "manual"
 
+    # --- LLM (주장 추출·판정) ---
+    # off면 전부 규칙 기반으로 동작한다. deepseek/openai_compatible/ollama 지원.
+    # 외부 API가 죽어도 서비스가 멈추지 않도록 호출부는 항상 규칙으로 폴백한다.
+    llm_provider: str = "off"
+    llm_model: str = "deepseek-chat"
+    llm_base_url: str = "https://api.deepseek.com/v1"
+    llm_api_key: str = ""
+    llm_timeout_sec: int = 30
+    # 판정은 창작이 아니다. 같은 입력에 같은 답이 나오는 편이 디버깅에도 낫다.
+    llm_temperature: float = 0.0
+    # 주장 추출 방식: rule=정규식 점수, llm=LLM. llm인데 제공자가 없으면 rule로 떨어진다.
+    claim_extractor: str = "rule"
+    # 전문 기관 판정이 없을 때 LLM으로 판정할지. 끄면 예전처럼 전부 판단 유보.
+    llm_verdict: bool = True
+    # LLM이 인용한 문장이 실제 근거 원문에 있는지 대조한다. 없으면 판정을 버린다.
+    # 환각을 코드로 막는 장치라 끄지 않는 것을 권한다(디버깅용 스위치).
+    llm_quote_check: bool = True
+
     # --- 주장 사실성 검증 ---
-    # 영상 하나에서 검증할 주장 수. 주장마다 외부 검색이 붙으므로 응답 시간에 직결된다.
-    max_claims: int = 5
+    # 영상 하나에서 검증할 주장 수. 0이면 무제한이다.
+    # M-04가 "검증 가능한 주장을 모두 검증"으로 확정했고, 우선순위는 처리 순서에만
+    # 쓴다고 정했다. 그래서 개수가 아니라 시간(evidence_budget_sec,
+    # max_processing_sec)으로 자르고, 못 끝낸 주장은 시간 초과로 표시한다.
+    max_claims: int = 0
+    # 한 영상 안에서 동시에 검증할 주장 수(M-07: 최대 3건 병렬).
+    claim_workers: int = 3
     evidence_per_claim: int = 3
     evidence_timeout_sec: int = 8
+    # 같은 호스트로 나가는 근거 검색 요청의 최소 간격(초)과 429 재시도 횟수.
+    # 주장을 병렬로 검증하면 같은 API를 동시에 때리게 되고, 위키백과는 그걸
+    # 429로 막는다. 병렬은 유지하되 호스트 단위로만 줄을 세운다.
+    evidence_min_interval_sec: float = 0.35
+    evidence_retry: int = 2
     # 주장 전체에 쓸 수 있는 근거 검색 시간 총량. 넘기면 남은 주장은 검색 없이 유보한다.
     # 응답이 하염없이 늦어지는 것보다 "일부는 확인하지 못했다"고 말하는 편이 낫다.
     evidence_budget_sec: int = 30
     # 사용할 근거 검색 수단(쉼표 구분, 앞에서부터 순서대로 조회).
     # gdelt는 실측에서 16초 이상 걸리고 429가 잦아 기본에서 제외했다.
-    evidence_providers: str = "factcheck,wikipedia,wikipedia_en"
+    # 조회 순서대로 적는다. naver_* 는 NAVER API HUB의 검색 카테고리다
+    # (news / encyc / webkr). 자격 정보가 없는 항목은 자동으로 빠진다.
+    evidence_providers: str = "factcheck,naver_news,naver_encyc,wikipedia,wikipedia_en"
+    # NAVER API HUB. 2026-07-31에 기존 개발자센터 검색 API가 종료되고 이관됐다.
+    # 콘솔에서 발급한 Client ID/Secret을 그대로 넣는다.
+    naver_client_id: str = ""
+    naver_client_secret: str = ""
+    naver_base_url: str = "https://naverapihub.apigw.ntruss.com"
     # 전문 기관의 공개 판정 검색(Google Fact Check Tools). 키가 있을 때만 사용한다.
     google_factcheck_api_key: str = ""
 
     # --- 실행 ---
+    # M-02: YouTube가 Shorts로 분류하는 최대 길이가 3분이다. 0이면 검사하지 않는다.
+    max_video_sec: int = 180
     max_frames: int = 8
     max_video_height: int = 720
     audio_convert_timeout_sec: int = 600
@@ -105,7 +154,9 @@ class Config:
     # 채운다(소프트 타임아웃 — 이미 도는 단계를 강제로 끊진 않는다).
     # docs analysis-runtime.md의 최대 처리 시간(10분)을 따른다.
     max_processing_sec: int = 600
-    workers: int = 3
+    # M-07: 분석 Worker는 동시에 1건. STT와 딥페이크 모델이 CPU를 크게 쓰기 때문에
+    # 영상 여러 편을 동시에 돌리면 서로 느려진다. 대기는 큐가 흡수한다.
+    workers: int = 1
     backlog: int = 64
     # job은 결과 리포트 전체를 들고 있어서 무한히 쌓으면 메모리를 계속 먹는다.
     max_retained_jobs: int = 200
@@ -123,6 +174,7 @@ def load_config() -> Config:
         whisper_model_size=_env_str("WHISPER_MODEL_SIZE", Config.whisper_model_size),
         vlm_provider=_env_str("VLM_PROVIDER", Config.vlm_provider),
         ollama_url=_env_str("OLLAMA_URL", Config.ollama_url).rstrip("/"),
+        frame_aggregation=_env_str("FRAME_AGGREGATION", Config.frame_aggregation).lower(),
         frame_mean_weight=_env_float("FRAME_MEAN_WEIGHT", Config.frame_mean_weight),
         frame_peak_weight=_env_float("FRAME_PEAK_WEIGHT", Config.frame_peak_weight),
         fake_frame_threshold=_env_float("FAKE_FRAME_THRESHOLD", Config.fake_frame_threshold),
@@ -136,14 +188,31 @@ def load_config() -> Config:
         level_moderate=_env_float("LEVEL_MODERATE", Config.level_moderate),
         level_caution=_env_float("LEVEL_CAUTION", Config.level_caution),
         caption_policy=_env_str("CAPTION_POLICY", Config.caption_policy).lower(),
+        llm_provider=_env_str("LLM_PROVIDER", Config.llm_provider).lower(),
+        llm_model=_env_str("LLM_MODEL", Config.llm_model),
+        llm_base_url=_env_str("LLM_BASE_URL", Config.llm_base_url),
+        llm_api_key=_env_str("LLM_API_KEY", Config.llm_api_key),
+        llm_timeout_sec=_env_int("LLM_TIMEOUT_SEC", Config.llm_timeout_sec),
+        llm_temperature=_env_float("LLM_TEMPERATURE", Config.llm_temperature),
+        claim_extractor=_env_str("CLAIM_EXTRACTOR", Config.claim_extractor).lower(),
+        llm_verdict=_env_bool("LLM_VERDICT", Config.llm_verdict),
+        llm_quote_check=_env_bool("LLM_QUOTE_CHECK", Config.llm_quote_check),
         max_claims=_env_int("MAX_CLAIMS", Config.max_claims),
+        claim_workers=_env_int("CLAIM_WORKERS", Config.claim_workers),
         evidence_per_claim=_env_int("EVIDENCE_PER_CLAIM", Config.evidence_per_claim),
         evidence_timeout_sec=_env_int("EVIDENCE_TIMEOUT_SEC", Config.evidence_timeout_sec),
+        evidence_min_interval_sec=_env_float(
+            "EVIDENCE_MIN_INTERVAL_SEC", Config.evidence_min_interval_sec),
+        evidence_retry=_env_int("EVIDENCE_RETRY", Config.evidence_retry),
         evidence_providers=_env_str("EVIDENCE_PROVIDERS", Config.evidence_providers),
+        naver_client_id=_env_str("NAVER_CLIENT_ID", Config.naver_client_id),
+        naver_client_secret=_env_str("NAVER_CLIENT_SECRET", Config.naver_client_secret),
+        naver_base_url=_env_str("NAVER_BASE_URL", Config.naver_base_url),
         evidence_budget_sec=_env_int("EVIDENCE_BUDGET_SEC", Config.evidence_budget_sec),
         google_factcheck_api_key=_env_str(
             "GOOGLE_FACTCHECK_API_KEY", Config.google_factcheck_api_key
         ),
+        max_video_sec=_env_int("MAX_VIDEO_SEC", Config.max_video_sec),
         max_frames=_env_int("MAX_FRAMES", Config.max_frames),
         max_video_height=_env_int("MAX_VIDEO_HEIGHT", Config.max_video_height),
         audio_convert_timeout_sec=_env_int(

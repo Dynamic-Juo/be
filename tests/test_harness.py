@@ -13,6 +13,7 @@ import pytest
 
 from backend import harness as harness_module
 from backend.harness import Harness
+from deepcheck.errors import SessionBusyError
 
 
 @pytest.fixture
@@ -146,3 +147,63 @@ def _wait_finished(harness: Harness, job_id: str, timeout: float = 2.0) -> None:
             return
         time.sleep(0.01)
     raise TimeoutError(f"job {job_id}이 제한 시간 안에 끝나지 않았다")
+
+
+class TestSessionLimit:
+    """M-07: 브라우저 세션별 활성 분석도 1건으로 제한한다."""
+
+    def test_같은_세션이_다른_영상을_동시에_요청하면_거절한다(self, monkeypatch, harness):
+        # 워커가 job을 집어가 끝내버리면 "활성" 상태가 아니게 되므로 붙잡아 둔다.
+        release = threading.Event()
+        monkeypatch.setattr(
+            harness_module, "analyze_url",
+            lambda url, options=None, progress_cb=None, on_partial=None: (
+                release.wait(timeout=2), _final_payload(url))[1],
+        )
+        harness.submit("https://youtu.be/aaa", "sess-1", {})
+
+        with pytest.raises(SessionBusyError):
+            harness.submit("https://youtu.be/bbb", "sess-1", {})
+        release.set()
+
+    def test_다른_세션은_영향을_받지_않는다(self, monkeypatch, harness):
+        release = threading.Event()
+        monkeypatch.setattr(
+            harness_module, "analyze_url",
+            lambda url, options=None, progress_cb=None, on_partial=None: (
+                release.wait(timeout=2), _final_payload(url))[1],
+        )
+        harness.submit("https://youtu.be/aaa", "sess-1", {})
+
+        job, reused = harness.submit("https://youtu.be/bbb", "sess-2", {})
+
+        assert job and not reused
+        release.set()
+
+    def test_같은_URL_재요청은_거절하지_않고_기존_job을_재사용한다(self, monkeypatch, harness):
+        """세션 제한보다 중복 URL 재사용이 먼저다. 사용자가 새로고침했다고
+        거절당하면 안 된다."""
+        release = threading.Event()
+        monkeypatch.setattr(
+            harness_module, "analyze_url",
+            lambda url, options=None, progress_cb=None, on_partial=None: (
+                release.wait(timeout=2), _final_payload(url))[1],
+        )
+        first, _ = harness.submit("https://youtu.be/aaa", "sess-1", {})
+
+        second, reused = harness.submit("https://youtu.be/aaa", "sess-1", {})
+
+        assert reused is True and second.id == first.id
+        release.set()
+
+    def test_이전_분석이_끝나면_다시_요청할_수_있다(self, monkeypatch, harness):
+        monkeypatch.setattr(
+            harness_module, "analyze_url",
+            lambda url, options=None, progress_cb=None, on_partial=None: _final_payload(url),
+        )
+        first, _ = harness.submit("https://youtu.be/aaa", "sess-1", {})
+        _wait_finished(harness, first.id)
+
+        job, reused = harness.submit("https://youtu.be/bbb", "sess-1", {})
+
+        assert job and not reused

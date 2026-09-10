@@ -18,10 +18,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import Any
 
 from deepcheck.config import config
-from deepcheck.errors import as_error_dict
+from deepcheck.errors import SessionBusyError, as_error_dict
 from deepcheck.logging_setup import current_job_id
 from deepcheck.pipeline import AnalysisOptions, analyze_url
 
@@ -43,6 +44,11 @@ _TERMINAL = (COMPLETED, COMPLETED_WITH_LIMITATIONS, FAILED, TIMED_OUT)
 _STOP = object()
 
 
+def _isoformat(epoch: float) -> str:
+    """epoch 초를 로컬 시간 ISO 문자열로 바꾼다(화면 표시용)."""
+    return datetime.fromtimestamp(epoch).isoformat(timespec="seconds")
+
+
 @dataclass
 class Job:
     id: str
@@ -53,6 +59,7 @@ class Job:
     # 나중에 요청한 세션이 자기 목록에서 이 분석을 찾을 수 있어야 한다.
     session_ids: list[str] = field(default_factory=list)
     status: str = QUEUED
+    stage: str | None = None
     progress: float = 0.0
     message: str = "대기 중"
     result: dict[str, Any] | None = None
@@ -61,9 +68,39 @@ class Job:
     error: dict[str, Any] | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    started_at: float | None = None
+
+    @property
+    def display_id(self) -> str:
+        """사람이 옮겨 적을 수 있는 분석 ID(`CN-A1B2-C3D4`).
+
+        M-06이 "결과 화면에 표시된 분석 ID를 피드백 폼에 첨부"하도록 정했는데,
+        32자 hex는 사람이 옮겨 적을 수 없다. job id 앞부분에서 만들어 짧게 줄이되
+        서버 로그의 job_id로 되짚을 수 있도록 계산식을 고정한다.
+
+        앞 8자만 쓰므로 이론상 충돌할 수 있다. 사용자 신고를 job과 잇는 용도이지
+        조회 키가 아니므로(조회는 job_id로 한다) 이 정도로 충분하다.
+        """
+        head = self.id[:8].upper()
+        return f"CN-{head[:4]}-{head[4:]}"
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        # 화면이 분석 ID와 분석 시각을 결과 요약에 함께 표시한다. epoch 실수는
+        # 그대로 쓰기 어려우므로 표시용 문자열을 같이 내려준다.
+        data["display_id"] = self.display_id
+        data["created_at_iso"] = _isoformat(self.created_at)
+        data["updated_at_iso"] = _isoformat(self.updated_at)
+        data["elapsed_sec"] = round(
+            (time.time() if not self.finished else self.updated_at) - self.created_at, 1
+        )
+        end = time.time() if not self.finished else self.updated_at
+        queue_end = self.started_at if self.started_at is not None else end
+        data["queue_wait_sec"] = round(queue_end - self.created_at, 1)
+        data["processing_elapsed_sec"] = (
+            round(end - self.started_at, 1) if self.started_at is not None else 0.0
+        )
+        return data
 
     @property
     def finished(self) -> bool:
@@ -90,6 +127,13 @@ class Harness:
         logger.info("Hermes 시작: 워커 %d, 대기열 상한 %d", self.max_workers, self.backlog)
 
     # ---- submission ----
+    def _active_job_for_session_locked(self, session_id: str) -> Job | None:
+        """이 세션이 아직 끝나지 않은 분석을 갖고 있으면 그 job. 락 안에서 부른다."""
+        for job in self._jobs.values():
+            if not job.finished and session_id in job.session_ids:
+                return job
+        return None
+
     def submit(self, url: str, session_id: str, params: dict[str, Any]) -> tuple[Job, bool]:
         """작업을 큐에 넣는다. (job, 재사용여부)를 반환한다.
 
@@ -104,6 +148,16 @@ class Harness:
                     existing.session_ids.append(session_id)
                 logger.info("중복 URL 요청 — 기존 job 재사용: %s", existing_id)
                 return existing, True
+
+            # 같은 URL 재사용은 위에서 걸렀으니, 여기 걸리는 건 이 세션이 다른
+            # 영상을 이미 돌리고 있는 경우다(M-07: 세션별 활성 분석 1건).
+            active = self._active_job_for_session_locked(session_id)
+            if active is not None:
+                logger.info("세션 %s가 이미 분석 중(job %s) — 새 요청 거절",
+                            session_id, active.id)
+                raise SessionBusyError(
+                    "이미 분석 중인 영상이 있습니다. 완료된 뒤에 다시 시도해주세요."
+                )
 
             job = Job(id=uuid.uuid4().hex, session_id=session_id, url=url, params=params,
                       session_ids=[session_id])
@@ -147,6 +201,8 @@ class Harness:
     def _run(self, job: Job) -> None:
         token = current_job_id.set(job.id)
         job.status = f"{PROCESSING_PREFIX}collecting"
+        job.stage = "collecting"
+        job.started_at = time.time()
         job.message = "시작"
         job.result = {}
         job.updated_at = time.time()
@@ -195,6 +251,8 @@ class Harness:
     def _update(self, job: Job, pct: float, msg: str, stage: str | None = None) -> None:
         job.progress = max(0.0, min(1.0, pct))
         job.message = msg
+        if stage and job.status not in _TERMINAL:
+            job.stage = stage
         # partially_completed로 넘어간 뒤에는 세부 단계 태그를 더 이상 반영하지
         # 않는다 — "첫 결과가 준비되면 partially_completed로 전환"이 그 뒤로도
         # processing:* 로 되돌아가지 않는다는 뜻이기 때문이다.
@@ -205,7 +263,9 @@ class Harness:
     def _merge_partial(self, job: Job, patch: dict) -> None:
         with self._lock:
             job.result.update(patch)
-            if job.status not in (PARTIALLY_COMPLETED,) and job.status not in _TERMINAL:
+            has_analysis = any(k in patch for k in (
+                "face_manipulation", "whole_video_generation", "claim_verification"))
+            if has_analysis and job.status not in (PARTIALLY_COMPLETED,) and job.status not in _TERMINAL:
                 job.status = PARTIALLY_COMPLETED
         job.updated_at = time.time()
 

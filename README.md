@@ -5,6 +5,9 @@
 기획·설계 기준은 [docs 레포](https://github.com/Dynamic-Juo/docs)를 따릅니다
 (`project/prd.md`, `design/ai-pipeline.md`). 작업 규칙은 [AGENTS.md](AGENTS.md)를 참고하세요.
 
+새 기기에서 이어서 작업할 때는 [현재 상태와 읽는 순서](docs/handoff.md)부터 확인하세요.
+[프롬프트·평가 결과](docs/prompt-evaluation.md)와 [M4 맥미니·OrbStack 배포 절차](docs/deployment-mac-mini.md)를 별도로 관리합니다.
+
 > **[파이프라인 해부도](docs/pipeline.md)** — 단계별 흐름도, 각 단계의 라이브러리와 실패 처리,
 > 모델·라이브러리를 갈아끼울 때 건드릴 곳, 구간별 실측 성능. 검증하거나 무언가를 교체할 때 여기부터 보세요.
 
@@ -19,7 +22,7 @@
 |---|---|---|
 | 얼굴 합성·변형 | `face_manipulation` | 프레임 분류기 + 휴리스틱 + 자가표기 + 선택적 VLM |
 | 영상 전체 AI 생성 | `whole_video_generation` | 자가표기만 (전용 탐지 모델은 아직 없음 — docs T-06) |
-| 주장 사실성 검증 | `claim_verification` | 주장 추출 → 외부 근거 검색 → 지지·반박·판단 유보 |
+| 주장 사실성 검증 | `claim_verification` | 주장 추출 → 외부 근거 검색 → 근거와 일치·불일치·근거 부족 |
 
 미디어 조작 두 축은 **숫자 점수를 노출하지 않습니다.** `조작 의심`/`뚜렷한 조작 징후 없음`/
 `판단 보류`/`분석 불가` 네 단계로만 응답합니다(`status`, 표시용 한국어 문구는 `status_label`).
@@ -36,12 +39,25 @@
 
 ### 판정에 대한 태도
 
-주장 검증에서 우리가 **직접 지지·반박을 선언하는 경우는 전문 기관이 이미 검증해 공개한
-판정을 찾았을 때뿐**입니다. 나머지는 관련 근거를 모아 보여주되 판정은 유보합니다.
-키워드가 겹친다는 이유로 참·거짓을 단정하면 그럴듯한 오답을 만들어낼 뿐입니다.
+우리가 내는 판정은 **주장의 진위가 아니라 주장과 근거의 관계**입니다. `근거와 일치`는
+"이 주장은 참이다"가 아니라 "우리가 찾은 근거는 이 주장과 일치한다"는 뜻입니다.
+
+판정은 신뢰도 순서로 시도합니다.
+
+1. **전문 기관의 공개 판정**이 있으면 그대로 옮깁니다. 가장 신뢰도가 높습니다.
+2. 없으면 **LLM에게 근거를 주고 관계를 판정**하게 합니다.
+3. LLM도 못 쓰면 근거만 붙이고 판단을 유보합니다.
+
+2번에는 인용 검증 장치가 있습니다. LLM은 판정과 함께 **제공한 자료에서 발췌한 문장**을
+제출해야 하고, 서버가 그 문장이 해당 자료에 있는지 대조합니다. 현재 수집 범위는 검색 제목·요약문이며 기사 전체 원문 수집은 미구현입니다. 인용이 없으면 판정을 통째로 버리고
+`근거 부족`으로 강등합니다. 생성의 위험을 검증으로 막는 구조입니다.
 
 - 검색 결과가 없다는 이유만으로 주장을 거짓으로 판정하지 않습니다.
 - 근거가 부족하거나 서로 충돌하면 판단을 유보합니다.
+- 주장과 근거의 기준 시점이 다르면 수치가 달라도 `근거와 불일치`가 아니라 `근거 부족`입니다.
+
+LLM 없이도 동작합니다(`DEEPCHECK_LLM_PROVIDER=off`). 그때는 전문 기관 판정을 찾지 못한
+모든 주장이 `근거 부족`으로 끝납니다.
 
 ## 파이프라인
 
@@ -62,7 +78,7 @@ URL ─► 다운로드(yt-dlp) ─┤
 | 얼굴 crop | `deepcheck/face.py` | MediaPipe |
 | 조작 탐지 | `deepcheck/deepfake.py` | ViT 분류기 + 휴리스틱 + 선택적 VLM |
 | 텍스트 신호 | `deepcheck/analyzer.py` | 자가표기·합성음성·클릭베이트 |
-| 주장 검증 | `deepcheck/claims.py` | 규칙 기반 추출 + 위키백과·GDELT·팩트체크 API |
+| 주장 검증 | `deepcheck/claims.py`, `deepcheck/prompts.py` | LLM/규칙 추출 + 네이버·위키백과 등 검색 + LLM 판정·인용 검증 |
 | 결과 조립 | `deepcheck/report.py` | 두 축 분리, text/JSON/HTML 출력 |
 | API | `backend/app.py`, `backend/harness.py` | FastAPI + 워커 풀 |
 | 에러·로그 | `deepcheck/errors.py`, `deepcheck/logging_setup.py` | 도메인 예외, request_id 로깅 |
@@ -119,8 +135,23 @@ pytest
 | GET | `/health` | `{status, harness:{...}}` |
 
 분석은 무거우므로 job 방식입니다. POST로 `job_id`를 받고 2~3초 간격으로 폴링하세요.
-같은 URL이 이미 처리 중이면 새 job을 만들지 않고 기존 job을 재사용합니다(`deduplicated: true`).
-대기열이 가득 차면 `429`를 반환하니 잠시 후 재시도하면 됩니다.
+같은 URL이 이미 처리 중이면 새 job을 만들지 않고 기존 job을 재사용합니다(`deduplicated: true`) —
+사용자가 새로고침해도 거절당하지 않습니다.
+
+`429`는 두 가지 원인으로 나옵니다. `error.code`로 구분해서 안내해주세요.
+
+| code | 원인 | 안내 |
+| --- | --- | --- |
+| `session_busy` | 이 세션이 **다른 영상**을 이미 분석 중 (M-07: 세션당 1건) | "이미 분석 중인 영상이 있습니다" |
+| `server_busy` | 서버 대기열이 가득 참 | "요청이 많습니다. 잠시 후 다시" |
+
+`GET /api/jobs/{job_id}` 응답에는 결과 외에 화면에 필요한 값이 함께 옵니다.
+
+| 필드 | 용도 |
+| --- | --- |
+| `display_id` | `CN-A1B2-C3D4` — 화면에 표시하고 피드백 폼에 첨부할 분석 ID |
+| `created_at_iso` | 분석 시각 |
+| `elapsed_sec` | 경과 시간(초). 완료되면 총 소요 시간으로 고정됩니다 |
 
 ### job 상태값
 
@@ -145,17 +176,27 @@ pytest
 ```jsonc
 {
   "url": "...",
-  "media": { "title": "...", "uploader": "...", "duration": 26, "video_id": "..." },
+  "media": {
+    "title": "...", "uploader": "...",       // 제목 · 채널
+    "duration": 123,                          // 길이(초)
+    "upload_date": "2026-09-01",              // 게시일 (없으면 null)
+    "thumbnail": "https://i.ytimg.com/...",   // 썸네일 URL (없으면 null)
+    "video_id": "...", "language": "ko",
+    "transcript_source": "stt",               // stt | caption — 발언 위치 옆에 표시할 출처
+    "stt_coverage_pct": 99.8
+  },
   "analysis_status": "complete",        // 한 단계라도 실패/건너뜀이면 "partial". job.status가 최종 상태의 기준
   "stages": {                            // 무엇을 했고 무엇을 못 했는지
     "download":  { "status": "ok", "detail": null, "elapsed_sec": 6.1 },
     "frames":    { "status": "ok", "detail": "8장 추출", "elapsed_sec": 1.2 },
-    "transcript":{ "status": "ok", "detail": "24단어, 커버리지 99.5%", "elapsed_sec": 12.0 }
+    "transcript":{ "status": "ok", "detail": "STT 226단어, 커버리지 99.8%", "elapsed_sec": 58.4 },
+    "media_manipulation":  { "status": "ok", "detail": null, "elapsed_sec": 10.0 },
+    "claim_verification":  { "status": "ok", "detail": "주장 8건 (...)", "elapsed_sec": 14.2 }
   },
   "face_manipulation": {
     "status": "suspected",               // suspected / no_clear_signs / inconclusive / unavailable
     "status_label": "조작 의심",          // 화면에 그대로 쓸 수 있는 한국어 문구
-    "detail": null,                      // 강등되거나 판정 사유가 있으면 여기
+    "detail": "프레임 8장을 분석해 그중 4장에서 얼굴을 찾았다. ...",  // 분석 범위. 한계가 있으면 뒤에 덧붙는다
     "evidence": ["frame_000.jpg: fake 98.4% (라벨 Fake)", "제목/설명에 자가표기 발견: \"ai generated\""],
     "signals": { "combined_risk": 63.0, "frames_analyzed": 8, "frames_with_face": 6, "..." : "..." }
     // signals는 디버그용이다. 확률처럼 보이는 숫자를 사용자에게 보여주지 않는다 — status만 표시할 것.
@@ -168,18 +209,41 @@ pytest
     "signals": { "self_disclosure_risk": 0, "model": null }
   },
   "claim_verification": {
-    "status": "analyzed",                // 또는 "unavailable"
-    "summary": { "total": 3, "supported": 0, "refuted": 1, "unverified": 2 },
+    "status": "analyzed",                // analyzed | no_claims | unavailable
+    "summary": {
+      "total": 8,
+      // 처리 상태별 — 화면 요약의 "완료 8 · 미완료 0 · 시간 초과 0"
+      "pending": 0, "verifying": 0, "done": 8, "failed": 0, "timed_out": 0,
+      // 판정별 — 화면 요약의 "일치 2 · 불일치 3 · 근거 부족 3"
+      "supported": 2, "refuted": 3, "unverified": 3
+    },
     "claims": [
       {
         "text": "2024년 실업률이 3.2% 감소했다",
-        "start": 12.5, "end": 18.0,      // 영상에서 이 말이 나온 위치
+        "start": 12.5, "end": 18.0,      // 발언 위치 (못 찾으면 null)
+        "time_precision": "exact",       // exact | approx | null — approx면 "약 00:28"처럼 표시할 것
+        "mentions": [],                  // 같은 주장이 반복될 때의 문맥·횟수
         "status": "done",                // pending / verifying / done / failed / timed_out (카드 처리 상태)
-        "verdict": "refuted",            // supported / refuted / unverified (검증 판정. status가 done일 때만 의미 있음)
-        "reason": "전문 기관 판정: \"False\"",
+        "verdict": "refuted",            // supported / refuted / unverified (status가 done일 때만 의미 있음)
+        "verdict_label": "근거와 불일치",  // 화면에 그대로 쓰면 되는 문구
+        "reason": "통계청 자료는 같은 기간 실업률이 올랐다고 밝히고 있다.",  // 카드의 "판정 근거"
+        "quote": "2024년 연간 실업률은 전년 대비 0.4%p 상승했다.",  // 대표 인용 (근거별 인용은 아래)
+        "insufficient_reason": null,     // 근거 부족일 때만 채워짐 (아래 표 참고)
+        "insufficient_label": null,
         "evidence": [
-          { "title": "...", "url": "https://...", "source": "factcheck",
-            "published_at": "2024-03-01", "rating": "False" }
+          {
+            "title": "...", "url": "https://...",
+            "source": "naver_news",            // 어느 검색 수단에서 왔는지 (내부 식별용)
+            "publisher": "kostat.go.kr",       // 발행처 — 화면의 "발행 기관 · 언론사"
+            "published_at": "2024-03-01",
+            "source_type": "official",
+            "source_type_label": "공식 발표",   // 화면의 출처 유형 배지
+            "is_primary": true,                // 1차 출처(통계 원문·공식 발표)면 true
+            "rating": null,                    // 전문 기관 판정 표기가 있을 때만
+            "cited": true,                     // 판정에 실제로 쓰였는지. false면 "참고 자료"
+            "cite_reason": "이 자료가 주장을 반박하는 이유.",  // 근거 카드에 그대로 표시
+            "quote": "2024년 연간 실업률은 전년 대비 0.4%p 상승했다."  // 원문 대조를 통과한 발췌
+          }
         ]
       }
     ],
@@ -201,9 +265,79 @@ pytest
    전용 모델이 아직 없어 자가표기가 없는 한 항상 `unavailable`입니다 — 이건 정상 상태입니다.
 3. 카드의 `status`(처리 상태)와 `verdict`(검증 판정)를 분리해서 다루세요. `status !== "done"`인 카드는
    `verdict`를 아직 신뢰할 수 없습니다(기본값일 뿐).
-4. `verdict: "unverified"`는 **"거짓"이 아니라 "확인 못 함"**입니다. 거짓처럼 보이게 표시하면 안 됩니다.
-   `reason`에 왜 유보했는지가 들어 있으니 함께 보여주세요.
-5. `analysis_status === "partial"`이면 `stages`에서 실패한 단계를 확인해 안내해주세요.
+4. `verdict: "unverified"`(`근거 부족`)는 **"거짓"이 아니라 "확인 못 함"**입니다. 거짓처럼 보이게
+   표시하면 안 됩니다. `insufficient_label`에 왜 판정하지 못했는지가 들어 있으니 함께 보여주세요.
+5. **판정 문구는 `verdict_label`을 쓰세요.** 코드값(`supported` 등)을 직접 매핑하지 않아도 됩니다.
+   `근거와 일치`는 "이 주장이 참"이 아니라 "우리가 찾은 근거와 일치한다"는 뜻입니다 — 주어가
+   주장이 아니라 근거입니다. 화면 문구도 그렇게 읽히게 써주세요.
+6. **`evidence[].cited`가 `false`인 자료는 "참고 자료"이지 판정 근거가 아닙니다.** 근거 부족 카드에
+   붙은 자료가 여기 해당합니다. 판정 근거와 같은 자리에 섞어 보여주면, 판정하지 않은 것을 판정한
+   것처럼 보여주게 됩니다.
+7. `quote`와 `cite_reason`은 근거 원문에서 **실제로 확인한 것**입니다. LLM이 인용한 문장이 그
+   자료 안에 없으면 서버가 판정을 `근거 부족`으로 강등하므로, `cited: true`인 근거는 원문 대조를
+   통과한 것입니다.
+8. `evidence[].is_primary`가 `true`면 통계 원문·공식 발표 같은 1차 출처입니다. 근거를 나열할 때
+   앞에 두거나 표시를 다르게 하면 신뢰도 차이가 전달됩니다.
+9. **`time_precision`이 `"approx"`면 정확한 위치가 아닙니다.** 핵심어 겹침으로 추정한 값이라 몇 초
+   어긋날 수 있습니다. `"약 00:28"`처럼 근삿값임이 드러나게 표시해주세요. `null`이면 위치를 찾지
+   못한 것이라 표시를 빼면 됩니다.
+10. `analysis_status === "partial"`이면 `stages`에서 실패한 단계를 확인해 안내해주세요.
+
+#### 화면별로 어디를 보면 되는지
+
+조정준 팀장이 공유한 시안(S-01 ~ S-04D) 기준입니다.
+
+| 화면 | 표시할 것 | 어디서 |
+| --- | --- | --- |
+| S-02 상단 | 썸네일 · 채널 · 길이 · 게시일 | `result.media.thumbnail` / `uploader` / `duration` / `upload_date` |
+| S-02 진행 | 단계 문구 | `job.message`, 단계 구분은 `job.stage` (부분 결과 이후에도 갱신) |
+| S-02 하단 | 분석 ID · 시각 | `job.display_id`(`CN-A1B2-C3D4`) / `job.created_at_iso` |
+| S-02·S-03 경과 | "경과 01:52" | `job.processing_elapsed_sec`, 대기 시간은 `job.queue_wait_sec` |
+| S-03 ① | "검증할 주장 8개를 찾았습니다" | `claim_verification.summary.total` |
+| S-03 ② | "3/8개 완료" | `summary.done` / `summary.total` |
+| S-03 ⑦ | "00:12 ~ 00:19 · 음성 인식" | `claim.start`·`end`·`time_precision`, 출처는 `media.transcript_source` |
+| S-03 접힘 | "근거 2건 · 정부·공공기관 원문 포함" | `claim.evidence.length`, `evidence[].is_primary` |
+| S-04 요약 | "일치 2 · 불일치 3 · 근거 부족 3" | `summary.supported` / `refuted` / `unverified` |
+| S-04 요약 | "완료 8 · 미완료 0 · 시간 초과 0" | `summary.done` / `pending`+`verifying`+`failed` / `timed_out` |
+| S-04 미디어 축 | 판단 근거와 분석 범위 | `face_manipulation.status_label` + `detail` |
+| S-04D 근거 카드 | 출처 유형 배지 · 발행일 · 발행 기관 | `evidence[].source_type_label` / `published_at` / `publisher` |
+| S-04D 근거 카드 | "이 자료가 주장을 반박하는 이유" | `evidence[].cite_reason` |
+| S-04 근거 부족 | "판정하지 못한 이유" | `claim.insufficient_label` |
+| S-04 근거 부족 | "참고 자료 2건 (판정에는 사용하지 않음)" | `evidence` 중 `cited: false`인 것 |
+
+**아직 서버가 주지 않는 것**
+
+- `S-03 ④ "분석이 예상보다 오래 걸리고 있습니다"` — `job.processing_elapsed_sec`로 프런트에서 판단해주세요.
+  서버가 별도 신호를 주지 않습니다.
+- 출처 유형 라벨이 시안과 조금 다릅니다. 시안의 `정부·공공기관`은 서버에서 `공식 발표`(`official`)로
+  나갑니다. 화면 문구를 바꾸실지, 서버 라벨을 맞출지 정해주시면 맞추겠습니다.
+
+#### `claim_verification.status`
+
+| 값 | 의미 | 화면 |
+| --- | --- | --- |
+| `analyzed` | 주장을 뽑아 검증했다 | 카드 목록 |
+| `no_claims` | 분석은 정상이었지만 **검증할 주장이 없었다** | 카드 목록 대신 안내 문구(`detail`) |
+| `unavailable` | 발언 텍스트를 못 얻어 **검증 자체를 못 했다** | 분석 불가 안내 |
+
+`no_claims`와 `unavailable`을 같게 다루면 안 됩니다. 앞은 "볼 게 없었다"이고 뒤는 "보지 못했다"입니다.
+
+#### 근거 부족 사유 (`insufficient_reason`)
+
+| 코드 | 화면 문구 |
+|---|---|
+| `no_source` | 관련 자료를 찾지 못함 |
+| `not_direct` | 자료는 있으나 주장을 직접 확인하지 못함 |
+| `timeout` | 시간 내 확인하지 못함 |
+| `time_mismatch` | 주장과 자료의 시점이 다름 |
+| `source_conflict` | 출처들이 서로 충돌함 |
+| `weak_source` | 출처의 내용이 판정에 충분하지 않음 |
+| `partial` | 주장의 일부만 확인됨 |
+
+#### 출처 유형 (`evidence[].source_type`)
+
+`statistics`(통계 원문) · `official`(공식 발표) · `factcheck`(팩트체크 판정) · `news`(언론 보도) ·
+`encyclopedia`(백과사전) · `unknown`(기타). 앞의 둘이 1차 출처입니다.
 
 ### 에러 응답
 

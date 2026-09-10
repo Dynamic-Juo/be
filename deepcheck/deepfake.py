@@ -46,6 +46,10 @@ class DeepfakeReport:
     # 얼굴을 한 명도 못 찾았는데 낮은 점수가 나온 것을 "정상 영상"으로 읽으면 안 된다.
     frames_with_face: int = 0
     face_model_available: bool = False
+    # 프레임별 fake 확률(0..1). 집계 방식을 바꿔가며 튜닝하려면 원본 점수가 있어야
+    # 하고, 결과가 이상할 때 "어느 프레임 때문인지"를 로그 없이도 볼 수 있다.
+    # 사용자에게는 노출하지 않는다 — signals 안에만 남는다.
+    frame_scores: list[float] = field(default_factory=list)
 
 
 # Module-level cache: the ViT pipeline is loaded once per process and reused
@@ -71,6 +75,50 @@ def _get_classifier_pipeline(model_name: str):
             logger.warning("딥페이크 분류기 로드 실패(%s): %s — 휴리스틱으로 진행", model_name, e)
         _classifier_cache[model_name] = pipe
         return pipe
+
+
+# 프레임 점수 집계 방식.
+AGG_BLEND = "blend"
+AGG_TRIMMED_MEAN = "trimmed_mean"
+
+
+def aggregate_frame_scores(scores: list[float]) -> float:
+    """프레임별 fake 확률을 영상 하나의 점수로 합친다.
+
+    딥페이크는 영상 전체가 아니라 특정 구간에만 있을 수 있어서, 어떻게 합치느냐가
+    결과를 크게 바꾼다. 두 방식은 정반대 위험을 감수한다.
+
+    - `trimmed_mean`(기본): 최솟값과 최댓값을 하나씩 버리고 평균. 프레임 하나의
+      오탐에 견딘다. 이론상 최댓값이 진짜 신호일 때 그것부터 버리는 위험이 있다.
+    - `blend`: `max(평균, 평균×0.6 + 최댓값×0.4)`. 강한 프레임 하나를 살린다.
+
+    실측(진짜 뉴스 1편, AI 생성 1편)에서 절사평균이 두 영상 모두 옳은 등급을 냈고,
+    블렌드는 진짜 뉴스를 계속 "판단 보류"로 올렸다. 이 분류기가 진짜 영상의 얼굴
+    crop에서도 0.997 같은 오탐을 내기 때문이다(모델 카드가 경고한 개념 표류).
+    프레임 수를 8·16·24장으로 늘려도 오탐률은 떨어지지 않았고 등급도 그대로였다.
+
+    표본이 2편이라 확정이 아니다. M-08 데모 점검표가 나오면 다시 검증한다.
+    """
+    if not scores:
+        return 0.0
+    mean = sum(scores) / len(scores)
+
+    if config.frame_aggregation == AGG_TRIMMED_MEAN:
+        # 양 끝을 버리려면 최소 3장은 있어야 한다. 그보다 적으면 평균 그대로 쓴다.
+        if len(scores) < 3:
+            logger.info("프레임이 %d장뿐이라 절사 없이 평균을 쓴다", len(scores))
+            return mean
+        trimmed = sorted(scores)[1:-1]
+        result = sum(trimmed) / len(trimmed)
+        logger.info("집계(절사평균): %d장 중 양 끝 제외 → 평균 %.3f → %.3f",
+                    len(scores), mean, result)
+        return result
+
+    peak = max(scores)
+    blended = mean * config.frame_mean_weight + peak * config.frame_peak_weight
+    result = max(mean, blended)
+    logger.info("집계(블렌드): 평균 %.3f, 최댓값 %.3f → %.3f", mean, peak, result)
+    return result
 
 
 class DeepfakeDetector:
@@ -199,18 +247,11 @@ class DeepfakeDetector:
             logger.warning("%s 얼굴 기반 분류 결과를 신뢰할 수 없다", reason)
 
         scored = [r for r in results if r.fake_score is not None]
+        frame_scores: list[float] = []
         if scored:
-            avg = sum(r.fake_score for r in scored) / len(scored)
-            frames_fake = sum(1 for r in scored if r.fake_score >= config.fake_frame_threshold)
-            # 단순 평균은 강한 단일 프레임 신호를 희석시킨다(실측: 8장 중 1장이
-            # 98.4% fake인데 평균은 13/100). 평균과 최댓값을 섞어 완화한다.
-            peak = max(r.fake_score for r in scored)
-            blended = avg * config.frame_mean_weight + peak * config.frame_peak_weight
-            avg = max(avg, blended)
-            logger.info(
-                "분류기 결과: 의심 %d/%d, 평균 %.3f, 최댓값 %.3f → 집계 %.3f",
-                frames_fake, len(scored), sum(r.fake_score for r in scored) / len(scored), peak, avg,
-            )
+            frame_scores = [round(r.fake_score, 4) for r in scored]
+            frames_fake = sum(1 for s in frame_scores if s >= config.fake_frame_threshold)
+            avg = aggregate_frame_scores(frame_scores)
         else:
             # 분류기를 못 쓰면 휴리스틱만으로 임시 점수를 낸다. 신뢰도가 낮으므로
             # report 쪽에서 method를 보고 degraded 상태임을 표시한다.
@@ -256,6 +297,7 @@ class DeepfakeDetector:
             vlm_summary=vlm_summary,
             frames_with_face=cropped,
             face_model_available=face_model_available,
+            frame_scores=frame_scores,
         )
 
 

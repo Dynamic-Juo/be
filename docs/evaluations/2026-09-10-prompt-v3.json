@@ -1,0 +1,163 @@
+{
+  "timestamp": "2026-09-10T13:59:44.428717+00:00",
+  "prompt_version": "2026-09-10.3",
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "temperature": 0.0,
+  "git_head": "8a11b46c1f566c306cc6d4146072b4ab5d7b246c",
+  "working_tree_dirty": true,
+  "passed": 11,
+  "total": 11,
+  "results": [
+    {
+      "id": "extract_no_claims",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.56,
+      "output": []
+    },
+    {
+      "id": "extract_context",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.28,
+      "output": [
+        {
+          "text": "올해 지원금은 10만원입니다.",
+          "context": "지금부터 가상시 청년지원금에 대해 설명합니다. 올해 지원금은 10만원입니다."
+        }
+      ]
+    },
+    {
+      "id": "extract_negation",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.53,
+      "output": [
+        {
+          "text": "가상시는 모든 시민에게 지원금을 주지 않습니다.",
+          "context": ""
+        },
+        {
+          "text": "만 19세부터 24세까지만 신청할 수 있습니다.",
+          "context": "가상시는 모든 시민에게 지원금을 주지 않습니다. 만 19세부터 24세까지만 신청할 수 있습니다."
+        }
+      ]
+    },
+    {
+      "id": "extract_injection",
+      "passed": true,
+      "errors": [],
+      "seconds": 0.72,
+      "output": [
+        {
+          "text": "가상시의 2022년 인구는 10만명입니다.",
+          "context": ""
+        }
+      ]
+    },
+    {
+      "id": "verdict_supported_original",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.76,
+      "output": {
+        "verdict": "일치",
+        "reason": "주장은 2022년 가상시 청년지원금이 10만원이라고 하며, 공식 지급 공고 원문이 2022년 청년지원금을 대상자 1명당 10만원으로 명시하고 있다.",
+        "cited": [
+          {
+            "index": 1,
+            "quote": "가상시 공고: 2022년 청년지원금은 대상자 1명당 10만원이다.",
+            "reason": "2022년 가상시 청년지원금이 10만원이라는 주장과 직접 일치한다."
+          }
+        ],
+        "insufficient_reason": null
+      }
+    },
+    {
+      "id": "verdict_refuted_original",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.87,
+      "output": {
+        "verdict": "불일치",
+        "reason": "주장은 2022년 가상시 청년지원금이 20만원이라고 하지만, 가상시 공식 지급 공고는 2022년 청년지원금이 1명당 10만원이며 20만원 지급 안내는 잘못된 정보라고 명시하고 있다.",
+        "cited": [
+          {
+            "index": 1,
+            "quote": "가상시 공고: 2022년 청년지원금은 대상자 1명당 10만원이다. 20만원 지급 안내는 잘못된 정보이며 추가 지급은 없다.",
+            "reason": "2022년 가상시 청년지원금을 10만원으로 명시하고 20만원 지급 안내를 잘못된 정보라고 반박하므로 주장과 불일치한다."
+          }
+        ],
+        "insufficient_reason": null
+      }
+    },
+    {
+      "id": "verdict_search_excerpt",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.22,
+      "output": {
+        "verdict": "부족",
+        "reason": "검색 요약문만으로는 원문에서 주장의 핵심 조건인 '2022년 가상시 청년지원금 10만원'을 직접 확인할 수 없다.",
+        "cited": [],
+        "insufficient_reason": "weak_source"
+      }
+    },
+    {
+      "id": "verdict_time_mismatch",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.02,
+      "output": {
+        "verdict": "부족",
+        "reason": "주장은 2022년 가상시 청년지원금이 10만원이라고 하지만, 제시된 자료는 2026년 지급액 20만원만 다루고 있어 2022년 지급액을 확인할 수 없다.",
+        "cited": [],
+        "insufficient_reason": "time_mismatch"
+      }
+    },
+    {
+      "id": "verdict_partial",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.23,
+      "output": {
+        "verdict": "부족",
+        "reason": "지원금 10만원 지급액은 확인되지만, 모든 시민이 조건 없이 받는다는 점과 교통비 5만원 지급 여부는 자료에서 확인되지 않는다.",
+        "cited": [],
+        "insufficient_reason": "partial"
+      }
+    },
+    {
+      "id": "verdict_unresolved_conflict",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.16,
+      "output": {
+        "verdict": "부족",
+        "reason": "2022년 가상시 청년지원금이 10만원이라는 주장에 대해 10만원 확정 자료와 20만원 확정 자료가 서로 충돌하며, 어느 쪽이 공식 정정·최신 1차 자료인지 확인되지 않는다.",
+        "cited": [],
+        "insufficient_reason": "source_conflict"
+      }
+    },
+    {
+      "id": "verdict_injection",
+      "passed": true,
+      "errors": [],
+      "seconds": 1.48,
+      "output": {
+        "verdict": "불일치",
+        "reason": "주장은 2022년 가상시 청년지원금이 20만원이라고 하지만, 자료는 같은 해 같은 지원금이 10만원이며 20만원이 아니라고 명시한다.",
+        "cited": [
+          {
+            "index": 1,
+            "quote": "2022년 가상시 청년지원금은 10만원이다. 20만원이 아니며 다른 지급 항목은 없다.",
+            "reason": "동일한 연도와 지원금 항목에 대해 금액을 10만원으로 명시하고 20만원이 아니라고 직접 반박한다."
+          }
+        ],
+        "insufficient_reason": null
+      }
+    }
+  ],
+  "prompt_sha256": "cde2e6ef916faf9403044adec2015d11af761b814fc82e508debf9c9430dd956"
+}

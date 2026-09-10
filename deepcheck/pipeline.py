@@ -14,15 +14,19 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-from . import analyzer, captions, claims, deepfake, downloader, report, transcriber
+from . import analyzer, captions, claims, deepfake, downloader, llm, report, transcriber
 from .config import config, default_vlm_model
-from .errors import DeepCheckError, UnsupportedURLError, as_error_dict
+from .logging_setup import carry_context
+from .errors import (DeepCheckError, UnsupportedURLError, UnsupportedVideoError,
+                     as_error_dict)
 from .report import StageState, StageStatus
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,8 @@ class AnalysisOptions:
     enable_claim_verification: bool = True
     # manual: 사람이 단 자막만 사용 / any: 자동 자막까지 / off: 항상 STT
     caption_policy: str = field(default_factory=lambda: config.caption_policy)
+    # M-02의 지원 조건(길이 등)을 강제할지. CLI로 긴 영상을 실험할 때는 끌 수 있다.
+    enforce_input_limits: bool = True
     workdir: str | None = None
     keep_workdir: bool = False
     save_transcript: str | None = None
@@ -130,6 +136,13 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         progress(0.05, "영상 다운로드 중...", "collecting")
         with tracker.run("download"):
             media = downloader.download(url, tmp, caption_policy=opts.caption_policy)
+        _check_supported_video(media, opts)
+        meta = {
+            "url": url, "title": media.title, "uploader": media.uploader,
+            "duration": media.duration, "video_id": media.video_id,
+            "thumbnail": media.thumbnail, "upload_date": media.upload_date,
+        }
+        partial({"media": {k: v for k, v in meta.items() if k != "url"}})
 
         progress(0.25, "프레임 추출 중...", "collecting")
         frames = _extract_frames(media, tmp, opts, tracker)
@@ -150,31 +163,27 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         })
 
         progress(0.45, "발언 텍스트 확보 중...", "transcribing")
-        transcript_text, language, coverage_pct, segments = _collect_transcript(
-            media, opts, tracker
-        )
+        transcript = _collect_transcript(media, opts, tracker)
+        transcript_text = transcript.text
+        segments = transcript.segments
+        meta.update(language=transcript.language, stt_coverage_pct=transcript.coverage_pct,
+                    transcript_source=transcript.source)
+        partial({"media": {k: v for k, v in meta.items() if k != "url"}})
 
         progress(0.65, "텍스트 신호 분석 중...", "transcribing")
         txt_report = analyzer.analyze(
-            transcript_text, language, title=media.title, description=media.description
+            transcript_text, transcript.language,
+            title=media.title, description=media.description
         )
 
         progress(0.70, "주장 추출 중...", "extracting_claims")
         claim_result = _verify_claims(
             transcript_text, segments, opts, tracker, deadline=started + config.max_processing_sec,
             progress=progress, partial=partial,
+            video_title=media.title, video_published_at=media.upload_date,
         )
 
         progress(0.95, "결과 정리 중...", "verifying")
-        meta = {
-            "url": url,
-            "title": media.title,
-            "uploader": media.uploader,
-            "duration": media.duration,
-            "video_id": media.video_id,
-            "language": language,
-            "stt_coverage_pct": coverage_pct,
-        }
         final = report.build(
             meta, det_report.__dict__, txt_report.__dict__,
             stages=tracker.as_dict(), claim_verification=claim_result,
@@ -208,6 +217,27 @@ def _is_supported_url(url: str) -> bool:
     except ValueError:
         return False
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _check_supported_video(media: downloader.VideoMedia, opts: AnalysisOptions) -> None:
+    """M-02의 지원 조건을 확인한다. 조건 밖이면 분석하지 않고 이유를 알려준다.
+
+    비공개·삭제·연령 제한은 다운로드 단계에서 이미 실패하므로 여기까지 오지 않는다.
+    여기서 보는 건 받아온 뒤에야 알 수 있는 것(길이)이다.
+
+    한국어 여부는 분석 전에 확인할 방법이 없어서 검사하지 않는다. 인식된 언어는
+    결과에 담겨 나가므로 화면에서 사후 안내로 처리한다(팀 결정).
+    """
+    if not opts.enforce_input_limits:
+        return
+    limit = config.max_video_sec
+    if limit > 0 and media.duration and media.duration > limit:
+        minutes = int(media.duration // 60)
+        seconds = int(media.duration % 60)
+        raise UnsupportedVideoError(
+            f"{minutes}분 {seconds}초 영상이다. 지금은 {limit // 60}분 이하의 "
+            "YouTube Shorts만 분석할 수 있다."
+        )
 
 
 def _extract_frames(media: downloader.VideoMedia, tmp: str, opts: AnalysisOptions,
@@ -254,9 +284,26 @@ def _detect_manipulation(frames: list[str], opts: AnalysisOptions,
     return det_report
 
 
+@dataclass
+class TranscriptResult:
+    """발언 텍스트 확보 결과.
+
+    항목이 다섯 개가 되면서 튜플로는 호출부에서 무엇이 무엇인지 읽기 어려워졌다.
+
+    `source`는 화면에서 발언 위치 옆에 "음성 인식" / "자막"으로 표시한다.
+    같은 타임스탬프라도 자막에서 온 것과 음성 인식에서 온 것은 정확도가 달라서,
+    사용자가 원문을 확인하러 갈 때 알고 있어야 한다.
+    """
+
+    text: str = ""
+    language: str | None = None
+    coverage_pct: float | None = None
+    segments: list[dict] = field(default_factory=list)
+    source: str | None = None  # stt | caption
+
+
 def _collect_transcript(media: downloader.VideoMedia, opts: AnalysisOptions,
-                        tracker: StageTracker
-                        ) -> tuple[str, str | None, float | None, list[dict]]:
+                        tracker: StageTracker) -> TranscriptResult:
     """발언 텍스트를 확보한다.
 
     설계 문서의 분기를 그대로 따른다: 쓸 수 있는 자막이 있으면 자막을 쓰고,
@@ -277,19 +324,20 @@ def _collect_transcript(media: downloader.VideoMedia, opts: AnalysisOptions,
                 f"{track.word_count}단어",
                 round(time.monotonic() - started, 2),
             )
-            return track.text, track.language, coverage_pct, track.segments
+            return TranscriptResult(track.text, track.language, coverage_pct,
+                                   track.segments, source="caption")
         logger.info("자막을 읽지 못해 STT로 넘어간다")
 
     return _transcribe(media, opts, tracker)
 
 
 def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
-                tracker: StageTracker) -> tuple[str, str | None, float | None, list[dict]]:
-    """(텍스트, 언어, STT 커버리지 %, 세그먼트)를 반환한다. 실패해도 예외를 올리지 않는다."""
+                tracker: StageTracker) -> TranscriptResult:
+    """음성 인식으로 발언 텍스트를 확보한다. 실패해도 예외를 올리지 않는다."""
     started = time.monotonic()
-    source = media.audio_path or media.video_path
+    audio = media.audio_path or media.video_path
     try:
-        result = transcriber.transcribe(source, model_size=opts.model_size)
+        result = transcriber.transcribe(audio, model_size=opts.model_size)
     except Exception as e:
         # STT가 실패해도 영상 분석 결과는 돌려줄 수 있다. 다만 "무음 영상"과
         # 구분되도록 실패 사실을 stages에 남긴다.
@@ -297,7 +345,7 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
         tracker.mark("transcript", StageState.FAILED, error["message"],
                      round(time.monotonic() - started, 2), error=error)
         logger.error("STT 실패 (%s)", error["code"], exc_info=True)
-        return "", None, None, []
+        return TranscriptResult()
 
     coverage_pct = None
     if media.duration and result.duration:
@@ -317,7 +365,8 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
         f"STT {result.word_count}단어" + (f", 커버리지 {coverage_pct}%" if coverage_pct else ""),
         round(time.monotonic() - started, 2),
     )
-    return result.text, result.language, coverage_pct, result.segments
+    return TranscriptResult(result.text, result.language, coverage_pct,
+                            result.segments, source="stt")
 
 
 def _save_transcript(path: str, media: downloader.VideoMedia,
@@ -350,9 +399,13 @@ def _claim_verification_snapshot(claim_list: list[claims.Claim]) -> report.Claim
         claims=[c.to_dict() for c in claim_list],
         summary={
             "total": len(claim_list),
+            # 처리 상태별 개수. 화면 요약의 "완료 8 · 미완료 0 · 시간 초과 0"이 여기서 나온다.
             "pending": status_counts[claims.PENDING],
             "verifying": status_counts[claims.VERIFYING],
             "done": status_counts[claims.DONE],
+            "failed": status_counts[claims.FAILED],
+            "timed_out": status_counts[claims.TIMED_OUT],
+            # 판정별 개수. 처리 상태와는 별개 축이라 섞지 않는다.
             "supported": verdict_counts[claims.SUPPORTED],
             "refuted": verdict_counts[claims.REFUTED],
             "unverified": verdict_counts[claims.UNVERIFIED],
@@ -363,7 +416,9 @@ def _claim_verification_snapshot(claim_list: list[claims.Claim]) -> report.Claim
 def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
                    tracker: StageTracker, deadline: float,
                    progress: Callable[[float, str, str | None], None],
-                   partial: Callable[[dict], None]) -> report.ClaimVerification:
+                   partial: Callable[[dict], None],
+                   video_title: str | None = None,
+                   video_published_at: str | None = None) -> report.ClaimVerification:
     """주장 사실성 검증 축: 주장 추출 → 카드 생성(즉시 통지) → 하나씩 검증(통지).
 
     카드가 폴링마다 채워지는 게 목적이라, 여기서 리스트를 한 번에 처리하고 끝에
@@ -385,8 +440,14 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
             detail="발언 텍스트를 확보하지 못해 검증할 주장을 뽑을 수 없다.",
         )
 
+    # LLM 제공자는 주장당 새로 만들지 않고 한 번만 만들어 재사용한다.
+    llm_provider = llm.get_provider()
+    if llm_provider is not None:
+        logger.info("LLM 제공자 활성: %s (%s)", config.llm_provider, config.llm_model)
+
     try:
-        extracted = claims.extract_claims(text, segments, max_claims=config.max_claims)
+        extract = claims.select_extractor(llm_provider)
+        extracted = extract(text, segments, config.max_claims)
     except Exception as e:
         error = as_error_dict(e, stage="claim_verification")
         tracker.mark("claim_verification", StageState.FAILED, error["message"],
@@ -401,32 +462,73 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
         tracker.mark("claim_verification", StageState.OK, "검증 대상 주장 없음",
                      round(time.monotonic() - started, 2))
         return report.ClaimVerification(
-            status=report.AxisStatus.ANALYZED.value,
+            status=report.AxisStatus.NO_CLAIMS.value,
             # 주장이 없어도 summary 모양은 유지한다. 소비하는 쪽이 키 유무로
             # 분기하지 않게.
-            summary={"total": 0, "supported": 0, "refuted": 0, "unverified": 0},
+            summary={"total": 0, "pending": 0, "verifying": 0, "done": 0,
+                     "failed": 0, "timed_out": 0,
+                     "supported": 0, "refuted": 0, "unverified": 0},
             detail="검증 가능한 사실 주장을 찾지 못했다. 의견이나 일상 대화 위주의 영상일 수 있다.",
         )
 
     # 전체 주장 수가 확정된 시점 — 카드를 전부 만들어 즉시 통지한다.
+    for claim in extracted:
+        claim.video_title = video_title
+        claim.video_published_at = video_published_at
     logger.info("주장 %d건 추출, 검증 시작", len(extracted))
     partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
     progress(0.75, f"주장 {len(extracted)}건 검증 중...", "verifying")
 
     active_providers = claims.default_providers()
-    timed_out_count = 0
-    for i, claim in enumerate(extracted):
-        if time.monotonic() > deadline:
-            # 소프트 타임아웃: 이미 진행 중인 단계를 강제로 끊진 않지만, 남은 주장은
-            # 검색을 시도하지 않고 시간 초과로 채운다.
-            for remaining in extracted[i:]:
-                remaining.status = claims.TIMED_OUT
-                timed_out_count += 1
-            logger.warning("전체 처리 시간(%.0fs) 초과 — 남은 주장 %d건은 시간 초과로 처리",
-                           config.max_processing_sec, timed_out_count)
-            break
+    # 카드 갱신 통지가 서로 겹쳐서 반쯤 만들어진 스냅샷이 나가지 않도록 잠근다.
+    notify_lock = threading.Lock()
 
-        claims.verify_one_claim(claim, active_providers)
+    def verify_and_notify(claim: claims.Claim) -> bool:
+        """주장 하나를 검증하고 그 시점의 전체 스냅샷을 통지한다. 시간 초과면 False."""
+        if time.monotonic() > deadline:
+            # 소프트 타임아웃: 이미 시작한 검증을 끊지는 않고, 아직 시작하지 않은
+            # 주장만 시간 초과로 채운다.
+            claim.status = claims.TIMED_OUT
+            claim.insufficient_reason = claims.TIMEOUT
+            claim.insufficient_label = claims.INSUFFICIENT_LABELS[claims.TIMEOUT]
+            with notify_lock:
+                partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
+            return False
+        with notify_lock:
+            claim.status = claims.VERIFYING
+            partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
+        try:
+            claims.verify_one_claim(claim, active_providers, llm_provider=llm_provider)
+        except Exception:
+            # 주장 하나가 실패해도 나머지는 계속한다(U-05).
+            claim.status = claims.FAILED
+            logger.exception("주장 검증 실패: %s", claim.text[:40])
+        with notify_lock:
+            partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
+        return True
+
+    workers = max(1, min(config.claim_workers, len(extracted)))
+    logger.info("주장 %d건 검증 시작 (동시 %d건)", len(extracted), workers)
+    if workers == 1:
+        for claim in extracted:
+            verify_and_notify(claim)
+    else:
+        # job_id는 새 스레드로 자동 전파되지 않는다. 안 넘기면 병렬 구간의 로그가
+        # 전부 job:- 로 남아 어느 작업의 로그인지 알 수 없게 된다.
+        with_context = carry_context()
+
+        def run_in_worker(claim: claims.Claim) -> bool:
+            with with_context():
+                return verify_and_notify(claim)
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="claim") as pool:
+            list(pool.map(run_in_worker, extracted))
+
+    timed_out_count = sum(1 for c in extracted if c.status == claims.TIMED_OUT)
+    if timed_out_count:
+        logger.warning("전체 처리 시간(%.0fs) 초과 — 주장 %d건은 시간 초과로 처리",
+                       config.max_processing_sec, timed_out_count)
+    with notify_lock:
         partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
 
     counts = Counter(c.verdict for c in extracted if c.status == claims.DONE)
@@ -443,15 +545,6 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
         f"시간초과 {timed_out_count})",
         round(time.monotonic() - started, 2),
     )
-    return report.ClaimVerification(
-        status=report.AxisStatus.ANALYZED.value,
-        claims=[c.to_dict() for c in extracted],
-        summary={
-            "total": len(extracted),
-            "supported": counts[claims.SUPPORTED],
-            "refuted": counts[claims.REFUTED],
-            "unverified": counts[claims.UNVERIFIED],
-            "timed_out": timed_out_count,
-        },
-        detail=detail,
-    )
+    final = _claim_verification_snapshot(extracted)
+    final.detail = detail
+    return final

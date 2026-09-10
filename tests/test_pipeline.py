@@ -8,18 +8,26 @@
 from deepcheck import claims, deepfake, downloader, pipeline, transcriber
 
 
-class _FakeMedia:
-    def __init__(self):
-        self.video_path = "/tmp/fake.mp4"
-        self.audio_path = "/tmp/fake.m4a"
-        self.caption_path = None
-        self.caption_language = None
-        self.caption_source = None
-        self.title = "테스트 영상"
-        self.description = "설명"
-        self.uploader = "업로더"
-        self.duration = 30.0
-        self.video_id = "abc123"
+def _fake_media(**overrides) -> downloader.VideoMedia:
+    """실제 `VideoMedia`로 가짜를 만든다.
+
+    예전에는 필드를 손으로 흉내 낸 클래스를 썼는데, 실물에 필드가 추가되면
+    가짜만 뒤처져서 테스트가 실물과 다른 것을 검증하게 됐다. 실제 dataclass를
+    쓰면 필드가 늘어도 기본값으로 따라온다.
+    """
+    defaults = dict(
+        url="https://www.youtube.com/watch?v=abc123",
+        workdir="/tmp",
+        video_path="/tmp/fake.mp4",
+        audio_path="/tmp/fake.m4a",
+        title="테스트 영상",
+        description="설명",
+        uploader="업로더",
+        duration=30.0,
+        video_id="abc123",
+    )
+    defaults.update(overrides)
+    return downloader.VideoMedia(**defaults)
 
 
 class _FakeDetector:
@@ -47,7 +55,7 @@ def _fake_transcribe(source, model_size=None):
 def _wire_fast_pipeline(monkeypatch):
     """무거운 단계를 즉시 끝나는 가짜로 바꾼다."""
     monkeypatch.setattr(downloader, "download",
-                        lambda url, tmp, caption_policy=None: _FakeMedia())
+                        lambda url, tmp, caption_policy=None: _fake_media())
     monkeypatch.setattr(downloader, "extract_frames",
                         lambda video_path, frames_dir, max_frames=8: ["f1.jpg", "f2.jpg"])
     monkeypatch.setattr(deepfake, "DeepfakeDetector", _FakeDetector)
@@ -57,6 +65,21 @@ def _wire_fast_pipeline(monkeypatch):
 
 
 class TestIncrementalDelivery:
+    def test_미디어_정보와_발언_출처가_필요한_단계_전에_전달된다(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+        from deepcheck import llm
+        monkeypatch.setattr(llm, "get_provider", lambda: None)
+        seen = {}
+
+        def progress(pct, message, stage=None):
+            if stage == "transcribing":
+                assert seen["media"]["title"] == "테스트 영상"
+            if stage == "extracting_claims":
+                assert seen["media"]["transcript_source"] == "stt"
+
+        pipeline.analyze_url("https://example.com/v", progress_cb=progress,
+                             on_partial=seen.update)
+
     def test_미디어_결과가_주장_결과보다_먼저_온다(self, monkeypatch):
         _wire_fast_pipeline(monkeypatch)
         events: list[dict] = []

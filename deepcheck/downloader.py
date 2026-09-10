@@ -37,12 +37,32 @@ class VideoMedia:
     duration: float | None = None
     uploader: str | None = None
     thumbnail: str | None = None
+    # 업로드 날짜(YYYY-MM-DD). 화면에서 게시일로 보여주고, 근거의 발행 시점이
+    # 주장 시점과 맞는지 판단할 때도 기준이 된다.
+    upload_date: str | None = None
     description: str | None = None
     info: dict[str, Any] = field(default_factory=dict)
 
     @property
     def base(self) -> str:
         return os.path.splitext(self.video_path)[0]
+
+
+
+def _normalize_upload_date(raw: str | None) -> str | None:
+    """yt-dlp의 upload_date(YYYYMMDD)를 YYYY-MM-DD로 바꾼다.
+
+    화면에 그대로 쓰고 다른 날짜(근거 발행일)와 비교도 해야 해서 형식을 맞춘다.
+    형식이 예상과 다르면 버리지 않고 원문을 그대로 돌려준다 — 표시가 조금
+    어색한 것이 정보가 사라지는 것보다 낫다.
+    """
+    if not raw:
+        return None
+    digits = str(raw).strip()
+    if len(digits) == 8 and digits.isdigit():
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+    logger.debug("예상과 다른 upload_date 형식: %r", raw)
+    return digits
 
 
 def _ffmpeg_binary() -> str | None:
@@ -138,6 +158,7 @@ def download(url: str, workdir: str, max_height: int | None = None,
             duration=info.get("duration"),
             uploader=info.get("uploader") or info.get("channel"),
             thumbnail=info.get("thumbnail"),
+            upload_date=_normalize_upload_date(info.get("upload_date")),
             description=info.get("description"),
             info=info,
         )

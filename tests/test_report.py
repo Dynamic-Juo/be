@@ -92,7 +92,16 @@ class TestFaceManipulationUnavailable:
     def test_일부_프레임에서만_얼굴을_찾으면_경고를_남기고_판정한다(self):
         axis = report.build_face_manipulation(_deepfake(avg=40.0, frames_with_face=3), _text())
         assert axis.status != report.ManipulationState.UNAVAILABLE.value
-        assert "3장에서만" in axis.detail
+        assert "3장에서 얼굴을 찾았다" in axis.detail
+        assert "정확도가 낮을 수 있다" in axis.detail
+
+    def test_분석_범위는_정상일_때도_남긴다(self):
+        """화면이 이 축에 "분석한 구간·프레임 범위"를 함께 보여준다. 무엇을 봤는지
+        모르면 사용자가 결과의 범위를 가늠할 수 없다."""
+        axis = report.build_face_manipulation(_deepfake(avg=10.0), _text())
+        assert axis.detail and "프레임" in axis.detail
+        # 한계가 없으면 경고 문구는 붙지 않는다
+        assert "정확도가 낮을 수 있다" not in axis.detail
 
 
 class TestFaceManipulationScoring:
@@ -252,3 +261,42 @@ class TestFormatting:
         text_out = report.format_text(r)
         assert "얼굴 합성·변형" in text_out
         assert "영상 전체 AI 생성" in text_out
+
+
+class TestFrameAggregation:
+    """프레임 점수 집계. 방식에 따라 같은 영상이 다른 등급을 받는다."""
+
+    def _aggregate(self, mode, scores):
+        from dataclasses import replace
+        from deepcheck import deepfake
+        original = deepfake.config
+        deepfake.config = replace(config, frame_aggregation=mode)
+        try:
+            return deepfake.aggregate_frame_scores(scores)
+        finally:
+            deepfake.config = original
+
+    def test_절사평균은_오탐_한두장에_휘둘리지_않는다(self):
+        # 실측: 진짜 뉴스 영상의 얼굴 crop 4장 중 2장이 분류기 오탐이었다.
+        real_news = [0.997, 0.835, 0.002, 0.002]
+        assert self._aggregate("trimmed_mean", real_news) * 100 < config.level_moderate
+        assert self._aggregate("blend", real_news) * 100 > config.level_moderate
+
+    def test_여러_장이_높으면_두_방식이_모두_잡는다(self):
+        ai_video = [0.999, 0.998, 0.997, 0.997, 0.996, 0.909, 0.061]
+        assert self._aggregate("trimmed_mean", ai_video) * 100 > config.level_high
+        assert self._aggregate("blend", ai_video) * 100 > config.level_high
+
+    def test_프레임이_세_장_미만이면_절사하지_않는다(self):
+        # 양 끝을 버리면 남는 게 없다. 평균을 그대로 쓴다.
+        assert self._aggregate("trimmed_mean", [0.8, 0.2]) == 0.5
+        assert self._aggregate("trimmed_mean", [0.6]) == 0.6
+
+    def test_점수가_없으면_0이다(self):
+        assert self._aggregate("trimmed_mean", []) == 0.0
+        assert self._aggregate("blend", []) == 0.0
+
+    def test_기본값은_절사평균이다(self):
+        """실측 근거로 정한 값이다. 바꾸려면 M-08 점검표로 재검증해야 한다."""
+        from deepcheck import deepfake
+        assert config.frame_aggregation == deepfake.AGG_TRIMMED_MEAN

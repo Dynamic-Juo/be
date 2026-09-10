@@ -34,6 +34,10 @@ class StageState(str, Enum):
 class AxisStatus(str, Enum):
     ANALYZED = "analyzed"
     UNAVAILABLE = "unavailable"
+    # 분석은 정상이었지만 검증할 주장이 하나도 없었다. U-03이 이 경우를 개별 주장
+    # 판정이 아니라 화면 상태로 구분하라고 정했다 — 카드가 0개인 것과 분석을 못 한
+    # 것은 사용자에게 완전히 다른 이야기다.
+    NO_CLAIMS = "no_claims"
 
 
 class AnalysisState(str, Enum):
@@ -69,11 +73,9 @@ LEVEL_CAUTION = "주의 필요"
 LEVEL_LOW = "낮음"
 LEVEL_UNKNOWN = "판단 불가"
 
-_VERDICT_LABELS = {
-    "supported": "지지",
-    "refuted": "반박",
-    "unverified": "판단 유보",
-}
+# 판정 이름은 claims.py가 유일한 정의처다. 여기서 복제하면 예전처럼 두 곳이
+# 조용히 어긋난다(등급 경계가 텍스트 출력과 HTML에서 달랐던 사고와 같은 종류).
+from .claims import INSUFFICIENT_LABELS, VERDICT_LABELS  # noqa: E402
 
 
 @dataclass
@@ -117,6 +119,9 @@ class TranscriptInfo:
     language: str | None = None
     word_count: int | None = None
     coverage_pct: float | None = None
+    # 이 텍스트를 어디서 얻었는지(stt | caption). 발언 위치의 정확도가 달라서
+    # 화면에서 "음성 인식" / "자막"으로 함께 보여준다.
+    source: str | None = None
     # 클릭베이트·주장 강도는 미디어 조작의 근거가 아니므로 점수에 반영하지 않고
     # 참고 정보로만 노출한다. 자극적인 제목의 진짜 영상이 AI 가짜 쪽으로 밀리던
     # 개편 전 동작을 막기 위한 구분이다.
@@ -214,6 +219,10 @@ def build_face_manipulation(deepfake: dict, text: dict) -> ManipulationAxis:
         "classifier_used": classifier_used,
         "frames_with_face": frames_with_face,
         "face_model_available": bool(deepfake.get("face_model_available")),
+        # 프레임별 원점수. 집계 방식을 튜닝하거나 결과가 이상할 때 어느 프레임
+        # 때문인지 보려면 필요하다.
+        "frame_scores": list(deepfake.get("frame_scores") or []),
+        "frame_aggregation": config.frame_aggregation,
         "self_disclosure_risk": self_disclosure_risk,
         "vlm_summary": deepfake.get("vlm_summary"),
     }
@@ -235,14 +244,17 @@ def build_face_manipulation(deepfake: dict, text: dict) -> ManipulationAxis:
     risk = min(round(risk, 1), 100.0)
     signals["combined_risk"] = risk
 
-    detail = None
+    # 화면은 이 축에 "판단 근거 요약과 분석한 구간·프레임 범위"를 함께 보여준다.
+    # 무엇을 봤는지 모르면 사용자가 결과의 범위를 가늠할 수 없으므로, 정상일 때도
+    # 분석 범위를 남긴다. 한계가 있으면 그 뒤에 덧붙인다.
     if visual_risk is None:
         detail = f"{visual_unavailable_reason} 제목·설명의 자가표기만으로 판단했다."
-    elif not classifier_used:
-        detail = "딥페이크 분류기를 사용하지 못해 휴리스틱만으로 영상을 판단했다."
-    elif frames_with_face < frames_analyzed:
-        detail = (f"프레임 {frames_analyzed}장 중 {frames_with_face}장에서만 얼굴을 찾았다. "
-                  "나머지는 전체 프레임으로 분석해 정확도가 낮을 수 있다.")
+    else:
+        detail = f"프레임 {frames_analyzed}장을 분석해 그중 {frames_with_face}장에서 얼굴을 찾았다."
+        if not classifier_used:
+            detail += " 딥페이크 분류기를 사용하지 못해 휴리스틱만으로 판단했다."
+        elif frames_with_face < frames_analyzed:
+            detail += " 얼굴을 찾지 못한 프레임은 전체 화면으로 분석해 정확도가 낮을 수 있다."
 
     evidence = list(deepfake.get("evidence", [])) + list(text.get("self_disclosure_evidence", []))
     status = categorize(risk)
@@ -279,7 +291,9 @@ def build_whole_video_generation(text: dict) -> ManipulationAxis:
     return ManipulationAxis(
         status=ManipulationState.UNAVAILABLE.value,
         status_label=MANIPULATION_LABELS[ManipulationState.UNAVAILABLE.value],
-        detail="영상 전체 AI 생성 탐지 모델이 아직 선정되지 않았다.",
+        detail=("영상 전체가 AI로 생성됐는지 판별하는 모델이 아직 선정되지 않았다. "
+                "제목·설명의 자가표기만 확인했으며, 표기가 없다고 해서 AI 생성이 "
+                "아니라는 뜻은 아니다."),
         signals=signals,
     )
 
@@ -302,6 +316,14 @@ def _is_degraded(stage_payload: dict, face_manipulation: ManipulationAxis) -> bo
     return False
 
 
+# 응답의 media 블록에 담을 항목. 파이프라인이 meta에 넣어 준 것 중 화면이 쓰는 것만.
+_MEDIA_KEYS = (
+    "title", "uploader", "duration", "video_id",
+    "thumbnail", "upload_date", "language",
+    "transcript_source", "stt_coverage_pct",
+)
+
+
 def build(meta: dict, deepfake: dict, text: dict, stages: dict,
           claim_verification: ClaimVerification | None = None) -> AnalysisReport:
     face_manipulation = build_face_manipulation(deepfake, text)
@@ -318,12 +340,9 @@ def build(meta: dict, deepfake: dict, text: dict, stages: dict,
 
     return AnalysisReport(
         url=meta.get("url", ""),
-        media={
-            "title": meta.get("title"),
-            "uploader": meta.get("uploader"),
-            "duration": meta.get("duration"),
-            "video_id": meta.get("video_id"),
-        },
+        # 화면에 필요한 영상 정보. 키를 하나씩 골라 담다가 나중에 추가한 필드가
+        # 조용히 버려진 적이 있어, 무엇을 담는지 목록으로 두고 한 번에 채운다.
+        media={key: meta.get(key) for key in _MEDIA_KEYS},
         analysis_status=(AnalysisState.PARTIAL if degraded else AnalysisState.COMPLETE).value,
         stages=stage_payload,
         face_manipulation=face_manipulation,
@@ -336,6 +355,7 @@ def build(meta: dict, deepfake: dict, text: dict, stages: dict,
             language=meta.get("language"),
             word_count=text.get("word_count"),
             coverage_pct=meta.get("stt_coverage_pct"),
+            source=meta.get("transcript_source"),
             signals={
                 "clickbait": text.get("clickbait_risk", 0),
                 "claim_strength": text.get("claim_risk", 0),
@@ -398,9 +418,10 @@ def format_text(r: AnalysisReport) -> str:
     lines.append(f"    상태   : {cv.status}")
     if cv.summary:
         lines.append(
-            f"    판정   : 지지 {cv.summary.get('supported', 0)} · "
-            f"반박 {cv.summary.get('refuted', 0)} · "
-            f"판단 유보 {cv.summary.get('unverified', 0)} (총 {cv.summary.get('total', 0)}건)"
+            f"    판정   : {VERDICT_LABELS['supported']} {cv.summary.get('supported', 0)} · "
+            f"{VERDICT_LABELS['refuted']} {cv.summary.get('refuted', 0)} · "
+            f"{VERDICT_LABELS['unverified']} {cv.summary.get('unverified', 0)} "
+            f"(총 {cv.summary.get('total', 0)}건)"
         )
     if cv.detail:
         lines.append(f"    사유   : {cv.detail}")
@@ -409,13 +430,20 @@ def format_text(r: AnalysisReport) -> str:
         if claim.get("start") is not None:
             minutes, seconds = divmod(int(claim["start"]), 60)
             when = f"[{minutes:02d}:{seconds:02d}] "
-        lines.append(f"    · ({_VERDICT_LABELS.get(claim.get('verdict'), '판단 유보')}) "
-                     f"{when}{claim.get('text', '')[:80]}")
+        label = claim.get("verdict_label") or VERDICT_LABELS.get(
+            claim.get("verdict"), "근거 부족")
+        lines.append(f"    · ({label}) {when}{claim.get('text', '')[:80]}")
         if claim.get("reason"):
             lines.append(f"        사유: {claim['reason']}")
+        if claim.get("insufficient_label"):
+            lines.append(f"        근거 부족 사유: {claim['insufficient_label']}")
+        if claim.get("quote"):
+            lines.append(f"        인용: \"{claim['quote'][:100]}\"")
         for item in claim.get("evidence", [])[:2]:
             rating = f" — {item['rating']}" if item.get("rating") else ""
-            lines.append(f"        근거: [{item.get('source')}] {item.get('title', '')[:60]}{rating}")
+            kind = item.get("source_type_label") or item.get("source_type") or ""
+            tag = f"{item.get('source')}/{kind}" if kind else str(item.get("source"))
+            lines.append(f"        근거: [{tag}] {item.get('title', '')[:60]}{rating}")
             if item.get("url"):
                 lines.append(f"              {item['url']}")
     lines.append("")
@@ -446,7 +474,8 @@ def _claims_html(cv: ClaimVerification, esc) -> str:
         return ""
     rows = []
     for claim in cv.claims:
-        label = _VERDICT_LABELS.get(claim.get("verdict"), "판단 유보")
+        label = claim.get("verdict_label") or VERDICT_LABELS.get(
+            claim.get("verdict"), "근거 부족")
         links = "".join(
             f'<li><a href="{esc(item.get("url"))}" rel="noopener noreferrer" '
             f'target="_blank">{esc(item.get("title"))}</a> '
