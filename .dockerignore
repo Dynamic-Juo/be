@@ -12,4 +12,5 @@ results
 *.m4a
 *.mp4
 .env
+.env.*
 .DS_Store

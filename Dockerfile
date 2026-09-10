@@ -27,13 +27,10 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY deepcheck ./deepcheck
 COPY backend ./backend
 
-# Face-crop model (see README.md "얼굴 crop 모델 받기"). Best-effort: face.py
-# already degrades to full-frame analysis if this file is missing, so a network
-# hiccup during build must not fail the whole image.
+# 얼굴 모델 없는 운영 이미지를 성공한 빌드로 배포하지 않는다.
 RUN mkdir -p deepcheck/models && \
-    curl -fsSL -o deepcheck/models/blaze_face_short_range.tflite \
-      https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite \
-    || echo "face model download failed at build time, will run without face-crop"
+    curl --retry 3 -fsSL -o deepcheck/models/blaze_face_short_range.tflite \
+      https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite
 
 EXPOSE 8000
 
