@@ -1,0 +1,44 @@
+name: Backend CI and ARM64 image
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test-build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build CPU ARM64 image
+        run: docker build --platform linux/arm64 -t conan-ci:test .
+      - name: Run isolated tests without provider keys
+        run: |
+          docker run --rm --entrypoint sh \
+            -v "$GITHUB_WORKSPACE/tests:/app/tests:ro" \
+            -v "$GITHUB_WORKSPACE/requirements-dev.txt:/tmp/requirements-dev.txt:ro" \
+            conan-ci:test -c 'pip install --no-cache-dir -r /tmp/requirements-dev.txt && python -m pytest -q /app/tests'
+      - name: Publish tested main image
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${GITHUB_SHA}"
+          trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag conan-ci:test "$image"
+          docker push "$image"
+          docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" >> "$GITHUB_STEP_SUMMARY"
