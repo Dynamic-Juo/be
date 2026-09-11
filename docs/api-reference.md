@@ -1,12 +1,14 @@
 # 프론트용 API 계약
 
-기준일: 2026-09-12. `fix/midpoint-hardening` 작업 복사본의 코드 계약이며 **아직 배포되지 않았다.** 기존 배포 기록의 main `472aff7`과 다르다. 이번 문서 작업에서 실제 도메인·Access·영상·외부 제공자를 호출하지 않았다. 브랜치 공유와 PR 검토·병합·배포를 구분한다.
+기준일: 2026-09-12. `fix/midpoint-hardening`의 배포 준비용 코드 계약이다. 기존 배포 기록의 main `472aff7`과 다르며 이 문서 작성 시점에는 미배포다. PR·CI·실제 서버 반영 상태는 [인수인계](handoff.md)를 따른다. 이번에 실제 영상·외부 제공자를 재검증하지 않았다.
 
 연결·인증·Vercel 담당 업무는 [프론트 연동 인수인계](frontend-integration.md)를 먼저 읽는다. 변경 배포 후에는 해당 서버 `/openapi.json`과 적용 커밋을 함께 확인한다. 아래 JSON은 형식 설명용 가상 예시이며 실제 분석 결과나 실행할 테스트 영상이 아니다.
 
 ## 주소와 엔드포인트
 
 개발 기본 주소 기록은 `https://conan-api-dev.dotseven.cloud`다. 예상 문서 경로는 `/docs`(Swagger), `/openapi.json`(OpenAPI), `/redoc`(읽기용)이며 이번에 외부 응답을 재검증하지 않았다. URL에 내부 Docker 포트 `:8000`을 붙이지 않는다.
+
+루트 `/`는 등록하지 않아 로그인 후에도 `{"detail":"Not Found"}`가 나올 수 있다. 접속 확인은 `/health`, 문서 확인은 `/docs`를 사용한다. 2026-09-12 미인증 `/health`의 Access 로그인 이동은 브라우저에서 확인했지만 로그인 후 health·Swagger와 영상 분석 성공을 검증한 것은 아니다.
 
 | 메서드 | 경로 | 성공 HTTP | 용도 |
 | --- | --- | --- | --- |
@@ -43,9 +45,9 @@ Swagger에는 `getHealth`, `getReadiness`, `submitAnalysis`, `getAnalysisJob` �
 | `use_classifier` | boolean | `true` | false를 정상 영상 판정으로 읽지 않음 |
 | `vlm_model` | string 또는 null, 최대 128자 | 미설정 시 null | 서버 `DEEPCHECK_VLM_MODEL`에 따라 달라짐. FE 임의 모델 선택 비권장 |
 | `enable_claim_verification` | boolean | `true` | false는 주장 축 미실행이며 성공의 대용이 아님 |
-| `caption_policy` | off, manual, any | `off` | `DEEPCHECK_CAPTION_POLICY`에 따라 달라짐 |
+| `caption_policy` | off, manual, any | `manual` | `DEEPCHECK_CAPTION_POLICY`에 따라 달라짐 |
 
-표는 환경변수를 주지 않은 **코드 기본값**이다. 기존 서버 자막은 `manual`로 기록돼 있고, 기획 본문 STT 기본과 팀장님의 수동 CC 활용 가능 리뷰 사이에는 [정책 확인 사항](frontend-integration.md#먼저-구분할-상태)이 남아 있다. 인수 전에 적용 정책·버전을 확인하며 생략값을 추측하지 않는다. `workdir`, `keep_workdir`, `save_transcript`, API 키, LLM 제공자·모델은 공개 요청 필드가 아니다.
+표는 환경변수를 주지 않은 **코드 기본값**이다. 보안 수정에 정책 전환을 섞지 않도록 기존 `manual`로 복원했다. `manual`은 등록 CC 우선이며 자동 생성 CC를 제외하고 사용할 CC가 없으면 STT로 전환한다. CC의 정확성·전문을 보증하지 않으며 [기획 본문과 리뷰의 정리](frontend-integration.md#먼저-구분할-상태)는 별도다. 배포 환경이 명시한 값은 유지하므로 인수 전에 적용 정책·버전을 확인한다. `workdir`, `keep_workdir`, `save_transcript`, API 키, LLM 제공자·모델은 공개 요청 필드가 아니다.
 
 LLM 제공자와 주장 추출기는 BE 환경 설정이다. 코드 기본은 `DEEPCHECK_LLM_PROVIDER=off`, `DEEPCHECK_CLAIM_EXTRACTOR=rule`이고, 배포 예시의 DeepSeek+llm 구성과 구분한다. [기존 PR의 LLM 사용 설명](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3989716198)은 당시 공유 기록이지 이번 live 환경 재검증이 아니다. FE 요청의 `model_size`는 Whisper 크기이며 DeepSeek 모델 설정이 아니다. 키를 프론트 번들·공개 환경변수로 전달하지 않는다.
 

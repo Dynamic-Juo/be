@@ -1,13 +1,14 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
-기준일: 2026-09-12. 이번 중간 점검과 API 문서 보완은 `fix/midpoint-hardening` 작업 복사본에서만 수행했다. 이 브랜치는 배포되지 않았다. 사용자는 서버의 조회 명령도 사전 승인을 요구했다. Docker·배포 디렉터리·Cloudflare·DNS 명령은 이번 점검 범위에 없다. 로컬 수정과 실제 배포 상태를 구분한다.
+기준일: 2026-09-12. `fix/midpoint-hardening`의 배포 준비 기록이다. 사용자가 백엔드 반영·정리를 요청했으며 docs PR #7 댓글은 직접 다음 날 마무리한다. 문서는 기존 브랜치에만 공유하고 새 docs PR을 만들지 않는다. 서버 명령은 조회도 대상·영향을 설명하고 사전 승인받는다. 이 문서 작성 시점에는 서버를 교체하지 않았다.
 
-## 2026-09-12 최신 공유 범위
+## 2026-09-12 배포 준비와 검증 범위
 
-- 브랜치 공유용 코드·테스트 커밋은 `e8176d8`, CI 커밋은 `729be26`이다. 후속 문서 커밋과 함께 **기존 브랜치에 공유만** 하는 범위이며 main 미반영·미배포 상태다. 최종 원격 반영 여부는 공유 결과 기록에서 확인한다.
-- 최신 전체 로컬 테스트는 **328 passed, 2 warnings**다. 모의 모델·제공자와 Python DNS/TCP 차단 fixture를 사용했다. 프로세스 전체의 OS 네트워크 격리나 실제 영상·모델·DeepSeek/NAVER·컨테이너 검증을 뜻하지 않는다.
-- [FE 연동](frontend-integration.md)과 [API 계약](api-reference.md)을 보완했다. Swagger 응답 스키마·예시, 오류/상태 설명, CORS 응답 헤더 노출을 추가했지만 실제 API 도메인과 Swagger 화면은 다시 호출하지 않았다.
-- 사용자 지시에 따라 새 PR 생성·PR #7 답글·병합·이미지 게시·배포는 하지 않는다. 기존 서버·환경 파일·Access 정책을 유지한다. 기획 원본은 수정하지 않았으며 정책 변경에는 별도 승인이 필요하다.
+- 기존 보안·API 코드 커밋은 `e8176d8`, CI 커밋은 `729be26`이다. 자막 기본값 복원은 `5ed4441`이며 `manual`을 코드·Compose·신규 환경 예제에 일치시켰다. 명시적인 `off`·`any`는 유지한다. 기존 서버 `.env.home`은 읽거나 수정하지 않았다.
+- 복원 후 전체 로컬 테스트는 **329 passed, 2 warnings (7.53초)**다. 모의 모델·제공자와 Python DNS/TCP 차단 fixture를 사용했다. 프로세스 전체의 OS 네트워크 격리나 실제 영상·모델·DeepSeek/NAVER·컨테이너 검증을 뜻하지 않는다. 이전 328건은 API 보완 당시 기록이다.
+- 백엔드 PR에서 GitHub-hosted ARM64 빌드·격리 테스트를 확인한 뒤 main 반영을 진행한다. main CI는 검증한 이미지를 GHCR에 게시하지만 맥미니를 자동 교체하지 않는다. 실제 배포는 고정 이미지와 기존 `conan-staging` 프로젝트로만 진행하며 명령별 승인을 받는다.
+- [FE 연동](frontend-integration.md)과 [API 계약](api-reference.md)에 루트 404와 `/health`·`/docs` 용도를 추가했다. 사용자는 이메일 인증 후 루트 404를 보고했다. 코드의 루트 미등록과 비인증 `/health`의 Access 로그인 이동만 확인했으며, 로그인 후 health·Swagger·실영상은 미검증이다.
+- 기획 원본과 docs PR #7은 수정하지 않는다. 검색 제공자 간 병렬화, 여러 얼굴 분석, 전체 AI 생성 탐지 제외는 이번 배포에 추가하지 않는다. 댓글용 제안 문구는 팀 합의 완료나 구현 완료를 뜻하지 않는다.
 
 ## 먼저 읽을 것
 
@@ -15,9 +16,9 @@
 
 이전 실측: 키 반영 전 영상 cYRkZmBuDqI는 내부 API에서 25.1초에 completed였지만 STT 3단어·입력 길이 비율 100%·no_claims였다. 키 반영 후 실제 영상/DeepSeek/NAVER E2E와 판정 품질은 검증하지 않았다. 같은 영상으로 이번 수정의 효과를 실측한 것도 아니다.
 
-수정 브랜치: YouTube 입력 경계·다운로드 전 metadata/TLS·bounded worker·오류/세션 노출·미디어 실패/부분 상태·임시 정리·STT 지표·근거/프롬프트 검증을 보완했다. 기본 자막 정책을 기획 본문 T-02의 STT(off)에 맞췄지만 실제 서버 env의 manual 값은 변경하지 않았다. 수동 CC 활용에 관한 PR #7 리뷰와 본문의 차이는 아래 별도 확인 사항이다. 전체 AI 모델·원문 수집·하드 타임아웃은 여전히 미구현이다.
+수정 브랜치: YouTube 입력 경계·다운로드 전 metadata/TLS·bounded worker·오류/세션 노출·미디어 실패/부분 상태·임시 정리·STT 지표·근거/프롬프트 검증을 보완했다. 중간 점검 때 off로 바꿨던 자막 기본값은 배포 준비에서 기존 manual로 복원했다. 사용할 등록 CC가 없으면 STT로 넘어가며 불완전 CC 자동 판별은 미검증이다. 기획 본문과 리뷰의 최종 정리는 별도다. 전체 AI 모델·원문 수집·하드 타임아웃은 여전히 미구현이다.
 
-CI는 네트워크 없는 테스트 이미지와 읽기 전용 test/main 전용 publish job으로 분리했다. 실제 Actions 실행과 배포는 하지 않았다. 기획 원본은 유지하고 docs 작업 복사본의 evaluations/2026-09-11-midpoint-review.md와 rfcs/public-mvp-readiness.md에 분석·승인 제안을 분리했다. 일반 사용자 공개는 남은 보안·품질 검증 뒤 별도 승인한다.
+CI는 네트워크 없는 테스트 이미지와 읽기 전용 test/main 전용 publish job으로 분리했다. 이 문서는 로컬 검증 후 PR·CI를 준비하는 시점의 기록이며 Actions 결과와 실제 배포 성공을 선기록하지 않는다. 기획 원본은 유지하고 docs 작업 복사본의 evaluations/2026-09-11-midpoint-review.md와 rfcs/public-mvp-readiness.md는 당시 분석·미승인 제안으로 보존한다. 일반 사용자 공개는 남은 보안·품질 검증 뒤 별도 승인한다.
 
 1. [작업 규칙](../AGENTS.md)과 이 문서
 2. [기획 PR #6](https://github.com/Dynamic-Juo/docs/pull/6), 특히 PR 머리의 PRD·evidence-policy·analysis-runtime·result-ui와 최신 리뷰
@@ -36,7 +37,7 @@ CI는 네트워크 없는 테스트 이미지와 읽기 전용 test/main 전용 
 | playground | 백엔드를 시작하기 위해 만든 초기 실험 저장소. 현행 API의 기준이 아니다. |
 | fe | 아직 저장소·배포 주소 미확인. 조정준 팀장이 와이어프레임을 기준으로 만들고 Vercel에 배포할 예정이다. |
 
-2026-09-10 재확인한 로컬·원격 main은 `472aff7201a834102d6ec2c27096dabb22a5ae4f`다. `fix/prompt-handoff`는 PR #1로 main에 병합됐으며 DeepSeek·NAVER·배포 구성도 main에 포함된다. 과거 미공유·병합 대기 기록은 worklog에 당시 이력으로 보존한다.
+2026-09-12 배포 준비 시작 때 fetch로 확인한 원격 main은 `472aff7201a834102d6ec2c27096dabb22a5ae4f`다. `fix/prompt-handoff`는 PR #1로 main에 병합됐으며 DeepSeek·NAVER·배포 구성도 main에 포함된다. 과거 미공유·병합 대기 기록은 worklog에 당시 이력으로 보존한다. 실제 후속 병합 여부는 GitHub PR과 원격 커밋으로 확인한다.
 
 이전 서버 점검 문서 브랜치는 `docs/mac-mini-readiness`다. 이번 수정은 그 브랜치의 e79a2eb에서 분기한 `fix/midpoint-hardening` 작업 복사본에 있다. 최신 코드·CI 커밋과 공유 범위는 문서 상단을 따른다. docs 저장소의 제안·평가는 aedf161에서 분기한 `docs/midpoint-review`에 있다. 이전 배포 기록은 main 472aff7 이미지의 staging 기동이며 이번에 서버 checkout이나 이미지를 확인·변경하지 않았다. 아래 명령은 개발 작업 복사본의 공유 상태 확인 예시다. 서버에서 실행하려면 조회도 먼저 승인받는다.
 
@@ -73,7 +74,7 @@ flowchart TD
     Q --> D[yt-dlp: 영상·오디오·메타데이터 확보]
     D --> F[프레임 8장: 얼굴 crop·분류·집계]
     F --> M[미디어 결과 먼저 전달]
-    M --> T[faster-whisper STT 기본, 자막은 명시적 선택]
+    M --> T[등록 CC 우선, 없으면 faster-whisper STT]
     T --> E[LLM 1: 원문 주장·문맥 추출]
     E --> C[서버: 원문 대조·발언 위치 연결]
     C --> S[주장 최대 3건 병렬: 네이버·위키 등 검색]

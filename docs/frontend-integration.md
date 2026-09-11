@@ -1,17 +1,17 @@
 # Vercel 프론트 연동 인수인계
 
-작성 기준: 2026-09-12, 작업 복사본 `fix/midpoint-hardening` 수정안. 상세 필드·상태·오류는 [API 계약](api-reference.md)을 기준으로 한다. 이 문서는 연결 순서와 담당자별 인수 항목을 설명한다. 브랜치 공유 단계이며 새 PR 생성·기존 PR 답글·병합·배포가 완료됐다는 뜻이 아니다.
+작성 기준: 2026-09-12, `fix/midpoint-hardening` 배포 준비 수정안. 상세 필드·상태·오류는 [API 계약](api-reference.md)을 기준으로 한다. 이 문서는 연결 순서와 담당자별 인수 항목을 설명한다. 실제 PR·CI·서버 반영 상태는 [인수인계](handoff.md)를 확인한다.
 
 ## 먼저 구분할 상태
 
 | 구분 | 알고 있는 사실 | 아직 확인하지 않은 것 |
 | --- | --- | --- |
-| 기존 개발계 배포 | main `472aff7` 이미지와 `conan-api-dev.dotseven.cloud` 연결 기록이 있음 | 이번 작업에서 서버·도메인·Swagger를 다시 호출하지 않음 |
+| 기존 개발계 배포 | main `472aff7` 이미지 기록, 사용자 로그인 후 루트 404 보고, 미인증 `/health`의 Access 로그인 이동을 브라우저에서 확인 | 서버 이미지 재조회, 로그인 후 health·Swagger와 실영상 검증 |
 | Cloudflare Access | 마지막 기록은 소유자 이메일 한 개만 허용 | 팀원 이메일 추가, 실제 FE 브라우저의 로그인·쿠키·CORS |
 | 작업 복사본 | 보안·부분 실패·근거 검증·Swagger 설명을 보완한 미배포 수정안 | 변경 이미지 배포 및 실제 영상·DeepSeek/NAVER E2E |
 | Vercel 프론트 | 팀장님이 제작·배포할 예정 | 정확한 개발·운영 Origin과 저장소·프레임워크 |
 
-수정안 기본 자막 정책은 문서 본문의 STT(`off`)를 따른다. 반면 팀장님의 [수동 CC 활용 가능 의견](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3958898775)이 있어 기획 본문과 리뷰 사이에 확인할 차이가 남아 있다. 기존 서버 `manual` 기록은 보존하며 이번에 변경하지 않았다. 리뷰를 새 확정 결정으로 간주하지 않고 FE 인수 전에 적용 정책을 합의한다. 상세는 docs 공유 브랜치의 [백엔드 인수인계](https://github.com/Dynamic-Juo/docs/blob/docs/midpoint-review/operations/backend-handoff.md)를 함께 확인한다.
+수정안 기본 자막 정책을 기존 `manual`로 복원했다. 사용할 업로더 등록 CC가 없으면 STT로 전환하며 자동 생성 CC와 영상 속 글자의 OCR은 포함하지 않는다. 등록 CC의 정확성·전문을 보증하지 않는다. 기획 본문의 STT 방침과 팀장님의 [수동 CC 활용 가능 의견](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3958898775)은 문서 합의로 정리하되, 이번 보안 수정에 기본 정책 전환을 섞지 않고 기존 서버 환경값을 보존한다. 상세는 docs 공유 브랜치의 [백엔드 인수인계](https://github.com/Dynamic-Juo/docs/blob/docs/midpoint-review/operations/backend-handoff.md)를 함께 확인한다.
 
 일반 사용자 공개가 목표지만 지금은 팀 개발계다. 공개 MVP의 로그인·회원가입 없음과 현재 개발계 Access 이메일 인증을 구분한다. 공개 전 남용 방지·결과 접근·실행 제한은 별도 준비와 승인이 필요하다.
 
@@ -26,7 +26,7 @@
 
 ## 팀장님에게 전달할 주소
 
-아래는 기존 API hostname과 FastAPI 기본 경로로 구성한 **예상 배포 주소**다. 이번 작업에서 외부 접속·내용·로그인 후 동작을 재검증한 링크는 아니다.
+아래는 기존 API hostname과 FastAPI 코드의 경로다. 루트 `/`에는 페이지가 없어 인증 후 404가 나올 수 있다. 미인증 `/health`의 로그인 이동만 직접 확인했으며 로그인 후 문서·스키마 내용은 재검증하지 않았다.
 
 | 용도 | 주소 | 읽는 법 |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
 # M4 맥미니 배포 인수인계
 
-최신 상태: 2026-09-12 `fix/midpoint-hardening`은 브랜치 공유 준비 단계이며 미배포다. 이번 로컬 모의 테스트는 328 passed, 2 warnings이며 실제 영상·모델·외부 API·컨테이너를 검증하지 않았다. API·Swagger 보완과 [API 계약](api-reference.md)·[FE 연동 문서](frontend-integration.md)는 다음 검토 대상이지 현재 서버 반영 완료 기록이 아니다. 기존 브랜치 커밋·푸시만 공유하며 새 PR·PR #7 답글·병합·배포는 하지 않는다.
+최신 준비 기록: 2026-09-12 `fix/midpoint-hardening`의 자막 기본값을 기존 manual로 복원하고 로컬 모의 테스트 329 passed, 2 warnings를 확인했다. 백엔드 PR·CI를 통한 이미지 검증과 기존 개발계 교체를 준비한다. 이 문서 작성 시점에는 실제 영상·모델·외부 API·새 배포 컨테이너를 검증하지 않았다. [인수인계](handoff.md), [API 계약](api-reference.md)·[FE 연동 문서](frontend-integration.md)를 함께 확인한다. docs 새 PR과 PR #7 답글은 게시하지 않는다.
 
 **서버 명령은 조회도 변경도 명령별로 대상·영향을 설명하고 사전 승인을 받아야 한다.** 이 문서는 실행 허가나 일괄 실행 스크립트가 아니다. 이번 작업에서는 기존 맥미니 서비스·환경 파일·Tunnel·Access·DNS를 조회하거나 변경하지 않았다. 기존 배포를 유지한다.
 
@@ -40,7 +40,7 @@ cp -n .env.home.example .env.home
 chmod 600 .env.home
 ```
 
-`cp -n`의 덮어쓰기 방지는 보조 장치일 뿐 신규 환경 확인과 사전 승인을 대신하지 않는다. 신규 `.env.home`에 DeepSeek 키·NAVER Client ID/Secret을 넣는다. 비밀값을 Git·작업 로그·프론트에 넣지 않는다. 이 값들이 비어 있어도 API의 health는 성공할 수 있으므로 실제 분석에서 외부 제공자가 활성화됐는지 별도 승인 후 확인해야 한다. 이 배포 예시는 기존 전문기관 판정 경로를 켜지 않는다. 수정안 예제의 자막 기본값은 `off`지만 기존 배포의 `manual` 기록과 다르므로 환경 파일을 자동 동기화하지 않는다. 정책 차이는 [FE 인수 조건](frontend-integration.md#먼저-구분할-상태)을 확인한다.
+`cp -n`의 덮어쓰기 방지는 보조 장치일 뿐 신규 환경 확인과 사전 승인을 대신하지 않는다. 신규 `.env.home`에 DeepSeek 키·NAVER Client ID/Secret을 넣는다. 비밀값을 Git·작업 로그·프론트에 넣지 않는다. 이 값들이 비어 있어도 API의 health는 성공할 수 있으므로 실제 분석에서 외부 제공자가 활성화됐는지 별도 승인 후 확인해야 한다. 이 배포 예시는 기존 전문기관 판정 경로를 켜지 않는다. 예제 자막 기본값은 기존 동작과 같은 `manual`이며 예제를 기존 환경 파일에 덮어쓰지 않는다. 기획 본문과 리뷰의 정리는 [FE 인수 조건](frontend-integration.md#먼저-구분할-상태)을 확인한다.
 
 Vercel 주소가 정해지면 `DEEPCHECK_CORS_ORIGINS`에 정확한 `https://...` 오리진을 넣는다. 여러 개는 쉼표로 구분한다. 경로나 마지막 `/`를 넣지 않는다. 예제의 `http://localhost:3000`은 내부 연동용이다.
 
@@ -80,6 +80,18 @@ docker network connect conan-ingress <확인한-cloudflared-컨테이너>
 기존 Tunnel에 Conan용 API 도메인의 서비스 주소를 `http://conan-api:8000`으로 추가한다. cloudflared 컨테이너 안의 `localhost:8000`은 Conan 주소가 아니다. 다른 서비스의 호스트명 라우트를 수정하지 않는다. [Docker의 외부 네트워크 연결](https://docs.docker.com/compose/how-tos/networking/), [Cloudflare Tunnel 설정](https://developers.cloudflare.com/tunnel/setup/)을 따른다.
 
 Tunnel 공개 라우트와 Access 인증 정책은 별도다. 내부 연동 단계에서는 제한된 접근으로 점검한다. Vercel 브라우저가 직접 API를 호출할 때 Access 로그인 정책이 있으면 쿠키·사전 OPTIONS 요청에 맞는 설정이 필요하다. CORS만으로 API 접근을 제한할 수 없고, Access 서비스 토큰을 프론트 코드에 넣어서는 안 된다. [Cloudflare CORS 안내](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/cors/)를 확인한다. 공개 운영은 [남은 확인](handoff.md#다음-우선순위와-공개-전-남은-확인)을 해결한 뒤 전환한다.
+
+## 기존 개발계의 교체 순서
+
+아래는 계획이며 실행 승인이나 완료 기록이 아니다. 서버 조회 승인 전에는 Docker·배포 경로를 읽지 않는다.
+
+1. 승인된 조회로 Docker 대상과 `conan-staging-deepcheck-api-1`의 기존 이미지 ID·Compose 경로·실행 상태·자원 여력을 확인한다. 환경 전체 inspect나 `.env.home` 출력은 금지한다.
+2. 백엔드 PR의 ARM64 빌드·격리 테스트 성공을 확인한다. main 반영 후 CI가 게시한 실제 digest를 기록한다. CI 성공은 영상·외부 API의 품질 검수를 대신하지 않는다.
+3. 기존 이미지·모델 볼륨·환경 파일을 보존한다. 고정 이미지 확보와 Compose 파일 업데이트가 필요하면 대상 경로·차이·디스크 사용·복구 방법을 설명하고 승인받는다. 서버에 임의로 git pull하거나 예제 환경을 복사하지 않는다.
+4. 승인된 `/ready` 조회에서 진행 중·대기 중 작업이 없는지 확인한 뒤 `-p conan-staging --env-file .env.home -f compose.home.yml`과 `deepcheck-api` 서비스만 지정해 교체한다. `conan-home` 기본값으로 새 환경을 추가 생성하지 않으며 `down`, `prune`, `down -v`, 기존 Tunnel 재시작은 사용하지 않는다. 재생성 시 메모리의 완료 결과 이력도 소실될 수 있음을 알린다.
+5. `/health`, `/ready`, `/openapi.json`, 로그인 후 `/docs`와 기존 서비스 상태를 확인한다. 실제 영상·DeepSeek/NAVER 호출은 별도 승인된 시험으로 구분한다. 문제가 있으면 이전 고정 이미지로 같은 서비스만 복구한다.
+
+기존 환경값을 명령별 이미지 override로 보존할지 환경 파일의 이미지 항목만 바꿀지도 교체 승인 때 명시한다. API·검색 키와 자막 정책, 네트워크·볼륨은 자동으로 변경하지 않는다. 실제 명령에는 확인된 절대 경로·이미지 digest를 사용하고 자리표시자를 실행하지 않는다.
 
 ## 인수 검증과 복구
 

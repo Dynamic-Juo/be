@@ -8,11 +8,12 @@
 새 기기에서 이어서 작업할 때는 [현재 상태와 읽는 순서](docs/handoff.md)부터 확인하세요.
 [프롬프트·평가 결과](docs/prompt-evaluation.md)와 [M4 맥미니·OrbStack 배포 절차](docs/deployment-mac-mini.md)를 별도로 관리합니다.
 
-2026-09-12 공유 준비: `fix/midpoint-hardening`의 API·Swagger 설명과
+2026-09-12 배포 준비: `fix/midpoint-hardening`의 API·Swagger 설명과
 [FE 연동 인수인계](docs/frontend-integration.md), [요청·응답·오류 API 계약](docs/api-reference.md)을 보완했습니다.
-최신 로컬 검증은 **328 passed, 2 warnings**입니다. 모의 모델·제공자와 Python 네트워크 차단 fixture를
-사용한 결과이며 실제 영상·외부 API·컨테이너 검증은 아닙니다. 이번 공유 범위는 기존 브랜치의
-커밋·푸시뿐이고 새 PR·PR #7 답글·병합·배포는 진행하지 않습니다. 기존 맥미니 배포와 환경 파일은 유지합니다.
+자막 기본값을 기존 `manual`로 복원한 뒤 로컬 검증은 **329 passed, 2 warnings**입니다. 모의 모델·제공자와
+Python 네트워크 차단 fixture를 사용한 결과이며 실제 영상·외부 API·컨테이너 검증은 아닙니다.
+백엔드 PR·CI와 기존 개발계 배포를 준비하며, 서버 명령은 각각 승인받고 실행합니다.
+문서 저장소의 새 PR과 PR #7 댓글은 이번 작업에서 게시하지 않습니다. 최신 진행 상태는 인수인계를 확인하세요.
 
 이전 2026-09-11 중간 점검: 아래 동작 설명은 작업 복사본의 `fix/midpoint-hardening` 수정안 기준입니다.
 배포 서버에는 반영하지 않았고, 이번 검증은 외부 연결과 실제 모델을 사용하지 않는 모의 테스트입니다.
@@ -94,10 +95,11 @@
 | API | `backend/app.py`, `backend/harness.py` | FastAPI + 워커 풀 |
 | 에러·로그 | `deepcheck/errors.py`, `deepcheck/logging_setup.py` | 도메인 예외, request_id 로깅 |
 
-**수정안 기본은 STT(`caption_policy: "off"`)입니다.** 기획 본문의 T-02를 따르며,
-명시적으로 `manual` 또는 `any`를 선택하면 자막 경로를 사용합니다. 다만 수동 CC 활용을 허용할 수 있다는
-PR #7 리뷰와 기획 본문 사이에 정책 확인이 남아 있습니다. 기존 서버의 `manual` 기록은 보존하며
-이번에 바꾸지 않았습니다. [정책 차이와 FE 인수 조건](docs/frontend-integration.md#먼저-구분할-상태)을 확인하세요.
+**기본은 수동 CC 우선(`caption_policy: "manual"`)입니다.** 기존 배포 동작을 유지하며,
+사용할 CC가 없으면 STT로 전환합니다. 영상에 입힌 글자의 OCR은 아니고 자동 생성 CC는 제외합니다.
+등록 CC라는 분류만으로 사람 작성·정확성·발언 전문을 보증하지 않습니다. `off`는 항상 STT,
+`any`는 자동 CC도 허용하는 명시적 옵션입니다. 기획 본문과 리뷰의 최종 정리는 별도이며,
+이번 보안 수정에 STT 기본값 전환을 섞지 않습니다. [정책 차이와 FE 인수 조건](docs/frontend-integration.md#먼저-구분할-상태)을 확인하세요.
 
 과거 한국어 뉴스 표본에서는 `small` 약 88초, `tiny` 약 53초와 수치·고유명사 오인식이 기록됐습니다.
 이는 당시 별도 실행 결과이지 현재 수정안의 성능이나 한국어 전반의 정확도 보증이 아닙니다.
@@ -423,7 +425,7 @@ DEEPCHECK_GOOGLE_FACTCHECK_API_KEY=...
 | `DEEPCHECK_LOG_FORMAT` | text | `json`으로 두면 한 줄 JSON 로그 (수집·검색용) |
 | `DEEPCHECK_CORS_ORIGINS` | `*` | 허용 오리진. 쉼표 구분 |
 | `DEEPCHECK_WHISPER_MODEL_SIZE` | small | STT 모델 크기 |
-| `DEEPCHECK_CAPTION_POLICY` | off | MVP 기본 STT. `manual`/`any`는 명시적 자막 실험 옵션 |
+| `DEEPCHECK_CAPTION_POLICY` | manual | 업로더 등록 CC 우선, 없으면 STT. `off`는 항상 STT, `any`는 자동 CC도 허용 |
 | `DEEPCHECK_MAX_FRAMES` | 8 | 샘플링 프레임 수 |
 | `DEEPCHECK_CLASSIFIER_MODEL` | dima806/... | 딥페이크 분류기 |
 | `DEEPCHECK_VLM_MODEL` | (없음) | 지정 시에만 VLM 사용 |
