@@ -86,13 +86,13 @@ class Config:
     level_caution: float = 25.0
 
     # --- 발언 텍스트 확보 ---
-    # 자막이 있으면 STT를 건너뛴다. manual=사람이 단 자막만, any=자동 자막까지,
-    # off=항상 STT. 자동 자막은 결국 다른 STT의 출력이라 기본값은 manual이다.
-    caption_policy: str = "manual"
+    # 확정된 T-02: MVP 기본은 STT. 자막은 명시적 옵션으로만 사용한다.
+    # manual=사람이 단 자막만, any=자동 자막까지, off=항상 STT.
+    caption_policy: str = "off"
 
     # --- LLM (주장 추출·판정) ---
     # off면 전부 규칙 기반으로 동작한다. deepseek/openai_compatible/ollama 지원.
-    # 외부 API가 죽어도 서비스가 멈추지 않도록 호출부는 항상 규칙으로 폴백한다.
+    # 명시적 LLM 추출 실패는 주장 없음으로 숨기지 않고 unavailable로 표시한다.
     llm_provider: str = "off"
     llm_model: str = "deepseek-chat"
     llm_base_url: str = "https://api.deepseek.com/v1"
@@ -100,12 +100,12 @@ class Config:
     llm_timeout_sec: int = 30
     # 판정은 창작이 아니다. 같은 입력에 같은 답이 나오는 편이 디버깅에도 낫다.
     llm_temperature: float = 0.0
-    # 주장 추출 방식: rule=정규식 점수, llm=LLM. llm인데 제공자가 없으면 rule로 떨어진다.
+    # 주장 추출 방식: rule=정규식 점수, llm=LLM. llm인데 제공자가 없으면 추출 실패다.
     claim_extractor: str = "rule"
     # 전문 기관 판정이 없을 때 LLM으로 판정할지. 끄면 예전처럼 전부 판단 유보.
     llm_verdict: bool = True
     # LLM이 인용한 문장이 실제 근거 원문에 있는지 대조한다. 없으면 판정을 버린다.
-    # 환각을 코드로 막는 장치라 끄지 않는 것을 권한다(디버깅용 스위치).
+    # 이전 설정 호환용 필드다. 일치·불일치의 인용 검증은 이 값과 무관하게 항상 한다.
     llm_quote_check: bool = True
 
     # --- 주장 사실성 검증 ---
@@ -160,6 +160,8 @@ class Config:
     backlog: int = 64
     # job은 결과 리포트 전체를 들고 있어서 무한히 쌓으면 메모리를 계속 먹는다.
     max_retained_jobs: int = 200
+    # 전체 job/session 목록은 내부 디버그용이며 공개 기본값에서는 닫는다.
+    enable_debug_endpoints: bool = False
 
     log_level: str = "INFO"
     # json으로 두면 로그가 한 줄짜리 JSON으로 나가서 나중에 수집·검색이 쉽다.
@@ -227,6 +229,7 @@ def load_config() -> Config:
         workers=_env_int("WORKERS", Config.workers),
         backlog=_env_int("BACKLOG", Config.backlog),
         max_retained_jobs=_env_int("MAX_RETAINED_JOBS", Config.max_retained_jobs),
+        enable_debug_endpoints=_env_bool("ENABLE_DEBUG_ENDPOINTS", Config.enable_debug_endpoints),
         log_level=_env_str("LOG_LEVEL", Config.log_level).upper(),
         log_format=_env_str("LOG_FORMAT", Config.log_format).lower(),
         cors_origins=_env_str("CORS_ORIGINS", Config.cors_origins),

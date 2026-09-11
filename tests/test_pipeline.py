@@ -38,8 +38,17 @@ class _FakeDetector:
         return deepfake.DeepfakeReport(
             frames_analyzed=2, frames_fake=0, avg_fake_score=10.0,
             method="heuristics+ViT-classifier", frames_with_face=2,
-            face_model_available=True,
+            face_model_available=True, frame_scores=[0.1, 0.1],
         )
+
+
+class _EmptyEvidenceProvider:
+    """정상 조회가 끝났지만 관련 결과가 없는 제공자."""
+
+    name = "empty_fixture"
+
+    def search(self, query, limit):
+        return []
 
 
 def _fake_transcribe(source, model_size=None):
@@ -60,8 +69,11 @@ def _wire_fast_pipeline(monkeypatch):
                         lambda video_path, frames_dir, max_frames=8: ["f1.jpg", "f2.jpg"])
     monkeypatch.setattr(deepfake, "DeepfakeDetector", _FakeDetector)
     monkeypatch.setattr(transcriber, "transcribe", _fake_transcribe)
-    # 근거 검색 제공자를 비워 네트워크 호출 없이 즉시 "근거 없음"으로 끝나게 한다.
-    monkeypatch.setattr(claims, "default_providers", lambda: [])
+    # 정상 조회의 빈 결과를 반환해 네트워크 없이 "근거 없음" 경로를 검증한다.
+    # 제공자 자체가 없는 경우는 검색 불가이므로 별도의 failed 경로다.
+    monkeypatch.setattr(claims, "default_providers", lambda: [_EmptyEvidenceProvider()])
+    from deepcheck import llm
+    monkeypatch.setattr(llm, "get_provider", lambda: None)
 
 
 class TestIncrementalDelivery:
@@ -147,3 +159,78 @@ class TestSoftDeadline:
         )
         assert report_obj.claims[0]["status"] == claims.TIMED_OUT
         assert report_obj.summary["timed_out"] == 1
+
+
+class TestFailureIsolation:
+    def test_detector_initialization_failure_does_not_cancel_claims(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+
+        def fail(**kwargs):
+            raise RuntimeError("detector cannot initialize")
+
+        monkeypatch.setattr(deepfake, "DeepfakeDetector", fail)
+        result = pipeline.analyze_url("https://example.com/v")
+        assert result["stages"]["media_manipulation"]["status"] == "failed"
+        assert result["claim_verification"]["summary"]["done"] == 1
+
+    def test_media_detector_exception_does_not_cancel_claims(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+
+        def fail(self, frames):
+            raise RuntimeError("model unavailable")
+
+        monkeypatch.setattr(_FakeDetector, "analyze", fail)
+        result = pipeline.analyze_url("https://example.com/v")
+        assert result["face_manipulation"]["status"] == "unavailable"
+        assert result["stages"]["media_manipulation"]["status"] == "failed"
+        assert result["claim_verification"]["summary"]["done"] == 1
+        assert result["analysis_status"] == "partial"
+
+    def test_failed_claim_is_not_reported_as_successful_stage(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(claims, "verify_one_claim", fail)
+        result = pipeline.analyze_url("https://example.com/v")
+        assert result["claim_verification"]["summary"]["failed"] == 1
+        assert "실패" in result["claim_verification"]["detail"]
+        assert result["stages"]["claim_verification"]["status"] == "failed"
+        assert result["analysis_status"] == "partial"
+
+    def test_empty_stt_is_not_a_successful_no_claims_finding(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+        monkeypatch.setattr(transcriber, "transcribe", lambda *args, **kwargs:
+                            transcriber.Transcript("", "ko", 0.99, duration=30.0))
+        result = pipeline.analyze_url("https://example.com/v")
+        assert result["claim_verification"]["status"] == "unavailable"
+        assert result["analysis_status"] == "partial"
+
+    def test_sparse_transcript_does_not_claim_100_percent_recognition(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+        text = "음성 세 단어"
+        monkeypatch.setattr(transcriber, "transcribe", lambda *args, **kwargs:
+                            transcriber.Transcript(
+                                text, "ko", 0.99,
+                                [{"start": 0.0, "end": 3.0, "text": text}], 140.0))
+        result = pipeline._transcribe(_fake_media(duration=140.0),
+                                      pipeline.AnalysisOptions(), pipeline.StageTracker())
+        assert result.coverage_pct == 100.0  # 입력 오디오 길이의 기존 필드
+        assert result.coverage_basis == "input_audio_duration"
+        assert result.segment_coverage_pct == 2.1
+        assert "인식 정확도를 뜻하지 않는다" in result.coverage_detail
+
+    def test_caption_off_does_not_read_even_an_existing_caption(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+        from deepcheck import captions
+
+        def reject(*args, **kwargs):
+            raise AssertionError("caption must not be read")
+
+        monkeypatch.setattr(captions, "load_track", reject)
+        result = pipeline._collect_transcript(
+            _fake_media(caption_path="unused.vtt"), pipeline.AnalysisOptions(caption_policy="off"),
+            pipeline.StageTracker(),
+        )
+        assert result.source == "stt"

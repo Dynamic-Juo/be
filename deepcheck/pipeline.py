@@ -54,7 +54,8 @@ class AnalysisOptions:
     enable_claim_verification: bool = True
     # manual: 사람이 단 자막만 사용 / any: 자동 자막까지 / off: 항상 STT
     caption_policy: str = field(default_factory=lambda: config.caption_policy)
-    # M-02의 지원 조건(길이 등)을 강제할지. CLI로 긴 영상을 실험할 때는 끌 수 있다.
+    # 다운로드 후 방어적 지원 조건 검사를 수행할지. False도 다운로드 진입점의
+    # URL·공개/연령·길이 경계를 해제하지 않는다. API에는 노출하지 않는다.
     enforce_input_limits: bool = True
     workdir: str | None = None
     keep_workdir: bool = False
@@ -131,6 +132,7 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
     tmp = opts.workdir or tempfile.mkdtemp(prefix="deepcheck_")
     os.makedirs(tmp, exist_ok=True)
     logger.info("분석 시작: %s (작업 디렉토리 %s)", url, tmp)
+    result_payload = None
 
     try:
         progress(0.05, "영상 다운로드 중...", "collecting")
@@ -167,7 +169,10 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         transcript_text = transcript.text
         segments = transcript.segments
         meta.update(language=transcript.language, stt_coverage_pct=transcript.coverage_pct,
-                    transcript_source=transcript.source)
+                    transcript_source=transcript.source,
+                    transcript_coverage_basis=transcript.coverage_basis,
+                    transcript_segment_coverage_pct=transcript.segment_coverage_pct,
+                    transcript_coverage_detail=transcript.coverage_detail)
         partial({"media": {k: v for k, v in meta.items() if k != "url"}})
 
         progress(0.65, "텍스트 신호 분석 중...", "transcribing")
@@ -194,7 +199,8 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
             final.analysis_status, final.face_manipulation.status,
             final.whole_video_generation.status,
         )
-        return final.to_dict()
+        result_payload = final.to_dict()
+        return result_payload
     except DeepCheckError:
         raise
     except Exception as e:
@@ -202,7 +208,23 @@ def analyze_url(url: str, options: AnalysisOptions | None = None,
         raise DeepCheckError(f"분석 중 예상하지 못한 오류: {e}", cause=e) from e
     finally:
         if not opts.keep_workdir and not opts.workdir:
-            shutil.rmtree(tmp, ignore_errors=True)
+            # 우리가 생성한 요청별 디렉토리만 정리한다. 실패를 숨기지 않되 원래
+            # 분석 예외나 이미 생성된 결과를 정리 오류로 덮어쓰지 않는다.
+            cleanup = StageStatus(status=StageState.OK.value, detail="요청별 임시 파일을 정리했다.")
+            try:
+                shutil.rmtree(tmp)
+            except FileNotFoundError:
+                pass  # 이미 정리된 경우
+            except OSError:
+                logger.exception("임시 분석 디렉토리 정리 실패: %s", tmp)
+                cleanup = StageStatus(
+                    status=StageState.FAILED.value,
+                    detail="요청별 임시 파일을 정리하지 못했다. 서버 관리자의 확인이 필요하다.",
+                )
+            if result_payload is not None:
+                result_payload["stages"]["cleanup"] = asdict(cleanup)
+                if cleanup.status == StageState.FAILED.value:
+                    result_payload["analysis_status"] = report.AnalysisState.PARTIAL.value
 
 
 def _asdict_axis(axis: report.ManipulationAxis) -> dict:
@@ -222,11 +244,11 @@ def _is_supported_url(url: str) -> bool:
 def _check_supported_video(media: downloader.VideoMedia, opts: AnalysisOptions) -> None:
     """M-02의 지원 조건을 확인한다. 조건 밖이면 분석하지 않고 이유를 알려준다.
 
-    비공개·삭제·연령 제한은 다운로드 단계에서 이미 실패하므로 여기까지 오지 않는다.
-    여기서 보는 건 받아온 뒤에야 알 수 있는 것(길이)이다.
+    다운로드 진입점에서 공개/연령/길이를 메타데이터로 검사한다. 여기서는 결과의
+    길이를 다시 확인한다. 이 검사를 끄더라도 다운로드 경계를 우회하지 않는다.
 
-    한국어 여부는 분석 전에 확인할 방법이 없어서 검사하지 않는다. 인식된 언어는
-    결과에 담겨 나가므로 화면에서 사후 안내로 처리한다(팀 결정).
+    Shorts 분류와 실제 발화의 한국어 여부는 아직 검증하지 않는다. 인식된 언어를
+    응답에 포함하는 것만으로 기획의 입력 지원조건 검증이 완료된 것은 아니다.
     """
     if not opts.enforce_input_limits:
         return
@@ -271,15 +293,30 @@ def _detect_manipulation(frames: list[str], opts: AnalysisOptions,
         tracker.mark("media_manipulation", StageState.SKIPPED, "분석할 프레임이 없음")
         return deepfake.DeepfakeReport(frames_analyzed=0, frames_fake=0, avg_fake_score=0.0,
                                        method="none")
-    detector = deepfake.DeepfakeDetector(
-        use_classifier=opts.use_classifier,
-        vlm_model=opts.vlm_model,
-    )
-    det_report = detector.analyze(frames)
+    try:
+        detector = deepfake.DeepfakeDetector(
+            use_classifier=opts.use_classifier,
+            vlm_model=opts.vlm_model,
+        )
+        det_report = detector.analyze(frames)
+    except Exception as e:
+        error = as_error_dict(e, stage="media_manipulation")
+        tracker.mark("media_manipulation", StageState.FAILED, error["message"],
+                     round(time.monotonic() - started, 2), error=error)
+        logger.exception("영상 조작 분석 실패 — 발언 분석은 계속한다")
+        return deepfake.DeepfakeReport(
+            frames_analyzed=len(frames), frames_fake=0, avg_fake_score=0.0,
+            method="none",
+        )
     detail = None
-    if opts.use_classifier and "ViT-classifier" not in det_report.method:
-        detail = "분류기를 사용하지 못해 휴리스틱만으로 판단함"
-    tracker.mark("media_manipulation", StageState.OK, detail,
+    state = StageState.OK
+    if "ViT-classifier" not in det_report.method:
+        detail = "유효한 얼굴 분류 점수가 없어 얼굴 기반 시각 분석을 수행하지 못함"
+        state = StageState.FAILED if opts.use_classifier else StageState.SKIPPED
+    elif len(det_report.frame_scores) < det_report.frames_with_face:
+        detail = "일부 얼굴 프레임의 분류에 실패해 성공한 프레임만 집계함"
+        state = StageState.FAILED
+    tracker.mark("media_manipulation", state, detail,
                  round(time.monotonic() - started, 2))
     return det_report
 
@@ -300,16 +337,18 @@ class TranscriptResult:
     coverage_pct: float | None = None
     segments: list[dict] = field(default_factory=list)
     source: str | None = None  # stt | caption
+    coverage_basis: str | None = None
+    segment_coverage_pct: float | None = None
+    coverage_detail: str | None = None
 
 
 def _collect_transcript(media: downloader.VideoMedia, opts: AnalysisOptions,
                         tracker: StageTracker) -> TranscriptResult:
     """발언 텍스트를 확보한다.
 
-    설계 문서의 분기를 그대로 따른다: 쓸 수 있는 자막이 있으면 자막을 쓰고,
-    없을 때만 음성 인식으로 넘어간다. 자막이 있으면 STT 수십 초를 통째로 아낀다.
+    MVP 기본은 STT다. 선택적으로 자막을 요청한 경우에만 자막을 우선 사용한다.
     """
-    if media.caption_path:
+    if opts.caption_policy != "off" and media.caption_path:
         started = time.monotonic()
         track = captions.load_track(
             media.caption_path, media.caption_language or "", media.caption_source or "manual"
@@ -325,7 +364,11 @@ def _collect_transcript(media: downloader.VideoMedia, opts: AnalysisOptions,
                 round(time.monotonic() - started, 2),
             )
             return TranscriptResult(track.text, track.language, coverage_pct,
-                                   track.segments, source="caption")
+                                   track.segments, source="caption",
+                                   coverage_basis="caption_last_timestamp",
+                                   segment_coverage_pct=transcriber.segment_coverage_pct(
+                                       track.segments, media.duration),
+                                   coverage_detail="마지막 자막 시점의 비율이며 발언 완전성·정확도를 뜻하지 않는다.")
         logger.info("자막을 읽지 못해 STT로 넘어간다")
 
     return _transcribe(media, opts, tracker)
@@ -351,22 +394,27 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
     if media.duration and result.duration:
         coverage_pct = round(min(result.duration, media.duration) / media.duration * 100, 1)
         logger.info(
-            "STT 커버리지: %.1fs / 영상 %.1fs (%.1f%%)",
+            "STT 입력 길이 비율: %.1fs / 영상 %.1fs (%.1f%%), 인식 정확도가 아님",
             result.duration, media.duration, coverage_pct,
         )
         if coverage_pct < 90:
-            logger.warning("STT가 영상 끝까지 처리하지 못했을 수 있다 (커버리지 %.1f%%)", coverage_pct)
+            logger.warning("입력 오디오 길이가 영상보다 짧다 (길이 비율 %.1f%%)", coverage_pct)
+
+    segment_coverage = transcriber.segment_coverage_pct(result.segments, media.duration)
 
     if opts.save_transcript:
         _save_transcript(opts.save_transcript, media, result)
 
     tracker.mark(
         "transcript", StageState.OK,
-        f"STT {result.word_count}단어" + (f", 커버리지 {coverage_pct}%" if coverage_pct else ""),
+        f"STT {result.word_count}단어, 텍스트 구간 비율 {segment_coverage}% "
+        "(발언 완전성·인식 정확도는 별도 검증 필요)",
         round(time.monotonic() - started, 2),
     )
     return TranscriptResult(result.text, result.language, coverage_pct,
-                            result.segments, source="stt")
+                            result.segments, source="stt", coverage_basis="input_audio_duration",
+                            segment_coverage_pct=segment_coverage,
+                            coverage_detail="입력 오디오 길이 비율이며 발언 완전성·인식 정확도를 뜻하지 않는다.")
 
 
 def _save_transcript(path: str, media: downloader.VideoMedia,
@@ -375,7 +423,7 @@ def _save_transcript(path: str, media: downloader.VideoMedia,
     try:
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"[영상 제목] {media.title}\n")
-            f.write(f"[영상 길이] {media.duration}s / [STT 처리 길이] {result.duration}s\n\n")
+            f.write(f"[영상 길이] {media.duration}s / [STT 입력 오디오 길이] {result.duration}s\n\n")
             f.write("=== 전체 transcript (원문 그대로) ===\n\n")
             f.write(result.text + "\n\n")
             f.write("=== 세그먼트 (타임스탬프) ===\n\n")
@@ -441,11 +489,10 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
         )
 
     # LLM 제공자는 주장당 새로 만들지 않고 한 번만 만들어 재사용한다.
-    llm_provider = llm.get_provider()
-    if llm_provider is not None:
-        logger.info("LLM 제공자 활성: %s (%s)", config.llm_provider, config.llm_model)
-
     try:
+        llm_provider = llm.get_provider()
+        if llm_provider is not None:
+            logger.info("LLM 제공자 활성: %s (%s)", config.llm_provider, config.llm_model)
         extract = claims.select_extractor(llm_provider)
         extracted = extract(text, segments, config.max_claims)
     except Exception as e:
@@ -525,6 +572,7 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
             list(pool.map(run_in_worker, extracted))
 
     timed_out_count = sum(1 for c in extracted if c.status == claims.TIMED_OUT)
+    failed_count = sum(1 for c in extracted if c.status == claims.FAILED)
     if timed_out_count:
         logger.warning("전체 처리 시간(%.0fs) 초과 — 주장 %d건은 시간 초과로 처리",
                        config.max_processing_sec, timed_out_count)
@@ -532,19 +580,21 @@ def _verify_claims(text: str, segments: list[dict], opts: AnalysisOptions,
         partial({"claim_verification": asdict(_claim_verification_snapshot(extracted))})
 
     counts = Counter(c.verdict for c in extracted if c.status == claims.DONE)
-    detail = None
+    limitations = []
     if timed_out_count:
-        detail = f"전체 처리 시간 초과로 주장 {timed_out_count}건은 검증하지 못했다."
-    elif not (counts[claims.REFUTED] or counts[claims.SUPPORTED]):
-        detail = "관련 자료는 모았지만 이 주장들을 직접 검증한 판정을 찾지 못해 모두 판단을 유보했다."
+        limitations.append(f"전체 처리 시간 초과로 주장 {timed_out_count}건은 검증하지 못했다.")
+    if failed_count:
+        limitations.append(f"주장 {failed_count}건의 검증에 실패했다. 완료된 나머지 결과만 제공한다.")
+    if not limitations and not (counts[claims.REFUTED] or counts[claims.SUPPORTED]):
+        limitations.append("확보한 근거로 주장을 지지하거나 반박할 수 없어 판단을 유보했다.")
 
     tracker.mark(
-        "claim_verification", StageState.OK,
+        "claim_verification", StageState.FAILED if failed_count or timed_out_count else StageState.OK,
         f"주장 {len(extracted)}건 (지지 {counts[claims.SUPPORTED]}, "
         f"반박 {counts[claims.REFUTED]}, 유보 {counts[claims.UNVERIFIED]}, "
-        f"시간초과 {timed_out_count})",
+        f"실패 {failed_count}, 시간초과 {timed_out_count})",
         round(time.monotonic() - started, 2),
     )
     final = _claim_verification_snapshot(extracted)
-    final.detail = detail
+    final.detail = " ".join(limitations) or None
     return final

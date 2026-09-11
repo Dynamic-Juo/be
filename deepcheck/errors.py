@@ -26,16 +26,21 @@ class DeepCheckError(Exception):
         self.cause = cause
 
     def to_dict(self) -> dict:
+        # Provider/tool exceptions can contain URLs, local paths or credentials.
+        # Public responses use stable messages; detailed causes stay in tracebacks.
+        public_messages = {
+            "internal_error": "서버 내부 오류가 발생했습니다.",
+            "download_failed": "영상을 받지 못했습니다. 공개 상태와 지원 조건을 확인해주세요.",
+            "transcription_failed": "음성을 텍스트로 변환하지 못했습니다.",
+            "dependency_missing": "분석에 필요한 구성 요소를 사용할 수 없습니다.",
+        }
         payload = {
             "code": self.code,
-            "message": self.message,
+            "message": public_messages.get(self.code, self.message),
             "retryable": self.retryable,
         }
         if self.stage:
             payload["stage"] = self.stage
-        if self.cause is not None:
-            # 원인 예외의 타입까지 남긴다. 메시지만 남기면 어디서 온 실패인지 놓친다.
-            payload["cause"] = f"{type(self.cause).__name__}: {self.cause}"
         return payload
 
 
@@ -116,10 +121,13 @@ def as_error_dict(exc: BaseException, stage: str | None = None) -> dict:
     만들지 않게 한다.
     """
     if isinstance(exc, DeepCheckError):
-        return exc.to_dict()
+        payload = exc.to_dict()
+        if stage and "stage" not in payload:
+            payload["stage"] = stage
+        return payload
     return {
         "code": DeepCheckError.code,
-        "message": f"{type(exc).__name__}: {exc}",
+        "message": "서버 내부 오류가 발생했습니다.",
         "retryable": False,
         **({"stage": stage} if stage else {}),
     }

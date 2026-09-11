@@ -67,6 +67,8 @@ class TestVerification:
     def test_근거를_못_찾아도_거짓으로_판정하지_않는다(self):
         result = claims.verify_claims(self._claim(), providers=[FakeProvider("wiki", [])])
         assert result[0].verdict == claims.UNVERIFIED
+        assert result[0].status == claims.DONE
+        assert result[0].insufficient_reason == claims.NO_SOURCE
         assert "거짓이라는 뜻은 아니다" in result[0].reason
 
     def test_관련_자료만_있으면_판단을_유보한다(self):
@@ -77,22 +79,22 @@ class TestVerification:
         assert result[0].verdict == claims.UNVERIFIED
         assert result[0].evidence
 
-    def test_전문기관이_거짓으로_판정하면_반박이다(self):
+    def test_전문기관_rating만으로_불일치를_확정하지_않는다(self):
         provider = FakeProvider("factcheck", [
             claims.Evidence(title="검증 결과", url="https://x/2", source="factcheck",
-                            rating="False"),
+                            snippet="2024년 실업률이 3.2% 감소했다", rating="False"),
         ])
         result = claims.verify_claims(self._claim(), providers=[provider])
-        assert result[0].verdict == claims.REFUTED
-        assert "전문 기관 판정" in result[0].reason
+        assert result[0].verdict == claims.UNVERIFIED
+        assert result[0].evidence
 
-    def test_전문기관이_사실로_판정하면_지지다(self):
+    def test_전문기관_rating만으로_일치를_확정하지_않는다(self):
         provider = FakeProvider("factcheck", [
             claims.Evidence(title="검증 결과", url="https://x/3", source="factcheck",
-                            rating="사실"),
+                            snippet="2024년 실업률이 3.2% 감소했다", rating="사실"),
         ])
         result = claims.verify_claims(self._claim(), providers=[provider])
-        assert result[0].verdict == claims.SUPPORTED
+        assert result[0].verdict == claims.UNVERIFIED
 
     def test_애매한_판정표기는_유보로_남긴다(self):
         # "대체로 사실"까지 지지로 옮기면 우리가 하지 않은 판단을 한 셈이 된다.
@@ -106,6 +108,30 @@ class TestVerification:
     def test_제공자가_터져도_분석은_계속된다(self):
         result = claims.verify_claims(self._claim(), providers=[BrokenProvider()])
         assert result[0].verdict == claims.UNVERIFIED
+        assert result[0].status == claims.FAILED
+        assert result[0].insufficient_reason == claims.WEAK_SOURCE
+        assert "확인할 수 없다" in result[0].reason
+
+    def test_일부_제공자_실패와_빈_결과를_no_source로_단정하지_않는다(self):
+        result = claims.verify_claims(
+            self._claim(), providers=[FakeProvider("empty", []), BrokenProvider()]
+        )
+        assert result[0].status == claims.FAILED
+        assert result[0].insufficient_reason == claims.WEAK_SOURCE
+        assert result[0].insufficient_reason != claims.NO_SOURCE
+
+    def test_일부_제공자_실패에도_성공한_근거는_보존한다(self):
+        evidence = claims.Evidence(
+            title="2024년 실업률 3.2% 통계",
+            url="https://statistics.example/2024",
+            source="statistics",
+        )
+        result = claims.verify_claims(
+            self._claim(), providers=[BrokenProvider(), FakeProvider("working", [evidence])]
+        )
+        assert result[0].status == claims.DONE
+        assert result[0].evidence == [evidence]
+        assert "일부 근거 검색 제공자 조회에 실패" in result[0].reason
 
     def test_검색어는_문장을_그대로_넣지_않는다(self):
         provider = FakeProvider("wiki", [])
@@ -186,6 +212,10 @@ class TestTimeBudget:
         assert "예산" in result[-1].reason
         assert not result[-1].evidence
         assert all(c.verdict == claims.UNVERIFIED for c in result)
+        assert result[-1].status == claims.TIMED_OUT
+        assert result[-1].insufficient_reason == claims.TIMEOUT
+        assert result[-1].insufficient_label == claims.INSUFFICIENT_LABELS[claims.TIMEOUT]
+        assert result[-1].verdict_label == claims.VERDICT_LABELS[claims.UNVERIFIED]
 
 
 class TestRelevanceFilter:
@@ -213,14 +243,23 @@ class TestRelevanceFilter:
         result = claims.verify_claims(self._claim(), providers=[provider])
         assert len(result[0].evidence) == 1
 
-    def test_전문기관_판정은_관련성_필터를_통과한다(self):
-        # 판정 자체가 이 주장을 검증한 결과라 제목이 안 겹쳐도 유효하다.
+    def test_전문기관_판정도_검토한_주장이_일치해야_참고자료로_남는다(self):
         provider = FakeProvider("factcheck", [
             claims.Evidence(title="검증 결과", url="https://x/4", source="factcheck",
+                            snippet="1998년 11월 이후 처음으로 6%대의 상승률입니다",
                             rating="False"),
         ])
         result = claims.verify_claims(self._claim(), providers=[provider])
-        assert result[0].verdict == claims.REFUTED
+        assert result[0].verdict == claims.UNVERIFIED
+        assert len(result[0].evidence) == 1
+
+    def test_다른_주장을_검토한_전문기관_rating은_제외한다(self):
+        provider = FakeProvider("factcheck", [
+            claims.Evidence(title="검증 결과", url="https://x/5", source="factcheck",
+                            snippet="2026년 성장률은 2.1%입니다", rating="False"),
+        ])
+        result = claims.verify_claims(self._claim(), providers=[provider])
+        assert result[0].evidence == []
 
 
 class TestSpeculationFilter:

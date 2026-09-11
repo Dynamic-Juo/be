@@ -5,6 +5,10 @@
 """
 
 import json
+import io
+import logging
+import ssl
+import urllib.error
 from dataclasses import replace
 
 import pytest
@@ -30,6 +34,16 @@ class FakeLLM:
         return json.dumps(self.payload, ensure_ascii=False)
 
 
+class RawLLM:
+    name = "raw"
+
+    def __init__(self, response):
+        self.response = response
+
+    def complete(self, system, user, max_tokens):
+        return self.response
+
+
 def _evidence(snippet="소비자물가 상승률은 6.0%로 집계됐다."):
     return claims.Evidence(
         title="통계청 소비자물가동향",
@@ -38,6 +52,20 @@ def _evidence(snippet="소비자물가 상승률은 6.0%로 집계됐다."):
         published_at="2022-08-02",
         snippet=snippet,
         source_type=claims.NEWS,
+    )
+
+
+def _verified_primary(content="소비자물가 상승률은 6.0%로 집계됐다.",
+                      url="https://kostat.go.kr/x"):
+    return claims.Evidence(
+        title="통계청 소비자물가동향",
+        url=url,
+        source="verified_fixture",
+        published_at="2022-08-02",
+        content=content,
+        content_scope=claims.ORIGINAL,
+        provenance_verified=True,
+        source_type=claims.STATISTICS,
     )
 
 
@@ -53,18 +81,42 @@ class StubProvider:
 
 # --- 판정 사다리 ---------------------------------------------------------
 
-def test_전문기관_판정이_있으면_LLM을_부르지_않는다():
+def test_전문기관_검색_rating을_바로_판정으로_옮기지_않는다():
+    claim_text = "소비자물가 상승률이 6.0%를 넘었습니다"
     rated = claims.Evidence(title="팩트체크", url="https://x", source="factcheck",
-                            snippet="확인 결과", rating="거짓",
+                            snippet=claim_text, rating="거짓",
                             source_type=claims.FACTCHECK)
-    fake = FakeLLM({"verdict": "일치", "reason": "...", "cited": []})
-    claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
+    fake = FakeLLM({"verdict": "부족", "reason": "원문 미확인", "cited": [],
+                    "insufficient_reason": "weak_source"})
+    claim = claims.Claim(text=claim_text)
 
     claims.verify_one_claim(claim, [StubProvider([rated])], llm_provider=fake)
 
-    assert claim.verdict == claims.REFUTED
-    assert claim.verdict_label == "근거와 불일치"
-    assert fake.calls == []  # LLM 호출 없음
+    assert claim.verdict == claims.UNVERIFIED
+    assert claim.insufficient_reason == claims.WEAK_SOURCE
+    assert len(fake.calls) == 1
+
+
+def test_서로_충돌하는_전문기관_rating은_첫_결과를_고르지_않는다():
+    claim_text = "소비자물가 상승률이 6.0%를 넘었습니다"
+    items = [
+        claims.Evidence(title="검증 A", url="https://a.example/x", source="factcheck",
+                        snippet=claim_text, rating="거짓", source_type=claims.FACTCHECK),
+        claims.Evidence(title="검증 B", url="https://b.example/x", source="factcheck",
+                        snippet=claim_text, rating="사실", source_type=claims.FACTCHECK),
+    ]
+    fake = FakeLLM({"verdict": "일치", "reason": "...", "cited": []})
+    claim = claims.Claim(text=claim_text)
+
+    claims.verify_one_claim(claim, [StubProvider(items)], llm_provider=fake)
+
+    assert claim.verdict == claims.UNVERIFIED
+    assert claim.insufficient_reason == claims.SOURCE_CONFLICT
+    assert fake.calls == []
+
+
+def test_no_evidence_rating은_거짓으로_매핑하지_않는다():
+    assert claims._verdict_from_rating("No evidence") is None
 
 
 def test_근거가_없으면_LLM을_부르지_않고_사유를_남긴다():
@@ -88,7 +140,7 @@ def test_LLM이_인용까지_맞으면_판정이_그대로_반영된다():
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
-    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+    claims.verify_one_claim(claim, [StubProvider([_verified_primary()])], llm_provider=fake)
 
     assert claim.verdict == claims.SUPPORTED
     assert claim.verdict_label == "근거와 일치"
@@ -103,10 +155,88 @@ def test_LLM이_인용까지_맞으면_판정이_그대로_반영된다():
     assert used.quote == "소비자물가 상승률은 6.0%로 집계됐다."
 
 
+def test_검색_요약에_인용이_있어도_양성_판정은_근거부족으로_강등한다():
+    fake = FakeLLM({
+        "verdict": "일치",
+        "reason": "검색 요약에 같은 수치가 있다.",
+        "cited": [{"index": 1, "quote": "소비자물가 상승률은 6.0%로 집계됐다.",
+                   "reason": "같은 수치다."}],
+    })
+    claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
+
+    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+
+    assert claim.verdict == claims.UNVERIFIED
+    assert claim.insufficient_reason == claims.WEAK_SOURCE
+    assert not claim.evidence[0].cited
+
+
+def test_원문이어도_provenance가_검증되지_않으면_양성_판정을_막는다():
+    item = claims.Evidence(
+        title="통계 원문", url="https://kostat.go.kr/x", source="fixture",
+        content="소비자물가 상승률은 6.0%로 집계됐다.",
+        content_scope=claims.ORIGINAL, source_type=claims.STATISTICS,
+    )
+    fake = FakeLLM({
+        "verdict": "일치", "reason": "같은 수치다.",
+        "cited": [{"index": 1, "quote": item.content, "reason": "같은 수치다."}],
+    })
+
+    result = claims._llm_verdict(claims.Claim(text="소비자물가 상승률"), [item], fake)
+
+    assert result["verdict"] == claims.UNVERIFIED
+    assert not item.cited
+
+
+def test_1차_출처가_없으면_검증된_독립_원문_두_개가_필요하다():
+    text = "소비자물가 상승률은 6.0%로 집계됐다."
+    one = claims.Evidence(
+        title="기사 A", url="https://a.example/news", source="fixture", content=text,
+        content_scope=claims.ORIGINAL, provenance_verified=True,
+        independence_group="wire-a", source_type=claims.NEWS,
+    )
+    two = claims.Evidence(
+        title="기사 B", url="https://b.example/news", source="fixture", content=text,
+        content_scope=claims.ORIGINAL, provenance_verified=True,
+        independence_group="wire-b", source_type=claims.NEWS,
+    )
+    payload = {
+        "verdict": "일치", "reason": "독립 원문 두 건이 같은 수치를 제시한다.",
+        "cited": [
+            {"index": 1, "quote": text, "reason": "같은 수치다."},
+            {"index": 2, "quote": text, "reason": "같은 수치다."},
+        ],
+    }
+
+    insufficient = claims._llm_verdict(
+        claims.Claim(text="소비자물가 상승률"), [one],
+        FakeLLM({**payload, "cited": payload["cited"][:1]}),
+    )
+    sufficient = claims._llm_verdict(
+        claims.Claim(text="소비자물가 상승률"), [one, two], FakeLLM(payload),
+    )
+
+    assert insufficient["verdict"] == claims.UNVERIFIED
+    assert sufficient["verdict"] == claims.SUPPORTED
+
+
+def test_안전하지_않은_출처_URL은_검증된_원문이어도_인용할_수_없다():
+    item = _verified_primary(url="javascript:alert(1)")
+    fake = FakeLLM({
+        "verdict": "일치", "reason": "같은 수치다.",
+        "cited": [{"index": 1, "quote": item.content, "reason": "같은 수치다."}],
+    })
+
+    result = claims._llm_verdict(claims.Claim(text="소비자물가 상승률"), [item], fake)
+
+    assert result["verdict"] == claims.UNVERIFIED
+    assert not item.cited
+
+
 def test_인용은_지목한_근거_안에_있어야_한다():
     """A 자료의 문장을 B 자료의 근거인 것처럼 붙이면 화면에 틀린 정보가 나간다."""
-    a = _evidence("소비자물가 상승률은 6.0%로 집계됐다.")
-    b = _evidence("추석 성수품 공급을 늘린다.")
+    a = _verified_primary("소비자물가 상승률은 6.0%로 집계됐다.")
+    b = _verified_primary("추석 성수품 공급을 늘린다.", "https://kostat.go.kr/y")
     fake = FakeLLM({
         "verdict": "일치",
         "reason": "...",
@@ -131,9 +261,23 @@ def test_없는_근거_번호를_지목하면_무시한다():
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
-    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+    claims.verify_one_claim(claim, [StubProvider([_verified_primary()])], llm_provider=fake)
 
     assert claim.verdict == claims.UNVERIFIED
+
+
+@pytest.mark.parametrize("bad_cited", [None, {}, "1", [
+    {"index": 1, "quote": "소비자물가 상승률은 6.0%로 집계됐다.", "reason": "같다."},
+    {"index": 1, "quote": "소비자물가 상승률은 6.0%로 집계됐다.", "reason": "같다."},
+]])
+def test_인용_배열이_잘못됐거나_번호가_중복되면_안전하게_강등한다(bad_cited):
+    item = _verified_primary()
+    result = claims._llm_verdict(
+        claims.Claim(text="소비자물가 상승률"), [item],
+        FakeLLM({"verdict": "일치", "reason": "같다.", "cited": bad_cited}),
+    )
+    assert result["verdict"] == claims.UNVERIFIED
+    assert not item.cited
 
 
 def test_근거부족이면_붙은_자료는_참고_자료로_남는다():
@@ -144,7 +288,7 @@ def test_근거부족이면_붙은_자료는_참고_자료로_남는다():
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
-    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+    claims.verify_one_claim(claim, [StubProvider([_verified_primary()])], llm_provider=fake)
 
     assert claim.verdict == claims.UNVERIFIED
     assert claim.evidence  # 참고 자료로는 남는다
@@ -161,7 +305,7 @@ def test_인용이_근거에_없으면_판정을_근거부족으로_강등한다
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
-    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+    claims.verify_one_claim(claim, [StubProvider([_verified_primary()])], llm_provider=fake)
 
     assert claim.verdict == claims.UNVERIFIED
     assert claim.insufficient_reason == claims.WEAK_SOURCE
@@ -177,7 +321,7 @@ def test_인용_검증은_공백과_따옴표_차이를_허용한다():
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
-    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+    claims.verify_one_claim(claim, [StubProvider([_verified_primary()])], llm_provider=fake)
 
     assert claim.verdict == claims.SUPPORTED
 
@@ -191,7 +335,7 @@ def test_근거부족_판정에는_인용_검증을_요구하지_않는다():
     })
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
-    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+    claims.verify_one_claim(claim, [StubProvider([_verified_primary()])], llm_provider=fake)
 
     assert claim.verdict == claims.UNVERIFIED
     assert claim.insufficient_reason == claims.TIME_MISMATCH
@@ -240,40 +384,51 @@ _TRANSCRIPT = (
 )
 
 
-def test_LLM이_원문에_없는_문장을_지어내면_버린다():
+def test_LLM이_원문에_없는_문장을_지어내면_추출_실패다():
     fake = FakeLLM({"claims": [
         {"text": "소비자물가 상승률이 6.0%를 넘었습니다.", "repeat": 1},
         {"text": "실업률이 3.2%로 떨어졌습니다.", "repeat": 1},  # 원문에 없음
     ]})
 
-    result = claims.extract_claims_llm(_TRANSCRIPT, [], 0, fake)
-
-    texts = [c.text for c in result]
-    assert "소비자물가 상승률이 6.0%를 넘었습니다." in texts
-    assert not any("실업률" in t for t in texts)
+    with pytest.raises(claims.ClaimExtractionError):
+        claims.extract_claims_llm(_TRANSCRIPT, [], 0, fake)
 
 
-def test_LLM_추출이_실패하면_규칙_기반으로_떨어진다():
+def test_LLM_추출_호출이_실패하면_명시적_추출_실패다():
     fake = FakeLLM({}, raise_error=True)
 
-    result = claims.extract_claims_llm(_TRANSCRIPT, [], 0, fake)
-
-    assert result  # 규칙 기반 결과가 나온다
-    assert any("6.0%" in c.text for c in result)
+    with pytest.raises(claims.ClaimExtractionError):
+        claims.extract_claims_llm(_TRANSCRIPT, [], 0, fake)
 
 
-def test_LLM이_유효한_주장을_하나도_못_내면_규칙으로_떨어진다():
+def test_LLM이_유효한_주장을_하나도_못_내면_명시적_추출_실패다():
     fake = FakeLLM({"claims": [{"text": "원문에 전혀 없는 문장입니다."}]})
 
-    result = claims.extract_claims_llm(_TRANSCRIPT, [], 0, fake)
+    with pytest.raises(claims.ClaimExtractionError):
+        claims.extract_claims_llm(_TRANSCRIPT, [], 0, fake)
 
-    assert any("6.0%" in c.text for c in result)
 
-
-def test_추출기_선택은_제공자가_없으면_규칙으로_떨어진다(monkeypatch):
+def test_LLM_추출기_선택은_제공자가_없으면_명시적으로_실패한다(monkeypatch):
     # config는 frozen이라 필드를 직접 못 바꾼다. 사본을 만들어 갈아끼운다.
     monkeypatch.setattr(claims, "config", replace(config, claim_extractor="llm"))
-    assert claims.select_extractor(None) is claims.extract_claims
+    with pytest.raises(claims.ClaimExtractionError):
+        claims.select_extractor(None)
+
+
+@pytest.mark.parametrize("payload", [
+    {}, {"claims": "[]"}, {"claims": [None]},
+    {"claims": [{"text": 123}]},
+    {"claims": [{"text": "소비자물가 상승률이 6.0%를 넘었습니다.", "repeat": True}]},
+])
+def test_명시적_빈_배열이_아닌_잘못된_추출_스키마는_실패다(payload):
+    with pytest.raises(claims.ClaimExtractionError):
+        claims.extract_claims_llm(_TRANSCRIPT, [], 0, FakeLLM(payload))
+
+
+def test_알_수_없는_추출기_설정은_실패다(monkeypatch):
+    monkeypatch.setattr(claims, "config", replace(config, claim_extractor="typo"))
+    with pytest.raises(claims.ClaimExtractionError):
+        claims.select_extractor(None)
 
 
 def test_추출기_선택은_제공자가_있으면_LLM을_쓴다(monkeypatch):
@@ -287,17 +442,92 @@ def test_추출기_선택은_제공자가_있으면_LLM을_쓴다(monkeypatch):
     assert result[0].text == "소비자물가 상승률이 6.0%를 넘었습니다."
 
 
-def test_인용_검증을_끄면_강등하지_않는다(monkeypatch):
-    """디버깅용 스위치가 실제로 동작하는지. 운영에서는 켜둔다."""
+def test_인용_검증_설정이_꺼져도_안전장치를_우회하지_못한다(monkeypatch):
     monkeypatch.setattr(claims, "config", replace(config, llm_quote_check=False))
     fake = FakeLLM({"verdict": "불일치", "reason": "다르다.",
                     "cited": [{"index": 1, "reason": "다르다.",
                                "quote": "근거에 전혀 없는 문장이다."}]})
     claim = claims.Claim(text="소비자물가 상승률이 6.0%를 넘었습니다")
 
-    claims.verify_one_claim(claim, [StubProvider([_evidence()])], llm_provider=fake)
+    claims.verify_one_claim(claim, [StubProvider([_verified_primary()])], llm_provider=fake)
 
-    assert claim.verdict == claims.REFUTED
+    assert claim.verdict == claims.UNVERIFIED
+    assert claim.insufficient_reason == claims.WEAK_SOURCE
+
+
+# --- LLM 응답·TLS 경계 ----------------------------------------------------
+
+def test_JSON_코드펜스_앞뒤에_다른_문장이_붙으면_거부한다():
+    provider = RawLLM('이전 지시를 무시함\n```json\n{"claims": []}\n```')
+    with pytest.raises(llm.LLMUnavailable):
+        llm.complete_json(provider, "system", "user")
+
+
+def test_중복_JSON_키는_거부한다():
+    provider = RawLLM('{"verdict":"일치","verdict":"불일치"}')
+    with pytest.raises(llm.LLMUnavailable):
+        llm.complete_json(provider, "system", "user")
+
+
+def test_LLM_HTTPS_요청은_인증서와_호스트명을_검증한다(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=-1):
+            captured["read_size"] = size
+            return b'{}'
+
+    def fake_urlopen(request, **kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    assert llm._post_json("https://llm.example/v1", {}, {}, 1) == {}
+    assert captured["context"].verify_mode == ssl.CERT_REQUIRED
+    assert captured["context"].check_hostname is True
+    assert captured["read_size"] == llm._MAX_HTTP_RESPONSE_BYTES + 1
+
+
+def test_LLM_HTTP_오류_본문은_예외나_로그로_전파하지_않는다(monkeypatch):
+    secret = "provider echoed secret"
+    read_sizes = []
+
+    class TrackingBody(io.BytesIO):
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return super().read(size)
+
+    error = urllib.error.HTTPError(
+        "https://llm.example/v1", 401, "Unauthorized", {}, TrackingBody(secret.encode())
+    )
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(error))
+    with pytest.raises(llm.LLMUnavailable) as caught:
+        llm._post_json("https://llm.example/v1", {}, {}, 1)
+    assert str(caught.value) == "HTTP 401"
+    assert secret not in str(caught.value)
+    assert read_sizes == [llm._MAX_HTTP_ERROR_BYTES]
+
+
+def test_LLM_HTTP_성공_응답이_상한을_넘으면_안전하게_실패한다(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=-1):
+            return b"x" * size
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda *a, **k: Response())
+    with pytest.raises(llm.LLMUnavailable, match="허용 크기"):
+        llm._post_json("https://llm.example/v1", {}, {}, 1)
 
 
 # --- 주장 개수 상한 (M-04) -----------------------------------------------
@@ -402,6 +632,95 @@ def test_네이버_카테고리별로_출처_유형이_달라진다():
     encyc = claims.NaverSearchProvider("encyc", "a", "b")
     assert news.source_type == claims.NEWS
     assert encyc.source_type == claims.ENCYCLOPEDIA
+
+
+def test_팩트체크_검색은_첫_review만_고르지_않는다(monkeypatch):
+    monkeypatch.setattr(claims, "_http_get_json", lambda *a, **k: {"claims": [{
+        "text": "가상시 인구는 10만명이다",
+        "claimReview": [
+            {"title": "검증 A", "url": "https://a.example/review", "textualRating": "사실"},
+            {"title": "검증 B", "url": "https://b.example/review", "textualRating": "거짓"},
+        ],
+    }]})
+    result = claims.FactCheckProvider("key").search("가상시 인구", 3)
+    assert [item.rating for item in result] == ["사실", "거짓"]
+
+
+def test_근거_HTTPS_요청은_인증서와_호스트명을_검증한다(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=-1):
+            captured["read_size"] = size
+            return b'{}'
+
+    def fake_urlopen(request, **kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(claims.urllib.request, "urlopen", fake_urlopen)
+    claims._HOST_LAST_CALL.pop("evidence-tls.example", None)
+    assert claims._http_get_json("https://evidence-tls.example/data", 1) == {}
+    assert captured["context"].verify_mode == ssl.CERT_REQUIRED
+    assert captured["context"].check_hostname is True
+    assert captured["read_size"] == claims._MAX_HTTP_RESPONSE_BYTES + 1
+
+
+def test_근거_HTTP_성공_응답이_상한을_넘으면_검색_실패다(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=-1):
+            return b"x" * size
+
+    monkeypatch.setattr(claims.urllib.request, "urlopen", lambda *a, **k: Response())
+    claims._HOST_LAST_CALL.pop("large-evidence.example", None)
+    with pytest.raises(claims.EvidenceSearchError, match="허용 크기"):
+        claims._http_get_json("https://large-evidence.example/data", 1)
+
+
+def test_근거_HTTP_오류_본문도_고정_상한만_읽는다(monkeypatch):
+    read_sizes = []
+
+    class TrackingBody(io.BytesIO):
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return super().read(size)
+
+    error = urllib.error.HTTPError(
+        "https://error-evidence.example/data", 500, "error", {}, TrackingBody(b"detail")
+    )
+    monkeypatch.setattr(
+        claims.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(error)
+    )
+    claims._HOST_LAST_CALL.pop("error-evidence.example", None)
+    with pytest.raises(claims.EvidenceSearchError, match="HTTP 오류"):
+        claims._http_get_json("https://error-evidence.example/data", 1)
+    assert read_sizes == [claims._MAX_HTTP_ERROR_BYTES]
+
+
+def test_근거_연결_오류_로그에_reason_원문을_남기지_않는다(monkeypatch, caplog):
+    secret = "connection detail with credential"
+    error = urllib.error.URLError(RuntimeError(secret))
+    monkeypatch.setattr(
+        claims.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(error)
+    )
+    claims._HOST_LAST_CALL.pop("connection-error.example", None)
+    with caplog.at_level(logging.WARNING), pytest.raises(
+            claims.EvidenceSearchError, match="연결 오류"):
+        claims._http_get_json("https://connection-error.example/data", 1)
+    assert secret not in caplog.text
+    assert "RuntimeError" in caplog.text
 
 
 def test_자격_정보가_없으면_네이버_제공자는_조용히_빠진다(monkeypatch):

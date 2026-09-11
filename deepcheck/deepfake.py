@@ -10,6 +10,7 @@ Combines up to three signals, each optional so the tool degrades gracefully:
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 from dataclasses import dataclass, field
@@ -38,7 +39,7 @@ class FrameResult:
 class DeepfakeReport:
     frames_analyzed: int
     frames_fake: int
-    avg_fake_score: float  # 0..100
+    avg_fake_score: float  # 0..100, 유효 분류 점수가 없으면 판정에 사용하지 않는다.
     evidence: list[str] = field(default_factory=list)
     method: str = "heuristics"
     vlm_summary: str | None = None
@@ -143,15 +144,25 @@ class DeepfakeDetector:
         except Exception as e:
             logger.warning("프레임 분류 실패(%s): %s", os.path.basename(frame_path), e)
             return None, None
-        # Prefer a 'fake'-ish label; map label -> score.
-        fake_pair = next((x for x in out if (x["label"] or "").lower().replace(" ", "") in
-                          ("fake", "deepfake", "ai", "gans", "generated")), None)
-        if fake_pair is not None:
-            return float(fake_pair["score"]), fake_pair["label"]
-        # If only real vs fake exists but no label matched, fall back to first.
-        pair = out[0] if out else None
-        if pair:
-            return float(pair["score"]), pair["label"]
+        # 모르는 라벨의 확률을 fake 확률로 취급하면 real 99%도 fake 99%가 된다.
+        # 명시적으로 지원한 라벨과 정상 범위의 점수만 사용한다.
+        if isinstance(out, list):
+            for item in out:
+                if not isinstance(item, dict):
+                    continue
+                label = item.get("label")
+                if not isinstance(label, str) or label.lower().replace(" ", "") not in (
+                    "fake", "deepfake", "ai", "gans", "generated"
+                ):
+                    continue
+                try:
+                    score = float(item["score"])
+                except (KeyError, TypeError, ValueError):
+                    break
+                if math.isfinite(score) and 0 <= score <= 1:
+                    return score, label
+                break
+        logger.warning("분류기의 fake 라벨 또는 유효 점수를 확인하지 못해 이 프레임을 제외한다")
         return None, None
 
     # ---- heuristics ----
@@ -224,13 +235,13 @@ class DeepfakeDetector:
         for fp in frames:
             fr = FrameResult(path=fp, fake_score=None, label=None)
             if self.use_classifier:
-                classify_path = fp
                 crop_path = face.crop_face(fp)
                 if crop_path:
-                    classify_path = crop_path
                     fr.face_cropped = True
-                score, label = self._classifier_score(classify_path)
-                fr.fake_score, fr.label = score, label
+                    score, label = self._classifier_score(crop_path)
+                    fr.fake_score, fr.label = score, label
+                # 얼굴 crop용 분류기에 전체 프레임을 넣지 않는다. 일부 프레임에만
+                # 얼굴이 있어도 얼굴 없는 장면의 점수가 영상 집계를 희석하면 안 된다.
             fr.heuristic_artifacts = self._heuristics(fp)
             results.append(fr)
 
@@ -246,20 +257,19 @@ class DeepfakeDetector:
             reason = ("얼굴 검출 모델이 없어" if not face_model_available else "영상에서 얼굴을 찾지 못해")
             logger.warning("%s 얼굴 기반 분류 결과를 신뢰할 수 없다", reason)
 
-        scored = [r for r in results if r.fake_score is not None]
+        scored = [r for r in results if r.face_cropped and r.fake_score is not None]
         frame_scores: list[float] = []
         if scored:
             frame_scores = [round(r.fake_score, 4) for r in scored]
             frames_fake = sum(1 for s in frame_scores if s >= config.fake_frame_threshold)
             avg = aggregate_frame_scores(frame_scores)
         else:
-            # 분류기를 못 쓰면 휴리스틱만으로 임시 점수를 낸다. 신뢰도가 낮으므로
-            # report 쪽에서 method를 보고 degraded 상태임을 표시한다.
-            heur_penalty = sum(1 for r in results if r.heuristic_artifacts)
-            avg = (heur_penalty / max(len(results), 1)) * config.heuristic_only_scale
-            frames_fake = heur_penalty
+            # 휴리스틱은 참고 문구로만 남긴다. 분류 미실행을 저위험 판정으로
+            # 바꾸지 않도록 report는 method를 확인하고 unavailable로 표시한다.
+            avg = 0.0
+            frames_fake = 0
             if self.use_classifier:
-                logger.warning("분류기 점수를 얻지 못해 휴리스틱 점수(%.3f)로 대체", avg)
+                logger.warning("유효한 얼굴 분류 점수를 얻지 못해 시각적 판정을 보류한다")
 
         evidence: list[str] = []
         for r in results:
@@ -299,5 +309,4 @@ class DeepfakeDetector:
             face_model_available=face_model_available,
             frame_scores=frame_scores,
         )
-
 

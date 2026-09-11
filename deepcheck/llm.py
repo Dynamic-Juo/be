@@ -1,7 +1,8 @@
 """LLM 제공자.
 
-주장 추출과 판정에 쓰는 선택적 단계다. 없으면 규칙 기반으로 떨어지므로,
-호출부는 `LLMUnavailable`을 잡아서 폴백만 하면 된다.
+주장 추출과 판정에 쓰는 선택적 단계다. 호출부는 `LLMUnavailable`을 작업 성격에
+맞게 처리한다. 판정은 근거 부족으로 유보할 수 있지만, LLM 추출을 요청한 상태의
+실패는 정상적인 "주장 없음"과 구분한다.
 
 `vlm.py`와 같은 구조다 — 새 제공자를 추가하려면 `LLMProvider`를 구현하고
 `_PROVIDERS`에 등록하면 되고, 호출부(`claims.py`)는 인터페이스만 안다.
@@ -16,17 +17,22 @@ from __future__ import annotations
 import json
 import logging
 import re
+import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Protocol
 
 from .config import config
 
 logger = logging.getLogger(__name__)
+_TLS_CONTEXT = ssl.create_default_context()
+_MAX_HTTP_RESPONSE_BYTES = 2 * 1024 * 1024
+_MAX_HTTP_ERROR_BYTES = 4096
 
 
 class LLMUnavailable(Exception):
-    """LLM을 쓸 수 없다. 치명적이지 않으므로 호출부는 규칙 기반으로 폴백한다."""
+    """LLM 호출 또는 응답을 사용할 수 없다. 호출부가 단계별 실패 정책을 적용한다."""
 
 
 class LLMProvider(Protocol):
@@ -40,14 +46,29 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int) -> dict:
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
+        kwargs = {"timeout": timeout}
+        if urllib.parse.urlsplit(url).scheme.lower() == "https":
+            # urllib의 암묵적 기본값에 기대지 않고 CA 검증·호스트명 검사를 고정한다.
+            kwargs["context"] = _TLS_CONTEXT
+        with urllib.request.urlopen(req, **kwargs) as resp:
+            response_body = resp.read(_MAX_HTTP_RESPONSE_BYTES + 1)
+            if len(response_body) > _MAX_HTTP_RESPONSE_BYTES:
+                raise LLMUnavailable("LLM 응답이 허용 크기를 초과했다")
+            parsed = json.loads(response_body.decode())
+            if not isinstance(parsed, dict):
+                raise LLMUnavailable("LLM HTTP 응답이 JSON 객체가 아니다")
+            return parsed
     except urllib.error.HTTPError as e:
-        # 본문에 원인이 들어 있는 경우가 많아서(키 오류, 잔액 부족 등) 같이 남긴다.
-        detail = e.read().decode(errors="replace")[:300]
-        raise LLMUnavailable(f"HTTP {e.code}: {detail}") from e
+        # 제공자 본문에는 요청 일부나 자격 정보가 되비칠 수 있다. 제한해서 읽고 버리며,
+        # 사용자 결과와 로그로 전파되는 예외에는 상태 코드만 남긴다.
+        e.read(_MAX_HTTP_ERROR_BYTES)
+        raise LLMUnavailable(f"HTTP {e.code}") from e
+    except LLMUnavailable:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise LLMUnavailable("LLM HTTP 응답 JSON 형식이 올바르지 않다") from e
     except Exception as e:
-        raise LLMUnavailable(str(e)) from e
+        raise LLMUnavailable(f"LLM HTTP 요청 실패: {type(e).__name__}") from e
 
 
 class OpenAICompatibleProvider:
@@ -89,7 +110,7 @@ class OpenAICompatibleProvider:
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as e:
-            raise LLMUnavailable(f"예상과 다른 응답 구조: {str(data)[:200]}") from e
+            raise LLMUnavailable("예상과 다른 응답 구조") from e
 
 
 class OllamaChatProvider:
@@ -122,7 +143,7 @@ class OllamaChatProvider:
         try:
             return data["message"]["content"]
         except KeyError as e:
-            raise LLMUnavailable(f"예상과 다른 응답 구조: {str(data)[:200]}") from e
+            raise LLMUnavailable("예상과 다른 응답 구조") from e
 
 
 _PROVIDERS = {
@@ -150,27 +171,45 @@ def get_provider(cfg=None) -> LLMProvider | None:
     return factory(cfg)
 
 
-# 모델이 코드펜스로 감싸서 주는 경우가 흔하다. JSON 본문만 꺼낸다.
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.S)
+# 모델이 코드펜스로 감싸서 주는 경우가 흔하다. 다만 앞뒤에 다른 문장이 붙은 응답은
+# 그 안의 JSON만 골라 신뢰하지 않는다. 전체 응답이 JSON 또는 JSON 코드펜스여야 한다.
+_FENCE_RE = re.compile(r"\A```(?:json)?\s*(.*?)\s*```\Z", re.S)
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"중복 JSON 키: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_nonstandard_constant(value: str):
+    raise ValueError(f"표준 JSON이 아닌 숫자 상수: {value}")
 
 
 def complete_json(provider: LLMProvider, system: str, user: str,
                   max_tokens: int = 1024) -> dict:
     """JSON 응답을 기대하고 호출한다. 파싱까지 실패하면 LLMUnavailable.
 
-    파싱 실패를 예외로 올리는 이유는, 호출부가 "LLM을 못 썼다"와 "LLM이 판정을
-    거부했다"를 구분할 필요가 없기 때문이다. 둘 다 폴백 대상이다.
+    파싱 실패는 정상적인 빈 구조화 결과와 다르므로 예외로 올린다.
     """
     raw = provider.complete(system, user, max_tokens)
     text = (raw or "").strip()
-    fenced = _FENCE_RE.search(text)
+    fenced = _FENCE_RE.fullmatch(text)
     if fenced:
         text = fenced.group(1).strip()
     try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.warning("LLM 응답 JSON 파싱 실패: %s", text[:200])
-        raise LLMUnavailable(f"JSON 파싱 실패: {e}") from e
+        parsed = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_nonstandard_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as e:
+        # 응답이 입력 발언·자료를 되비칠 수 있으므로 원문이나 키 이름을 로그에 남기지 않는다.
+        logger.warning("LLM 응답 JSON 파싱 실패 (%s)", type(e).__name__)
+        raise LLMUnavailable("JSON 응답 형식이 올바르지 않다") from e
     if not isinstance(parsed, dict):
         raise LLMUnavailable(f"객체가 아닌 JSON: {type(parsed).__name__}")
     return parsed

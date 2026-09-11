@@ -16,7 +16,6 @@ import queue
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
@@ -41,7 +40,6 @@ TIMED_OUT = "timed_out"
 
 _TERMINAL = (COMPLETED, COMPLETED_WITH_LIMITATIONS, FAILED, TIMED_OUT)
 
-_STOP = object()
 
 
 def _isoformat(epoch: float) -> str:
@@ -112,18 +110,25 @@ class Harness:
 
     def __init__(self, max_workers: int | None = None, backlog: int | None = None,
                  max_retained_jobs: int | None = None):
-        self.max_workers = max_workers or config.workers
-        self.backlog = backlog or config.backlog
-        self.max_retained_jobs = max_retained_jobs or config.max_retained_jobs
-        self.executor = ThreadPoolExecutor(max_workers=self.max_workers,
-                                           thread_name_prefix="hermes")
+        self.max_workers = config.workers if max_workers is None else max_workers
+        self.backlog = config.backlog if backlog is None else backlog
+        self.max_retained_jobs = (config.max_retained_jobs if max_retained_jobs is None
+                                  else max_retained_jobs)
+        if min(self.max_workers, self.backlog, self.max_retained_jobs) < 1:
+            raise ValueError("workers, backlog and retained jobs must be positive")
         self._queue: queue.Queue = queue.Queue(maxsize=self.backlog)
         self._jobs: dict[str, Job] = {}
         self._inflight_url: dict[str, str] = {}
         self._lock = threading.Lock()
-        self._dispatcher = threading.Thread(target=self._dispatch, name="hermes-dispatcher",
-                                            daemon=True)
-        self._dispatcher.start()
+        self._closed = False
+        # Consume the bounded queue directly. ThreadPoolExecutor.submit() would
+        # otherwise move every queued job into its own unbounded internal queue.
+        self._workers = [
+            threading.Thread(target=self._work, name=f"hermes-{index}", daemon=True)
+            for index in range(self.max_workers)
+        ]
+        for worker in self._workers:
+            worker.start()
         logger.info("Hermes 시작: 워커 %d, 대기열 상한 %d", self.max_workers, self.backlog)
 
     # ---- submission ----
@@ -141,62 +146,56 @@ class Harness:
         대기열이 가득 차면 queue.Full을 올리고, 호출자가 429로 변환한다.
         """
         with self._lock:
-            existing_id = self._inflight_url.get(url)
-            if existing_id and existing_id in self._jobs:
-                existing = self._jobs[existing_id]
-                if session_id not in existing.session_ids:
-                    existing.session_ids.append(session_id)
-                logger.info("중복 URL 요청 — 기존 job 재사용: %s", existing_id)
-                return existing, True
-
-            # 같은 URL 재사용은 위에서 걸렀으니, 여기 걸리는 건 이 세션이 다른
-            # 영상을 이미 돌리고 있는 경우다(M-07: 세션별 활성 분석 1건).
+            if self._closed:
+                raise queue.Full
             active = self._active_job_for_session_locked(session_id)
-            if active is not None:
-                logger.info("세션 %s가 이미 분석 중(job %s) — 새 요청 거절",
-                            session_id, active.id)
+            if active is not None and active.url != url:
                 raise SessionBusyError(
                     "이미 분석 중인 영상이 있습니다. 완료된 뒤에 다시 시도해주세요."
                 )
+            existing_id = self._inflight_url.get(url)
+            if existing_id and existing_id in self._jobs:
+                existing = self._jobs[existing_id]
+                if not existing.finished:
+                    if session_id not in existing.session_ids:
+                        existing.session_ids.append(session_id)
+                    logger.info("중복 URL 요청 — 기존 job 재사용: %s", existing_id)
+                    return existing, True
 
             job = Job(id=uuid.uuid4().hex, session_id=session_id, url=url, params=params,
                       session_ids=[session_id])
+            # Publish registration and queue insertion atomically so another
+            # request cannot reuse a job that is about to be rejected as full.
+            try:
+                self._queue.put_nowait(job)
+            except queue.Full:
+                logger.warning("대기열 포화(%d) — 요청 거절", self.backlog)
+                raise
             self._jobs[job.id] = job
             self._inflight_url[url] = job.id
             self._evict_old_jobs_locked()
-
-        try:
-            self._queue.put_nowait(job)
-        except queue.Full:
-            with self._lock:
-                self._jobs.pop(job.id, None)
-                if self._inflight_url.get(url) == job.id:
-                    self._inflight_url.pop(url, None)
-            logger.warning("대기열 포화(%d) — 요청 거절", self.backlog)
-            raise
-
         logger.info("job 등록: %s (session %s) %s", job.id, session_id, url)
         return job, False
 
     # ---- worker flow ----
-    def _dispatch(self) -> None:
+    def _work(self) -> None:
         while True:
-            item = self._queue.get()
-            if item is _STOP:
-                logger.info("디스패처 종료")
-                break
             try:
-                self.executor.submit(self._run, item)
-            except Exception:
-                # 여기서 예외가 새면 디스패처 스레드가 죽고, 이후 모든 job이 영원히
-                # queued에 머문다. 반드시 삼키고 로그만 남긴다.
-                logger.exception("job 디스패치 실패: %s", getattr(item, "id", "?"))
-                if isinstance(item, Job):
-                    self._fail(item, {
-                        "code": "dispatch_failed",
-                        "message": "작업을 워커에 전달하지 못했습니다.",
-                        "retryable": True,
-                    })
+                job = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                with self._lock:
+                    if self._closed:
+                        return
+                continue
+            try:
+                with self._lock:
+                    closed = self._closed
+                    if closed:
+                        self._cancel_queued_locked(job)
+                if not closed:
+                    self._run(job)
+            finally:
+                self._queue.task_done()
 
     def _run(self, job: Job) -> None:
         token = current_job_id.set(job.id)
@@ -222,6 +221,12 @@ class Harness:
             if elapsed > config.max_processing_sec:
                 job.status = TIMED_OUT
                 job.message = "시간 초과"
+            elif not _has_usable_result(final):
+                self._fail(job, {
+                    "code": "analysis_unavailable",
+                    "message": "완료된 분석 결과가 없습니다. 분석하지 못한 영역과 이유를 확인해주세요.",
+                    "retryable": True,
+                })
             elif final.get("analysis_status") == "complete":
                 job.status = COMPLETED
                 job.message = "완료"
@@ -238,13 +243,27 @@ class Harness:
         finally:
             job.updated_at = time.time()
             with self._lock:
-                self._inflight_url.pop(job.url, None)
+                if self._inflight_url.get(job.url) == job.id:
+                    self._inflight_url.pop(job.url, None)
             current_job_id.reset(token)
 
     def _fail(self, job: Job, error: dict) -> None:
-        job.status = FAILED
+        useful = _has_usable_result(job.result)
+        job.status = COMPLETED_WITH_LIMITATIONS if useful else FAILED
         job.error = error
-        job.message = error.get("message", "오류")
+        job.message = "일부 분석만 완료" if useful else error.get("message", "오류")
+        if job.result:
+            job.result["analysis_status"] = "partial"
+            verification = job.result.get("claim_verification") or {}
+            claims = verification.get("claims", [])
+            for claim in claims:
+                if claim.get("status") in {"pending", "verifying"}:
+                    claim["status"] = "failed"
+                    claim["error"] = error
+            if claims:
+                summary = verification.setdefault("summary", {})
+                for status in ("pending", "verifying", "done", "failed", "timed_out"):
+                    summary[status] = sum(c.get("status") == status for c in claims)
         job.updated_at = time.time()
 
     # ---- helpers ----
@@ -313,8 +332,48 @@ class Harness:
                 "inflight_urls": len(self._inflight_url),
                 "backlog_size": self._queue.qsize(),
                 "max_workers": self.max_workers,
+                "accepting_jobs": not self._closed,
                 "job_counts": counts,
             }
 
-    def shutdown(self) -> None:
-        self._queue.put(_STOP)
+    def _cancel_queued_locked(self, job: Job) -> None:
+        self._fail(job, {
+            "code": "server_shutdown",
+            "message": "서버 종료로 대기 중인 작업을 취소했습니다. 다시 시도해주세요.",
+            "retryable": True,
+        })
+        if self._inflight_url.get(job.url) == job.id:
+            self._inflight_url.pop(job.url, None)
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Stop admission, cancel queued work, optionally wait for running work.
+
+        Running Python/model calls are not forcibly interruptible here. This is
+        graceful shutdown, not enforcement of the processing-time deadline.
+        """
+        with self._lock:
+            self._closed = True
+            while True:
+                try:
+                    job = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._cancel_queued_locked(job)
+                self._queue.task_done()
+        if wait:
+            for worker in self._workers:
+                worker.join()
+
+
+def _has_usable_result(result: dict | None) -> bool:
+    """Metadata, unavailable axes and pending cards are not completed analyses."""
+    if not result:
+        return False
+    if any((result.get(axis) or {}).get("status") in {
+        "suspected", "no_clear_signs", "inconclusive",
+    } for axis in ("face_manipulation", "whole_video_generation")):
+        return True
+    verification = result.get("claim_verification") or {}
+    return verification.get("status") == "no_claims" or any(
+        claim.get("status") == "done" for claim in verification.get("claims", [])
+    )

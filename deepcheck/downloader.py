@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -11,7 +12,8 @@ from typing import Any
 
 from . import captions
 from .config import config
-from .errors import DependencyMissingError, DownloadError
+from .errors import DependencyMissingError, DownloadError, UnsupportedVideoError
+from .url_policy import normalize_youtube_url
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,30 @@ def _ffmpeg_binary() -> str | None:
     return shutil.which("ffmpeg")
 
 
+def _check_download_metadata(info: dict, *, incomplete: bool = False) -> None:
+    """Reject unsupported metadata before media bytes are downloaded.
+
+    This does not establish YouTube's Shorts classification or spoken language.
+    Those remain separate release checks; short duration alone is not Shorts.
+    """
+    if incomplete:
+        return None
+    if info.get("availability") != "public":
+        raise UnsupportedVideoError("공개 상태를 확인할 수 있는 영상만 지원합니다.", stage="input")
+    if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming", "post_live"}:
+        raise UnsupportedVideoError("진행 중이거나 예정된 실시간 영상은 지원하지 않습니다.", stage="input")
+    age = info.get("age_limit")
+    if isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age != 0:
+        raise UnsupportedVideoError("연령 제한이 없는 것으로 확인된 영상만 지원합니다.", stage="input")
+    duration = info.get("duration")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+        raise UnsupportedVideoError("영상 길이를 확인할 수 없습니다.", stage="input")
+    if config.max_video_sec > 0 and duration > config.max_video_sec:
+        raise UnsupportedVideoError(
+            f"최대 {config.max_video_sec}초까지의 영상만 지원합니다.", stage="input")
+    return None
+
+
 def download(url: str, workdir: str, max_height: int | None = None,
              caption_policy: str | None = None) -> VideoMedia:
     """Download best available mp4 (video+audio merged) for a URL.
@@ -76,6 +102,7 @@ def download(url: str, workdir: str, max_height: int | None = None,
     Uses the yt-dlp Python API so it stays resilient on a single process.
     Returns a VideoMedia dataclass. Raises RuntimeError on failure.
     """
+    url = normalize_youtube_url(url)
     if YoutubeDL is None:
         raise DependencyMissingError(
             "yt-dlp가 설치되어 있지 않습니다. uv pip install -r requirements.txt",
@@ -98,12 +125,15 @@ def download(url: str, workdir: str, max_height: int | None = None,
             "noprogress": True,
             "retries": 3,
             "socket_timeout": 30,
-            "nocheckcertificate": True,
+            "nocheckcertificate": False,
+            "cachedir": False,
+            "allowed_extractors": ["youtube$"],
+            "match_filter": _check_download_metadata,
         }
 
         video_tmpl = os.path.join(workdir, "%(id)s.v.%(ext)s")
         audio_tmpl = os.path.join(workdir, "%(id)s.a.%(ext)s")
-        video_fmt = f"bv[ext=mp4][height<={height_cap}]/bv[ext=mp4]/b[ext=mp4]/b"
+        video_fmt = f"bv[ext=mp4][height<={height_cap}]/b[ext=mp4][height<={height_cap}]/b[height<={height_cap}]"
         audio_fmt = "ba[ext=m4a]/ba[acodec!=none]/ba/b"
 
         info: dict[str, Any] = {}
@@ -113,10 +143,14 @@ def download(url: str, workdir: str, max_height: int | None = None,
         try:
             with YoutubeDL({**base, "format": video_fmt, "outtmpl": video_tmpl}) as ydl:
                 info = ydl.extract_info(url, download=True)
+        except UnsupportedVideoError:
+            raise
         except Exception as e:
             # 비공개·삭제·지역제한·네트워크 등 대부분 외부 원인이라 재시도 여지가 있다.
             raise DownloadError(f"영상을 받지 못했습니다: {e}", stage="download", cause=e) from e
 
+        if not isinstance(info, dict):
+            raise DownloadError("영상 메타데이터를 확보하지 못했습니다.", stage="download")
         video_id = info.get("id")
         video_path = _find(workdir, video_id, marker=".v.")
         if not video_path:
@@ -132,10 +166,15 @@ def download(url: str, workdir: str, max_height: int | None = None,
         try:
             with YoutubeDL({**base, "format": audio_fmt, "outtmpl": audio_tmpl}) as ydl:
                 ainfo = ydl.extract_info(url, download=True)
+        except UnsupportedVideoError:
+            raise
         except Exception as e:
             logger.warning("오디오 스트림 다운로드 실패: %s — 영상 컨테이너로 STT를 시도한다", e)
             ainfo = info  # keep metadata; STT can fall back to video container
 
+        if not isinstance(ainfo, dict):
+            logger.warning("오디오 메타데이터가 없어 영상 파일로 전사를 시도한다")
+            ainfo = info
         audio_path = _find(workdir, ainfo.get("id") or video_id, marker=".a.")
         if audio_path is None and video_path:
             logger.warning("별도 오디오 스트림이 없어 영상 파일을 STT 입력으로 사용한다")

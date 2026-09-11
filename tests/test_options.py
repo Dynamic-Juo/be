@@ -34,9 +34,28 @@ def test_주장검증은_기본적으로_켜져있다():
     assert AnalysisOptions().enable_claim_verification is True
 
 
-def test_자막_정책_기본값은_수동_자막만_사용한다():
-    # 자동 자막은 결국 다른 STT의 출력이라 품질이 낫다고 보기 어렵다.
-    assert AnalysisOptions().caption_policy == "manual"
+def test_자막_정책_기본값은_확정된_T02에_따라_STT를_사용한다():
+    assert AnalysisOptions().caption_policy == "off"
+
+
+def test_compose_does_not_silently_override_the_caption_default():
+    from pathlib import Path
+    import re
+
+    # Static file inspection only: never invoke Compose or read deployment env.
+    source = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    match = re.search(r"DEEPCHECK_CAPTION_POLICY:\s*\"\$\{DEEPCHECK_CAPTION_POLICY:-([^}]+)\}", source)
+    assert match and match.group(1) == Config.caption_policy
+
+
+def test_수동_자막은_명시적으로_선택할_수_있다(monkeypatch):
+    monkeypatch.setenv("DEEPCHECK_CAPTION_POLICY", "manual")
+    assert load_config().caption_policy == "manual"
+
+
+def test_디버그_목록은_기본적으로_닫는다(monkeypatch):
+    monkeypatch.delenv("DEEPCHECK_ENABLE_DEBUG_ENDPOINTS", raising=False)
+    assert load_config().enable_debug_endpoints is False
 
 
 def test_환경변수로_설정을_덮어쓸_수_있다(monkeypatch):

@@ -21,6 +21,7 @@ from __future__ import annotations
 import html
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+from urllib.parse import urlsplit
 
 from .config import config
 
@@ -119,6 +120,9 @@ class TranscriptInfo:
     language: str | None = None
     word_count: int | None = None
     coverage_pct: float | None = None
+    coverage_basis: str | None = None
+    segment_coverage_pct: float | None = None
+    coverage_detail: str | None = None
     # 이 텍스트를 어디서 얻었는지(stt | caption). 발언 위치의 정확도가 달라서
     # 화면에서 "음성 인식" / "자막"으로 함께 보여준다.
     source: str | None = None
@@ -198,7 +202,7 @@ def build_face_manipulation(deepfake: dict, text: dict) -> ManipulationAxis:
     visual_unavailable_reason = None
     if frames_analyzed == 0:
         visual_unavailable_reason = "분석할 영상 프레임을 확보하지 못했다."
-    elif classifier_used and frames_with_face == 0:
+    elif frames_with_face == 0:
         # 이 분류기는 얼굴 crop 이미지로 학습된 모델이다. 얼굴을 한 명도 못 찾았다면
         # 전체 프레임에 대한 점수는 근거로 쓸 수 없다. 설계 문서의 원칙대로
         # "얼굴을 못 찾음"을 정상 판정으로 바꾸지 않고 판단을 유보한다.
@@ -208,6 +212,9 @@ def build_face_manipulation(deepfake: dict, text: dict) -> ManipulationAxis:
             if deepfake.get("face_model_available")
             else "얼굴 검출 모델이 없어 얼굴 기반 분석을 수행하지 못했다."
         )
+    elif not classifier_used:
+        visual_risk = None
+        visual_unavailable_reason = "얼굴 분류기의 유효한 점수를 확보하지 못했다. 휴리스틱은 조작 판정 근거로 사용하지 않는다."
 
     self_disclosure_risk = float(text.get("self_disclosure_risk", 0))
     disclosed = self_disclosure_risk >= config.self_disclosure_gate
@@ -251,10 +258,8 @@ def build_face_manipulation(deepfake: dict, text: dict) -> ManipulationAxis:
         detail = f"{visual_unavailable_reason} 제목·설명의 자가표기만으로 판단했다."
     else:
         detail = f"프레임 {frames_analyzed}장을 분석해 그중 {frames_with_face}장에서 얼굴을 찾았다."
-        if not classifier_used:
-            detail += " 딥페이크 분류기를 사용하지 못해 휴리스틱만으로 판단했다."
-        elif frames_with_face < frames_analyzed:
-            detail += " 얼굴을 찾지 못한 프레임은 전체 화면으로 분석해 정확도가 낮을 수 있다."
+        if frames_with_face < frames_analyzed:
+            detail += " 얼굴을 찾지 못한 프레임은 얼굴 기반 분류와 점수 집계에서 제외했다."
 
     evidence = list(deepfake.get("evidence", [])) + list(text.get("self_disclosure_evidence", []))
     status = categorize(risk)
@@ -298,20 +303,28 @@ def build_whole_video_generation(text: dict) -> ManipulationAxis:
     )
 
 
-def _is_degraded(stage_payload: dict, face_manipulation: ManipulationAxis) -> bool:
+def _is_degraded(stage_payload: dict, face_manipulation: ManipulationAxis,
+                 whole_video_generation: ManipulationAxis,
+                 claim_verification: ClaimVerification) -> bool:
     """이번 분석이 계획대로 다 돌았는지 판정한다.
 
-    주장 사실성 검증은 MVP 범위 밖이라 기본적으로 꺼져 있다. 이걸 degraded로 세면
-    모든 분석이 항상 partial이 되어 플래그가 무의미해지므로 제외한다. 영상 전체
-    AI 생성 축도 모델 미선정 상태가 정상이므로 degraded 판정에 넣지 않는다.
+    R-06/R-10에서 요구한 축을 구현하지 못한 것도 사용자가 받는 결과의 한계다.
+    모델 미선정이나 옵션 해제로 축이 빠졌다고 전체 완료로 표시하지 않는다.
     """
-    if face_manipulation.status == ManipulationState.UNAVAILABLE.value:
+    if any(axis.status == ManipulationState.UNAVAILABLE.value
+           for axis in (face_manipulation, whole_video_generation)):
+        return True
+    if claim_verification.status == AxisStatus.UNAVAILABLE.value:
+        return True
+    unfinished = {"pending", "verifying", "failed", "timed_out"}
+    if (any(claim_verification.summary.get(status, 0) for status in unfinished)
+            or any(claim.get("status") in unfinished for claim in claim_verification.claims)):
         return True
     for name, stage in stage_payload.items():
         status = stage.get("status") if isinstance(stage, dict) else None
         if status == StageState.FAILED.value:
             return True
-        if status == StageState.SKIPPED.value and name != "claim_verification":
+        if status == StageState.SKIPPED.value:
             return True
     return False
 
@@ -321,6 +334,7 @@ _MEDIA_KEYS = (
     "title", "uploader", "duration", "video_id",
     "thumbnail", "upload_date", "language",
     "transcript_source", "stt_coverage_pct",
+    "transcript_coverage_basis", "transcript_segment_coverage_pct", "transcript_coverage_detail",
 )
 
 
@@ -336,7 +350,7 @@ def build(meta: dict, deepfake: dict, text: dict, stages: dict,
     stage_payload = {
         name: (asdict(s) if isinstance(s, StageStatus) else s) for name, s in stages.items()
     }
-    degraded = _is_degraded(stage_payload, face_manipulation)
+    degraded = _is_degraded(stage_payload, face_manipulation, whole_video_generation, claims)
 
     return AnalysisReport(
         url=meta.get("url", ""),
@@ -355,6 +369,9 @@ def build(meta: dict, deepfake: dict, text: dict, stages: dict,
             language=meta.get("language"),
             word_count=text.get("word_count"),
             coverage_pct=meta.get("stt_coverage_pct"),
+            coverage_basis=meta.get("transcript_coverage_basis"),
+            segment_coverage_pct=meta.get("transcript_segment_coverage_pct"),
+            coverage_detail=meta.get("transcript_coverage_detail"),
             source=meta.get("transcript_source"),
             signals={
                 "clickbait": text.get("clickbait_risk", 0),
@@ -453,7 +470,11 @@ def format_text(r: AnalysisReport) -> str:
     if r.transcript.keywords:
         lines.append(f"    키워드 : {', '.join(r.transcript.keywords)}")
     if r.transcript.coverage_pct is not None:
-        lines.append(f"    STT 커버리지: {r.transcript.coverage_pct:.1f}%")
+        lines.append(f"    입력 길이/자막 끝 시점 비율: {r.transcript.coverage_pct:.1f}%")
+    if r.transcript.segment_coverage_pct is not None:
+        lines.append(f"    텍스트 타임스탬프 구간 비율: {r.transcript.segment_coverage_pct:.1f}%")
+    if r.transcript.coverage_detail:
+        lines.append(f"    한계: {r.transcript.coverage_detail}")
     sig = r.transcript.signals
     lines.append(
         f"    (점수 미반영) 클릭베이트 {sig.get('clickbait', 0)}/100 · "
@@ -468,6 +489,19 @@ def format_json(r: AnalysisReport) -> str:
     return json.dumps(r.to_dict(), ensure_ascii=False, indent=2)
 
 
+def _safe_http_url(value: object) -> str:
+    """HTML 속성 이스케이프와 별개로 실행 가능한 URL 스킴을 차단한다."""
+    if not isinstance(value, str) or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return "#"
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() in ("http", "https") and parsed.hostname:
+            return value
+    except ValueError:
+        pass
+    return "#"
+
+
 def _claims_html(cv: ClaimVerification, esc) -> str:
     """주장별 판정·근거를 목록으로 만든다. 근거 링크는 원문을 확인할 수 있게 남긴다."""
     if not cv.claims:
@@ -477,7 +511,7 @@ def _claims_html(cv: ClaimVerification, esc) -> str:
         label = claim.get("verdict_label") or VERDICT_LABELS.get(
             claim.get("verdict"), "근거 부족")
         links = "".join(
-            f'<li><a href="{esc(item.get("url"))}" rel="noopener noreferrer" '
+            f'<li><a href="{esc(_safe_http_url(item.get("url")))}" rel="noopener noreferrer" '
             f'target="_blank">{esc(item.get("title"))}</a> '
             f'<small>({esc(item.get("source"))}{esc(" · " + item["rating"] if item.get("rating") else "")})</small></li>'
             for item in claim.get("evidence", [])[:3]
@@ -523,7 +557,7 @@ def format_html(r: AnalysisReport) -> str:
 .badge{{font-size:1.4rem;font-weight:800}}
 li{{margin:6px 0;font-size:.95rem}}</style></head><body>
 <h1>DeepCheck — 영상 분석 결과</h1>
-<p><a href="{esc(r.url)}">{esc(r.media.get('title') or r.url)}</a></p>
+<p><a href="{esc(_safe_http_url(r.url))}">{esc(r.media.get('title') or r.url)}</a></p>
 {_axis_html('1. 얼굴 합성·변형', r.face_manipulation, esc)}
 {_axis_html('2. 영상 전체 AI 생성', r.whole_video_generation, esc)}
 <div class="card"><h3>3. 주장 사실성 검증</h3>
@@ -531,6 +565,7 @@ li{{margin:6px 0;font-size:.95rem}}</style></head><body>
 {_claims_html(r.claim_verification, esc)}
 <p>{esc(r.claim_verification.detail)}</p></div>
 <div class="card"><h3>참고: 음성 텍스트</h3><p>{esc(r.transcript.summary)}</p>
+<p>{esc(r.transcript.coverage_detail)}</p>
 <p><b>키워드:</b> {kw}</p>
 <p><b>(점수 미반영)</b> 클릭베이트 {esc(r.transcript.signals.get('clickbait', 0))}/100 ·
 주장 강도 {esc(r.transcript.signals.get('claim_strength', 0))}/100</p></div>
