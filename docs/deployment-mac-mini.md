@@ -1,6 +1,10 @@
 # M4 맥미니 배포 인수인계
 
-상태: 2026-09-11 맥미니 conan-staging 내부 기동과 얼굴·ViT·Whisper 모델 로딩을 확인했다. conan-api-dev.dotseven.cloud의 Tunnel·본인 이메일 한정 Access 연결 및 미인증 HTTPS 302를 확인했다. 기본 DNS 해석·본인 로그인 후 응답·키 입력·실제 영상·FE 연결은 추가 확인이 필요하다. 실제 운영 명령은 [배포 점검 기록](deployment-log.md)의 -p conan-staging을 사용한다. 아래 기본 예시의 conan-home과 구분한다.
+최신 상태: 2026-09-12 `fix/midpoint-hardening`은 브랜치 공유 준비 단계이며 미배포다. 이번 로컬 모의 테스트는 328 passed, 2 warnings이며 실제 영상·모델·외부 API·컨테이너를 검증하지 않았다. API·Swagger 보완과 [API 계약](api-reference.md)·[FE 연동 문서](frontend-integration.md)는 다음 검토 대상이지 현재 서버 반영 완료 기록이 아니다. 기존 브랜치 커밋·푸시만 공유하며 새 PR·PR #7 답글·병합·배포는 하지 않는다.
+
+**서버 명령은 조회도 변경도 명령별로 대상·영향을 설명하고 사전 승인을 받아야 한다.** 이 문서는 실행 허가나 일괄 실행 스크립트가 아니다. 이번 작업에서는 기존 맥미니 서비스·환경 파일·Tunnel·Access·DNS를 조회하거나 변경하지 않았다. 기존 배포를 유지한다.
+
+이전 2026-09-11 초기 기동 기록: 맥미니 conan-staging 내부 기동과 얼굴·ViT·Whisper 모델 로딩, conan-api-dev.dotseven.cloud의 Tunnel·본인 이메일 한정 Access 연결 및 미인증 HTTPS 302를 확인했다. 당시 미확인이던 키는 후속 작업에서 반영했고 도메인 접속은 사용자 보고로 해소됐다. 키 반영 후 실제 영상/제공자 E2E와 FE 연결은 미검증이다. 자세한 경과는 [현재 인수 상태](handoff.md)와 [배포 점검 기록](deployment-log.md)을 따른다. 기존 프로젝트는 `conan-staging`이며 아래 신규 환경용 기본 예시의 `conan-home`과 구분한다.
 
 사용자 확인 환경은 M4·16GB·OrbStack이다. 기존 cloudflared·Laravel·모니터링 컨테이너가 있으므로 Conan을 별도 Compose 프로젝트로 실행한다. 프론트는 Vercel 예정이며 실제 주소는 미정이다. 개발 맥의 Docker 컨텍스트를 원격 맥미니로 간주하지 않는다.
 
@@ -21,7 +25,7 @@ flowchart LR
 ## 배포를 맡은 에이전트가 먼저 확인할 것
 
 1. [handoff.md](handoff.md)의 브랜치·기준 커밋을 확인하고 필요한 커밋이 원격에 있는지 확인한다. 작업 중인 변경을 덮어쓰거나 `.venv`를 복사하지 않는다.
-2. 맥미니에서 `docker context show`, `docker version`, `docker compose version`, `docker ps --format '{{.Names}}\t{{.Image}}'`, `docker stats --no-stream`을 실행한다. Compose 2.24.4 이상이 필요하다.
+2. 맥미니 조회가 필요하면 `docker context show`, `docker version`, `docker compose version`, `docker ps --format '{{.Names}}\t{{.Image}}'`, `docker stats --no-stream`의 목적·범위를 각각 설명하고 승인받은 명령만 실행한다. Compose 2.24.4 이상이 필요하다.
 3. 기존 cloudflared 컨테이너 이름·Compose 파일 위치·연결 네트워크만 확인한다. 전체 inspect나 환경변수를 출력하면 터널 토큰이 노출될 수 있다.
 4. API 도메인, Tunnel 관리 방식(대시보드/설정 파일), Vercel 오리진과 내부 검증 시 접근 정책을 확인한다. 미정인 것을 임의로 생성하지 않는다.
 
@@ -29,12 +33,14 @@ flowchart LR
 
 아래 명령은 be 저장소 루트에서 실행한다. 운영 파일은 `compose.home.yml` 단독으로 사용한다. 개발용 `docker-compose.yml`과 `-f`로 합치지 않는다.
 
+**다음 두 명령은 승인된 신규 환경의 최초 초기화에만 사용한다.** `.env.home`이 없는 신규 경로임을 확인한 경우에만 적용한다. 기존 서버의 `.env.home`과 입력된 키·`manual` 등 설정은 보존하며, 예제 파일로 덮어쓰거나 재초기화하지 않는다. 기존 `.env`를 통째로 복사하지도 않는다. 기존 환경을 바꿔야 한다면 변경할 항목·차이·복구 방법을 먼저 설명하고 별도 승인받는다. 아래 예제는 현재 서버에서 실행하라는 지시가 아니다.
+
 ```bash
-cp .env.home.example .env.home
+cp -n .env.home.example .env.home
 chmod 600 .env.home
 ```
 
-`.env.home`에 DeepSeek 키·NAVER Client ID/Secret을 넣는다. 비밀값을 Git·작업 로그·프론트에 넣지 않는다. 이 값들이 비어 있어도 API의 health는 성공할 수 있으므로 실제 분석에서 외부 제공자가 활성화됐는지 확인해야 한다. 이 배포 예시는 기존 전문기관 판정 경로를 켜지 않는다.
+`cp -n`의 덮어쓰기 방지는 보조 장치일 뿐 신규 환경 확인과 사전 승인을 대신하지 않는다. 신규 `.env.home`에 DeepSeek 키·NAVER Client ID/Secret을 넣는다. 비밀값을 Git·작업 로그·프론트에 넣지 않는다. 이 값들이 비어 있어도 API의 health는 성공할 수 있으므로 실제 분석에서 외부 제공자가 활성화됐는지 별도 승인 후 확인해야 한다. 이 배포 예시는 기존 전문기관 판정 경로를 켜지 않는다. 수정안 예제의 자막 기본값은 `off`지만 기존 배포의 `manual` 기록과 다르므로 환경 파일을 자동 동기화하지 않는다. 정책 차이는 [FE 인수 조건](frontend-integration.md#먼저-구분할-상태)을 확인한다.
 
 Vercel 주소가 정해지면 `DEEPCHECK_CORS_ORIGINS`에 정확한 `https://...` 오리진을 넣는다. 여러 개는 쉼표로 구분한다. 경로나 마지막 `/`를 넣지 않는다. 예제의 `http://localhost:3000`은 내부 연동용이다.
 
