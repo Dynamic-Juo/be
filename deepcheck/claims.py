@@ -13,10 +13,9 @@
 우리가 내는 판정은 주장의 진위가 아니라 주장과 근거의 관계다. `근거와 일치`는
 "이 주장은 참"이 아니라 "우리가 찾은 근거와 일치한다"는 뜻이다.
 
-판정은 신뢰도 순으로 시도한다. 전문 기관의 공개 판정이 있으면 그대로 옮기고,
-없으면 LLM에게 근거를 주고 관계를 판정하게 하며, 그것도 못 쓰면 근거만 붙이고
-유보한다. LLM 판정은 인용 검증을 통과해야 인정한다 — 모델이 제출한 발췌 문장이
-실제 근거에 없으면 판정을 버리고 근거 부족으로 강등한다.
+전문 기관의 공개 판정도 검색 메타데이터만으로 그대로 옮기지 않는다. LLM에게 근거를
+주고 관계를 판정하게 하되, 원문·출처 검증과 인용 검증을 통과해야 일치·불일치를
+인정한다. 조건을 만족하지 못하면 근거 부족으로 강등한다.
 """
 
 from __future__ import annotations
@@ -24,11 +23,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+import ssl
 import threading
 import time
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,6 +83,11 @@ VERIFYING = "verifying"
 DONE = "done"
 FAILED = "failed"
 TIMED_OUT = "timed_out"
+
+# 근거 본문 범위. 검색 제공자가 돌려준 제목·요약은 원문이 아니다. 양성 판정은
+# ORIGINAL이면서 아래 provenance 검증 필드가 명시된 자료만 사용할 수 있다.
+SEARCH_EXCERPT = "search_excerpt"
+ORIGINAL = "original"
 
 # 검증할 만한 주장인지 가르는 신호들. 숫자·연도·비율은 사실 확인이 가능하고,
 # 단정적 표현은 확인해볼 가치가 있는 문장을 고르는 데 쓴다.
@@ -143,6 +147,40 @@ SOURCE_TYPE_LABELS = {
 PRIMARY_SOURCE_TYPES = (STATISTICS, OFFICIAL)
 
 
+class ClaimExtractionError(Exception):
+    """설정한 주장 추출기가 유효한 결과를 만들지 못했다.
+
+    명시적인 ``{"claims": []}``만 정상적인 "주장 없음"이다. 제공자 실패나
+    잘못된 스키마를 빈 결과로 바꾸면 UI가 시스템 실패를 정상 결과로 표시하므로,
+    호출부가 claim_verification 축을 unavailable로 만들 수 있게 예외를 올린다.
+    """
+
+
+class EvidenceSearchError(Exception):
+    """근거 제공자 호출 또는 응답 처리에 실패했다."""
+
+
+_MAX_HTTP_RESPONSE_BYTES = 2 * 1024 * 1024
+_MAX_HTTP_ERROR_BYTES = 4096
+
+
+def _is_safe_source_url(url: str | None) -> bool:
+    """사용자에게 출처 링크로 내보낼 수 있는 HTTP(S) URL인지 확인한다."""
+    if not isinstance(url, str) or not url.strip():
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+        # user@host 형태는 화면에 신뢰 도메인을 가장하기 쉬워 출처 링크로 인정하지 않는다.
+        return (
+            parsed.scheme.lower() in {"http", "https"}
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _normalize_published_at(raw: str | None) -> str | None:
     """근거의 발행일을 YYYY-MM-DD로 맞춘다.
 
@@ -193,6 +231,17 @@ class Evidence:
     published_at: str | None = None
     snippet: str | None = None
     rating: str | None = None  # 전문 기관이 내린 판정이 있으면 그 원문 표기
+    # 모델에 실제로 전달할 자료 본문과 범위. 검색 제공자는 snippet만 채우며 기본 범위는
+    # search_excerpt다. 원문을 별도 절차로 확보한 신뢰 경로만 content_scope=original과
+    # content를 함께 설정한다.
+    content: str | None = None
+    content_scope: str = SEARCH_EXCERPT
+    # 이 값은 LLM 응답이나 검색 제공자의 source_type만 보고 자동으로 켜지 않는다.
+    # 신뢰 경계 안의 원문 검증기가 URL·발행처·본문 대응을 확인한 경우에만 True다.
+    provenance_verified: bool = False
+    # 1차 출처가 없을 때 같은 보도자료 재전송을 독립 출처로 중복 계산하지 않기 위한
+    # 검증된 원문 계보 식별자다. 두 독립 출처 판정은 서로 다른 값 두 개가 필요하다.
+    independence_group: str | None = None
     # 출처 유형. evidence-policy.md가 "1차 출처를 우선하고 없으면 독립 출처 두 개
     # 이상"을 요구하는데, 그 규칙을 적용하려면 유형을 알아야 한다.
     source_type: str = UNKNOWN_SOURCE
@@ -216,6 +265,14 @@ class Evidence:
         if not self.publisher:
             self.publisher = _publisher_from_url(self.url)
         self.published_at = _normalize_published_at(self.published_at)
+        if not isinstance(self.content_scope, str):
+            self.content_scope = SEARCH_EXCERPT
+        else:
+            self.content_scope = self.content_scope.strip().lower()
+        if not isinstance(self.independence_group, str) or not self.independence_group.strip():
+            self.independence_group = None
+        else:
+            self.independence_group = self.independence_group.strip()
 
 
 @dataclass
@@ -260,7 +317,7 @@ class EvidenceProvider(Protocol):
     name: str
 
     def search(self, query: str, limit: int) -> list[Evidence]:
-        """주장과 관련된 자료를 찾는다. 실패하면 빈 목록을 반환한다."""
+        """주장과 관련된 자료를 찾는다. 실패하면 예외를 발생시킨다."""
 
 
 # 호스트별 요청 간격. 주장을 3건 병렬로 검증하면서 같은 호스트를 동시에 때리자
@@ -269,6 +326,7 @@ class EvidenceProvider(Protocol):
 _HOST_LOCKS: dict[str, threading.Lock] = {}
 _HOST_LAST_CALL: dict[str, float] = {}
 _HOST_REGISTRY_LOCK = threading.Lock()
+_TLS_CONTEXT = ssl.create_default_context()
 
 
 def _host_gate(host: str) -> threading.Lock:
@@ -276,7 +334,7 @@ def _host_gate(host: str) -> threading.Lock:
         return _HOST_LOCKS.setdefault(host, threading.Lock())
 
 
-def _http_get_json(url: str, timeout: int, headers: dict | None = None) -> dict | None:
+def _http_get_json(url: str, timeout: int, headers: dict | None = None) -> dict:
     endpoint = url.split("?")[0]
     host = urllib.parse.urlparse(url).netloc
     merged = {
@@ -297,9 +355,20 @@ def _http_get_json(url: str, timeout: int, headers: dict | None = None) -> dict 
             _HOST_LAST_CALL[host] = time.monotonic()
             try:
                 request = urllib.request.Request(url, headers=merged)
-                with urllib.request.urlopen(request, timeout=timeout) as resp:
-                    return json.loads(resp.read().decode())
+                kwargs = {"timeout": timeout}
+                if urllib.parse.urlsplit(url).scheme.lower() == "https":
+                    # 명시적인 기본 컨텍스트로 CA 검증과 호스트명 검사를 고정한다.
+                    kwargs["context"] = _TLS_CONTEXT
+                with urllib.request.urlopen(request, **kwargs) as resp:
+                    body = resp.read(_MAX_HTTP_RESPONSE_BYTES + 1)
+                    if len(body) > _MAX_HTTP_RESPONSE_BYTES:
+                        raise EvidenceSearchError("근거 검색 응답이 허용 크기를 초과했다")
+                    parsed = json.loads(body.decode())
+                    if not isinstance(parsed, dict):
+                        raise EvidenceSearchError("근거 검색 응답이 JSON 객체가 아니다")
+                    return parsed
             except urllib.error.HTTPError as e:
+                e.read(_MAX_HTTP_ERROR_BYTES)
                 if e.code == 429 and attempt < attempts - 1:
                     backoff = config.evidence_min_interval_sec * (attempt + 2)
                     logger.info("속도 제한(%s) — %.1f초 후 재시도 %d/%d",
@@ -311,12 +380,20 @@ def _http_get_json(url: str, timeout: int, headers: dict | None = None) -> dict 
                                    endpoint)
                 else:
                     logger.warning("근거 검색 요청 실패(%s): HTTP %s", endpoint, e.code)
+                raise EvidenceSearchError(f"근거 검색 HTTP 오류: {e.code}") from e
             except urllib.error.URLError as e:
-                logger.warning("근거 검색 요청 실패(%s): %s", endpoint, e.reason)
+                logger.warning(
+                    "근거 검색 요청 실패(%s): %s",
+                    endpoint,
+                    type(e.reason).__name__,
+                )
+                raise EvidenceSearchError("근거 검색 연결 오류") from e
+            except EvidenceSearchError:
+                raise
             except Exception as e:
-                logger.warning("근거 검색 응답 처리 실패(%s): %s", endpoint, e)
-        return None
-    return None
+                logger.warning("근거 검색 응답 처리 실패(%s): %s", endpoint, type(e).__name__)
+                raise EvidenceSearchError("근거 검색 응답 처리 오류") from e
+    raise EvidenceSearchError("근거 검색 요청 실패")
 
 
 class WikipediaProvider:
@@ -384,15 +461,15 @@ class GDELTProvider:
                 source_type=NEWS,
             )
             for item in data.get("articles", [])[:limit]
-            if item.get("url")
+            if _is_safe_source_url(item.get("url"))
         ]
 
 
 class FactCheckProvider:
     """Google Fact Check Tools API.
 
-    전문 기관이 이미 검증해 공개한 판정을 찾는다. 판정 사다리의 1순위라 다른
-    제공자와 구분해서 다룬다. API 키가 필요하다.
+    전문 기관이 이미 검증해 공개한 판정을 검색한다. API 응답은 원문이 아니라
+    ClaimReview 메타데이터이므로 사용자 판정에 바로 옮기지 않는다. API 키가 필요하다.
     """
 
     name = "factcheck"
@@ -410,17 +487,26 @@ class FactCheckProvider:
         if not data:
             return []
         results = []
-        for item in data.get("claims", [])[:limit]:
-            for review in item.get("claimReview", [])[:1]:
+        for item in data.get("claims", []):
+            reviewed_claim = item.get("text")
+            for review in item.get("claimReview", []):
+                review_url = review.get("url", "")
+                if not _is_safe_source_url(review_url):
+                    continue
+                publisher = review.get("publisher")
+                publisher_name = publisher.get("name") if isinstance(publisher, dict) else None
                 results.append(Evidence(
-                    title=review.get("title") or item.get("text", ""),
-                    url=review.get("url", ""),
+                    title=review.get("title") or reviewed_claim or "",
+                    url=review_url,
                     source=self.name,
                     published_at=review.get("reviewDate"),
-                    snippet=item.get("text"),
+                    snippet=reviewed_claim,
                     rating=review.get("textualRating"),
                     source_type=FACTCHECK,
+                    publisher=publisher_name,
                 ))
+                if len(results) >= limit:
+                    return results
         return results
 
 
@@ -474,7 +560,7 @@ class NaverSearchProvider:
             title = _strip_tags(item.get("title", ""))
             desc = _strip_tags(item.get("description", ""))
             link = item.get("originallink") or item.get("link", "")
-            if not link:
+            if not _is_safe_source_url(link):
                 continue
             results.append(Evidence(
                 title=title,
@@ -499,20 +585,20 @@ def _strip_tags(raw: str) -> str:
     return text.strip()
 
 
-# 전문 기관의 판정 표기를 우리 판정으로 옮긴다. 애매한 표기는 옮기지 않고 유보한다.
-_REFUTED_RATINGS = ("false", "거짓", "사실 아님", "허위", "잘못", "misleading", "오해",
-                    "pants on fire", "incorrect", "no evidence")
-_SUPPORTED_RATINGS = ("true", "사실", "correct", "accurate")
+# 전문 기관 판정끼리 충돌하는지 확인할 때만 쓰는 보수적인 정규화다. 이 결과만으로
+# 사용자 판정을 확정하지 않는다. "no evidence", "misleading", "mostly true"처럼
+# 부족·부분 판정일 수 있는 표현을 참/거짓으로 강제 변환하지 않는다.
+_REFUTED_RATINGS = {"false", "거짓", "사실 아님", "허위", "pants on fire", "incorrect"}
+_SUPPORTED_RATINGS = {"true", "사실", "correct", "accurate"}
 
 
 def _verdict_from_rating(rating: str | None) -> tuple[str, str] | None:
     if not rating:
         return None
-    lowered = rating.lower()
-    if any(word in lowered for word in _REFUTED_RATINGS):
+    lowered = re.sub(r"\s+", " ", rating).strip().lower()
+    if lowered in _REFUTED_RATINGS:
         return REFUTED, f'전문 기관 판정: "{rating}"'
-    # "mostly true"처럼 부분 사실은 지지로 넘기지 않는다. 정확히 사실로 읽히는 것만.
-    if any(lowered.startswith(word) or lowered == word for word in _SUPPORTED_RATINGS):
+    if lowered in _SUPPORTED_RATINGS:
         return SUPPORTED, f'전문 기관 판정: "{rating}"'
     return None
 
@@ -657,7 +743,7 @@ _EXTRACT_SYSTEM = EXTRACT_SYSTEM
 def extract_claims_llm(text: str, segments: list[dict] | None = None,
                        max_claims: int | None = None,
                        llm_provider=None) -> list[Claim]:
-    """LLM으로 주장을 추출한다. 못 쓰면 규칙 기반으로 폴백한다.
+    """LLM으로 주장을 추출한다. 정상 빈 배열과 추출 실패를 구분한다.
 
     규칙 기반이 못 하던 세 가지를 여기서 처리한다 — 종결어미 목록에 없는 문체,
     대명사로 앞을 가리키는 주장(M-04의 문맥 보존), 같은 의미 주장의 병합.
@@ -679,13 +765,11 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
             max_tokens=4096,
         )
     except llm.LLMUnavailable as e:
-        logger.warning("LLM 주장 추출 실패 — 규칙 기반으로 폴백: %s", e)
-        return extract_claims(text, segments, max_claims)
+        raise ClaimExtractionError("LLM 주장 추출 응답을 사용할 수 없다") from e
 
     raw_items = data.get("claims")
     if not isinstance(raw_items, list):
-        logger.warning("LLM 주장 추출 응답에 claims 배열이 없음 — 규칙 기반으로 폴백")
-        return extract_claims(text, segments, max_claims)
+        raise ClaimExtractionError("LLM 주장 추출 응답에 claims 배열이 없다")
 
     # 정상적인 빈 배열은 "주장 없음"이다. 오류 폴백과 구분한다.
     if not raw_items:
@@ -695,40 +779,45 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
     # 발언하지 않은 문장을 검증 대상에 올리면 그 자체가 허위 정보가 된다.
     haystack = _normalize_for_quote(text)
     claims: list[Claim] = []
-    dropped = 0
-    for item in raw_items:
+    for index, item in enumerate(raw_items, 1):
         if not isinstance(item, dict):
-            continue
-        sentence = _clean_sentence(str(item.get("text", "")))
+            raise ClaimExtractionError(f"LLM 주장 {index}번이 객체가 아니다")
+        raw_text = item.get("text")
+        if not isinstance(raw_text, str):
+            raise ClaimExtractionError(f"LLM 주장 {index}번의 text가 문자열이 아니다")
+        sentence = _clean_sentence(raw_text)
         if not sentence:
-            continue
+            raise ClaimExtractionError(f"LLM 주장 {index}번의 text가 비어 있다")
         if _normalize_for_quote(sentence) not in haystack:
-            dropped += 1
-            logger.warning("발언 전문에 없는 주장 — 제외: %s", sentence[:60])
-            continue
+            raise ClaimExtractionError(f"LLM 주장 {index}번이 발언 전문에 없다")
         if any(_is_duplicate(sentence, [c.text]) for c in claims):
             continue
         claim = Claim(text=sentence)
-        repeat = item.get("repeat")
-        context = str(item.get("context", "")).strip()
+        repeat = item.get("repeat", 1)
+        if type(repeat) is not int or repeat < 1:
+            raise ClaimExtractionError(f"LLM 주장 {index}번의 repeat가 양의 정수가 아니다")
+        raw_context = item.get("context", "")
+        if not isinstance(raw_context, str):
+            raise ClaimExtractionError(f"LLM 주장 {index}번의 context가 문자열이 아니다")
+        context = raw_context.strip()
         if context and _normalize_for_quote(context) in haystack:
             claim.context = context
             claim.mentions.append({"context": context})
         elif context:
-            logger.warning("발언 전문에 없는 문맥 — 제외")
-        if isinstance(repeat, int) and repeat > 1:
+            raise ClaimExtractionError(f"LLM 주장 {index}번의 context가 발언 전문에 없다")
+        if repeat > 1:
             claim.mentions.append({"repeat": repeat})
         claims.append(claim)
         if limit and limit > 0 and len(claims) >= limit:
             break
 
     if not claims:
-        logger.warning("LLM이 유효한 주장을 내지 못함 — 규칙 기반으로 폴백")
-        return extract_claims(text, segments, max_claims)
+        # 비어 있지 않은 배열이 전부 중복이었다면 응답 계약 위반이다. 정상적인 주장
+        # 없음은 위의 명시적인 빈 배열 경로에서만 반환한다.
+        raise ClaimExtractionError("LLM의 비어 있지 않은 claims 배열에 고유한 주장이 없다")
 
     _attach_timestamps(claims, segments or [])
-    logger.info("LLM 주장 추출 %d건 (원문 대조 실패 %d건, prompt=%s)",
-                len(claims), dropped, PROMPT_VERSION)
+    logger.info("LLM 주장 추출 %d건 (prompt=%s)", len(claims), PROMPT_VERSION)
     return claims
 
 
@@ -736,16 +825,18 @@ def select_extractor(llm_provider=None):
     """설정에 맞는 주장 추출 함수를 돌려준다.
 
     호출부가 분기하지 않도록 여기서 한 번만 고른다. llm으로 설정했는데 제공자가
-    없으면 조용히 규칙으로 떨어지고, 그 사실을 로그에 남긴다.
+    없거나 알 수 없는 모드면 실패를 명시한다. LLM 실패를 규칙의 빈 결과로 바꾸면
+    시스템 오류가 정상적인 "주장 없음"으로 표시될 수 있기 때문이다.
     """
     mode = (config.claim_extractor or "rule").strip().lower()
     if mode == "llm":
         if llm_provider is None:
-            logger.info("주장 추출을 llm으로 설정했지만 LLM 제공자가 없어 규칙 기반을 쓴다")
-            return extract_claims
+            raise ClaimExtractionError("주장 추출을 llm으로 설정했지만 제공자를 사용할 수 없다")
         return lambda text, segments, max_claims: extract_claims_llm(
             text, segments, max_claims, llm_provider)
-    return extract_claims
+    if mode == "rule":
+        return extract_claims
+    raise ClaimExtractionError(f"알 수 없는 주장 추출 방식: {mode}")
 
 
 def _attach_timestamps(claims: list[Claim], segments: list[dict]) -> None:
@@ -823,20 +914,54 @@ def _key_tokens(claim_text: str) -> list[str]:
     return [word for _, word in scored]
 
 
-def _is_relevant(claim_text: str, evidence: Evidence) -> bool:
+_FACT_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?(?:\s*(?:%p|%|퍼센트|프로))?")
+
+
+def _factcheck_review_matches(claim_text: str, evidence: Evidence) -> bool:
+    """ClaimReview가 바로 이 주장을 다루는지 보수적으로 확인한다.
+
+    검색 API가 돌려준 rating은 검색 질의에 대한 답이 아니라 ``item.text``에 대한
+    판정이다. 두 문장이 다르면 rating이 아무리 단정적이어도 현재 주장에 옮기지 않는다.
+    의미 유사도 임계값을 새로 만들지 않고, 수치가 같고 한쪽의 핵심 표현이 다른 쪽에
+    모두 포함되는 경우만 같은 대상으로 본다.
+    """
+    reviewed_claim = evidence.snippet
+    if not isinstance(reviewed_claim, str) or not reviewed_claim.strip():
+        return False
+
+    claim_numbers = set(_FACT_NUMBER_RE.findall(claim_text))
+    review_numbers = set(_FACT_NUMBER_RE.findall(reviewed_claim))
+    if claim_numbers != review_numbers:
+        return False
+
+    claim_normalized = _normalize_for_quote(claim_text)
+    review_normalized = _normalize_for_quote(reviewed_claim)
+    if (len(claim_normalized) >= 8 and len(review_normalized) >= 8
+            and (claim_normalized in review_normalized or review_normalized in claim_normalized)):
+        return True
+
+    claim_tokens = {token.lower() for token in _key_tokens(claim_text)[:8]}
+    review_tokens = {token.lower() for token in _key_tokens(reviewed_claim)[:8]}
+    if min(len(claim_tokens), len(review_tokens)) < 2:
+        return False
+    return claim_tokens <= review_tokens or review_tokens <= claim_tokens
+
+
+def _is_relevant(claim_text: str, evidence: Evidence, context: str = "") -> bool:
     """찾아온 자료가 이 주장과 실제로 관련이 있는지 최소한으로 확인한다.
 
     검색 엔진은 질의어가 애매하면 아무 문서나 돌려준다. 실측에서 "물가 상승률"
     주장에 "주기율표"가 딸려 왔다. 무관한 자료를 근거라고 보여주는 것은 사실상
     거짓 근거이므로, 주장의 핵심어가 제목이나 인용문에 하나도 없으면 버린다.
     """
-    haystack = f"{evidence.title} {evidence.snippet or ''}".lower()
+    body = evidence.content if evidence.content_scope == ORIGINAL else evidence.snippet
+    haystack = f"{evidence.title} {body or ''}".lower()
     if not haystack.strip():
         return False
-    # 전문 기관 판정은 그 자체가 이 주장을 검증한 결과이므로 통과시킨다.
+    # 전문 기관 판정도 검색 결과다. 실제로 판정한 문장이 현재 주장과 맞아야 한다.
     if evidence.rating:
-        return True
-    for token in _key_tokens(claim_text)[:8]:
+        return _factcheck_review_matches(claim_text, evidence)
+    for token in _key_tokens(f"{claim_text} {context}")[:8]:
         if len(token) >= 2 and token.lower() in haystack:
             return True
     return False
@@ -881,8 +1006,8 @@ def _build_provider(name: str, cfg) -> EvidenceProvider | None:
 def default_providers(cfg=None) -> list[EvidenceProvider]:
     """설정(`DEEPCHECK_EVIDENCE_PROVIDERS`)에 적힌 순서대로 검색 수단을 만든다.
 
-    전문 기관 판정(factcheck)을 앞에 두는 이유는 판정 사다리의 1순위라서다. 이미
-    검증된 주장이면 우리가 다시 판단할 필요가 없다.
+    전문 기관 판정(factcheck)을 앞에 두어 관련 참고 자료를 우선 확보한다. 검색 API의
+    rating 자체는 원문·시점 검증을 대신하지 않으므로 사용자 판정으로 바로 옮기지 않는다.
 
     설정을 인자로 받는 이유는 테스트에서 다른 조합을 넣어보기 위해서다. Config는
     frozen dataclass라 속성을 덮어쓸 수 없다.
@@ -897,9 +1022,8 @@ def default_providers(cfg=None) -> list[EvidenceProvider]:
 
 # --- LLM 판정 ---------------------------------------------------------------
 #
-# 전문 기관의 공개 판정(rating)이 있으면 그걸 그대로 쓰고, 없을 때만 LLM에게 묻는다.
-# 근거를 읽고 판단하는 단계가 없으면 evidence-policy.md가 정한 절차(시점 확인,
-# 출처 충돌 처리, 근거 부족 사유 구분)를 아예 수행할 수 없다.
+# 검색 결과와 ClaimReview rating은 참고 자료다. LLM이 관계를 제안하더라도 서버가
+# 원문 provenance·출처 충분성·인용을 검증한 경우에만 양성 판정을 허용한다.
 
 _VERDICT_SYSTEM = VERDICT_SYSTEM
 
@@ -934,8 +1058,37 @@ def _quote_found_in(quote: str, item: Evidence) -> bool:
 
 
 def _evidence_content(item: Evidence) -> str:
-    """모델에 보낸 범위와 서버 인용 검증 범위를 일치시킨다. 아직 검색 발췌다."""
+    """모델에 보낸 범위와 서버 인용 검증 범위를 일치시킨다."""
+    if item.content_scope == ORIGINAL and isinstance(item.content, str):
+        return item.content
+    # 검색 결과의 제목과 요약만 보낸다는 사실은 content_scope로 함께 전달한다.
     return f"{item.title}\n{(item.snippet or '')[:800]}"
+
+
+def _decision_evidence_is_sufficient(cited: list[Evidence]) -> bool:
+    """Accepted 근거 정책의 양성 판정 최소 조건을 서버에서 강제한다.
+
+    모든 인용은 신뢰 경계 안에서 원문·출처 대응이 확인돼야 한다. 그중 검증된 1차
+    출처가 하나라도 있거나, 1차 출처가 없으면 서로 다른 원문 계보 두 개 이상이어야
+    한다. source_type·publisher 문자열이나 LLM 답만으로 검증 상태를 만들지 않는다.
+    """
+    if not cited:
+        return False
+    if any(
+        item.content_scope != ORIGINAL
+        or item.provenance_verified is not True
+        or not isinstance(item.content, str)
+        or not item.content.strip()
+        or not _is_safe_source_url(item.url)
+        for item in cited
+    ):
+        return False
+    if any(item.is_primary is True for item in cited):
+        return True
+    independent_groups = {
+        item.independence_group for item in cited if item.independence_group is not None
+    }
+    return len(independent_groups) >= 2
 
 
 def _clear_citations(evidence: list[Evidence]) -> None:
@@ -946,26 +1099,36 @@ def _clear_citations(evidence: list[Evidence]) -> None:
 
 
 def _apply_citations(raw: object, evidence: list[Evidence]) -> list[Evidence]:
-    """LLM이 지목한 근거에 인용과 이유를 붙인다. 검증을 통과한 것만 돌려준다."""
-    if not isinstance(raw, list):
+    """LLM 인용을 전부 검증한다. 하나라도 잘못되면 전체를 무효화한다."""
+    if not isinstance(raw, list) or not raw:
         return []
     cited: list[Evidence] = []
+    seen_indexes: set[int] = set()
     for entry in raw:
         if not isinstance(entry, dict):
-            continue
+            _clear_citations(evidence)
+            return []
         index = entry.get("index")
         if type(index) is not int or not 1 <= index <= len(evidence):
             logger.warning("LLM이 없는 근거 번호를 지목: %r", index)
-            continue
+            _clear_citations(evidence)
+            return []
+        if index in seen_indexes:
+            logger.warning("LLM이 같은 근거 번호를 중복 인용: %d", index)
+            _clear_citations(evidence)
+            return []
+        seen_indexes.add(index)
         item = evidence[index - 1]
         quote = entry.get("quote")
         reason = entry.get("reason")
         if not isinstance(quote, str) or not isinstance(reason, str) or not reason.strip():
-            continue
+            _clear_citations(evidence)
+            return []
         quote = quote.strip()
-        if config.llm_quote_check and not _quote_found_in(quote, item):
-            logger.warning("인용 검증 실패 — 근거 %d에 없는 문장: %s", index, quote[:60])
-            continue
+        if not quote or not _quote_found_in(quote, item):
+            logger.warning("인용 검증 실패 — 근거 %d에 없는 문장", index)
+            _clear_citations(evidence)
+            return []
         item.cited = True
         item.quote = quote or None
         item.cite_reason = reason.strip()
@@ -987,7 +1150,10 @@ def _llm_verdict(claim: Claim, evidence: list[Evidence], provider) -> dict | Non
             "index": i, "title": item.title, "url": item.url,
             "publisher": item.publisher, "source_type": item.source_type,
             "published_at": item.published_at,
-            "content_scope": "search_excerpt",
+            "content_scope": item.content_scope,
+            "provenance_verified": item.provenance_verified is True,
+            "independence_group": item.independence_group,
+            "rating": item.rating,
             "content": _evidence_content(item),
         } for i, item in enumerate(evidence, 1)],
     }, ensure_ascii=False)
@@ -1000,32 +1166,36 @@ def _llm_verdict(claim: Claim, evidence: list[Evidence], provider) -> dict | Non
 
     verdict = _LLM_VERDICT_MAP.get(str(data.get("verdict", "")).strip())
     if not verdict:
-        logger.warning("LLM이 알 수 없는 판정을 반환: %r", data.get("verdict"))
+        logger.warning("LLM이 허용 목록 밖의 판정을 반환")
         return None
 
-    reason = str(data.get("reason", "")).strip()
+    raw_reason = data.get("reason")
+    reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
     raw_cited = data.get("cited")
     # 부족 판정에서 모델이 인용을 잘못 붙여도 참고 자료만으로 남긴다.
     cited = (_apply_citations(raw_cited, evidence)
              if verdict in (SUPPORTED, REFUTED) else [])
 
-    # 일치·불일치를 선언하려면 검증을 통과한 인용이 하나는 있어야 한다.
-    # 하나도 남지 않았다면 근거를 읽고 판단했다고 볼 수 없으므로 강등한다.
-    if (verdict in (SUPPORTED, REFUTED) and config.llm_quote_check
-            and (not cited or len(cited) != len(raw_cited))):
-        logger.warning("인용 검증을 통과한 근거가 없어 판정 %s를 근거 부족으로 강등: %s",
+    # 일치·불일치는 항상 인용을 검증한다. 디버그 설정으로 이 안전장치를 끌 수 없다.
+    # 검색 발췌나 출처 검증이 안 된 자료, 1차/독립 출처 조건을 만족하지 못한 자료도
+    # 양성 판정 근거로 인정하지 않는다.
+    if verdict in (SUPPORTED, REFUTED) and (
+        not reason or not cited or not _decision_evidence_is_sufficient(cited)
+    ):
+        logger.warning("검증된 원문 근거가 부족해 판정 %s를 근거 부족으로 강등: %s",
                        verdict, claim.text[:40])
         _clear_citations(evidence)
         return {
             "verdict": UNVERIFIED,
-            "reason": "근거 자료에서 판정을 뒷받침하는 문장을 확인하지 못해 판단을 유보한다.",
+            "reason": "원문과 출처가 확인된 충분한 근거로 판정을 뒷받침하지 못해 판단을 유보한다.",
             "quote": None,
             "insufficient_reason": WEAK_SOURCE,
         }
 
     insufficient = None
     if verdict == UNVERIFIED:
-        raw = str(data.get("insufficient_reason", "")).strip()
+        raw_value = data.get("insufficient_reason")
+        raw = raw_value.strip() if isinstance(raw_value, str) else ""
         insufficient = raw if raw in _LLM_INSUFFICIENT else NOT_DIRECT
 
     return {
@@ -1057,42 +1227,77 @@ def verify_one_claim(claim: Claim, providers: list[EvidenceProvider],
     """주장 하나에 근거를 모으고 판정한다. 카드를 하나씩 갱신해야 하는 파이프라인이
     직접 부르는 단위. `claim.status`를 VERIFYING → DONE으로 바꾸고 반환한다.
 
-    판정 순서는 신뢰도 순이다.
-      1. 전문 기관의 공개 판정(rating)이 있으면 그대로 옮긴다.
-      2. 없으면 LLM에게 근거를 주고 판정을 묻는다(인용 검증을 통과해야 인정).
-      3. LLM도 못 쓰면 관련 자료만 붙이고 판단을 유보한다.
+    전문 기관의 rating도 원문 확인 없이 그대로 옮기지 않는다. LLM 판정은 검증된
+    원문 인용과 Accepted 근거 충분성 조건을 모두 통과해야 인정한다. 판정 수단이나
+    충분한 근거가 없으면 관련 자료만 참고로 붙이고 판단을 유보한다.
     """
     per_claim = evidence_per_claim or config.evidence_per_claim
     claim.status = VERIFYING
 
     query = _search_query(f"{claim.text} {claim.context}")
     collected: list[Evidence] = []
+    provider_failures: list[str] = []
     for provider in providers:
+        provider_name = getattr(provider, "name", "?")
         try:
-            collected.extend(provider.search(query, per_claim))
+            found = provider.search(query, per_claim)
+            if not isinstance(found, list) or any(
+                    not isinstance(item, Evidence) for item in found):
+                raise EvidenceSearchError("근거 제공자가 잘못된 결과 형식을 반환했다")
+            collected.extend(found)
         except Exception as e:
             # 근거 검색 실패가 분석 전체를 멈추게 하지 않는다.
-            logger.warning("근거 검색 실패(%s): %s", getattr(provider, "name", "?"), e)
+            provider_failures.append(provider_name)
+            logger.warning("근거 검색 실패(%s): %s", provider_name, type(e).__name__)
+
+    if not providers:
+        provider_failures.append("configured-provider")
+
+    def note_partial_search() -> None:
+        if provider_failures:
+            suffix = "일부 근거 검색 제공자 조회에 실패해 확인 범위가 제한됐다."
+            claim.reason = f"{claim.reason} {suffix}".strip()
 
     # 검색 결과 중 이 주장과 실제로 관련 있는 것만 근거로 삼는다.
-    relevant = [e for e in collected if _is_relevant(f"{claim.text} {claim.context}", e)]
+    relevant = [e for e in collected if _is_relevant(claim.text, e, claim.context)]
     dropped = len(collected) - len(relevant)
     if dropped:
         logger.info("무관한 검색 결과 %d건 제외 (남은 근거 %d건)", dropped, len(relevant))
     # 판정에 보낸 자료를 응답에서 자르면 인용이나 충돌 출처가 사라진다.
     claim.evidence = relevant
 
-    # 1순위 — 전문 기관이 이미 내린 판정. 우리 추론보다 신뢰도가 높다.
-    for evidence in relevant:
-        decided = _verdict_from_rating(evidence.rating)
-        if decided:
-            _set_verdict(claim, decided[0], decided[1])
-            claim.status = DONE
-            logger.info("주장 판정(전문기관): %s — %s", claim.verdict, claim.text[:40])
-            return claim
+    # 검색 API의 구조화된 ClaimReview도 원문 자체가 아니며 첫 rating을 그대로 옮기지
+    # 않는다. 다만 같은 주장에 대한 명시적 판정들이 서로 충돌하면 그 사실만은 서버가
+    # 보수적으로 확정할 수 있으므로 즉시 근거 부족으로 처리한다.
+    rated_verdicts = {
+        decided[0]
+        for evidence in relevant
+        if (decided := _verdict_from_rating(evidence.rating)) is not None
+    }
+    if len(rated_verdicts) > 1:
+        _set_verdict(
+            claim,
+            UNVERIFIED,
+            "같은 주장에 대한 전문 기관 판정들이 서로 충돌해 판단을 유보한다.",
+            insufficient=SOURCE_CONFLICT,
+        )
+        note_partial_search()
+        claim.status = DONE
+        logger.info("주장 판정(전문기관 충돌): %s", claim.text[:40])
+        return claim
 
     # 근거가 아예 없으면 LLM을 부를 이유가 없다. 못 찾았다고 거짓도 아니다.
     if not relevant:
+        if provider_failures:
+            _set_verdict(
+                claim,
+                UNVERIFIED,
+                "근거 검색 제공자 조회가 실패해 관련 자료 유무를 확인할 수 없다.",
+                insufficient=WEAK_SOURCE,
+            )
+            claim.status = FAILED
+            logger.warning("주장 판정(근거 검색 실패): %s", claim.text[:40])
+            return claim
         _set_verdict(claim, UNVERIFIED,
                      "관련 근거를 찾지 못해 판단을 유보한다. 거짓이라는 뜻은 아니다.",
                      insufficient=NO_SOURCE)
@@ -1107,6 +1312,7 @@ def verify_one_claim(claim: Claim, providers: list[EvidenceProvider],
             _set_verdict(claim, result["verdict"], result["reason"],
                          insufficient=result.get("insufficient_reason"),
                          quote=result.get("quote"))
+            note_partial_search()
             claim.status = DONE
             logger.info("주장 판정(LLM): %s — %s (근거 %d건)",
                         claim.verdict, claim.text[:40], len(claim.evidence))
@@ -1116,6 +1322,7 @@ def verify_one_claim(claim: Claim, providers: list[EvidenceProvider],
     _set_verdict(claim, UNVERIFIED,
                  "관련 자료는 찾았지만 이 주장을 직접 검증한 판정이 없어 판단을 유보한다.",
                  insufficient=NOT_DIRECT)
+    note_partial_search()
     claim.status = DONE
     logger.info("주장 판정(판정 수단 없음): %s (근거 %d건)",
                 claim.text[:40], len(claim.evidence))
@@ -1141,9 +1348,13 @@ def verify_claims(claims: list[Claim], providers: list[EvidenceProvider] | None 
 
     for claim in claims:
         if budget and time.monotonic() - started > budget:
-            claim.status = DONE
-            claim.verdict = UNVERIFIED
-            claim.reason = "근거 검색 시간이 예산을 넘어 이 주장은 확인하지 못했다."
+            _set_verdict(
+                claim,
+                UNVERIFIED,
+                "근거 검색 시간이 예산을 넘어 이 주장은 확인하지 못했다.",
+                insufficient=TIMEOUT,
+            )
+            claim.status = TIMED_OUT
             logger.warning("근거 검색 시간 예산(%.0fs) 초과 — 남은 주장은 검색을 건너뛴다", budget)
             continue
         verify_one_claim(claim, active, evidence_per_claim)

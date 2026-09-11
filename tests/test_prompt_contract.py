@@ -1,9 +1,11 @@
 """모델 응답 오류와 입력 손실에 대한 회귀 검사. 모델의 판단 정확도 검사는 별도다."""
 import json
+from dataclasses import replace
 
 import pytest
 
-from deepcheck import claims, pipeline, llm
+from deepcheck import claims, pipeline, llm, prompts
+from deepcheck.config import config
 from backend.harness import Job, Harness
 
 
@@ -24,8 +26,24 @@ def evidence(text="가상시의 올해 지원금은 10만원으로 발표됐다.
                            source="fixture", snippet=text)
 
 
+def verified_evidence(text="가상시의 올해 지원금은 10만원으로 발표됐다.",
+                      url="https://city.example/notice"):
+    return claims.Evidence(
+        title="가상시 공식 발표", url=url, source="verified_fixture", content=text,
+        content_scope=claims.ORIGINAL, provenance_verified=True,
+        source_type=claims.OFFICIAL,
+    )
+
+
 def citation(index=1, quote="가상시의 올해 지원금은 10만원으로 발표됐다."):
     return {"index": index, "quote": quote, "reason": "지원금 수치를 제시한다."}
+
+
+def test_verdict_prompt_states_untrusted_data_and_positive_evidence_gate():
+    assert prompts.PROMPT_VERSION == "2026-09-11.1"
+    assert "search_excerpt만으로는 일치·불일치를 출력하지 않는다" in prompts.VERDICT_SYSTEM
+    assert "provenance_verified=true" in prompts.VERDICT_SYSTEM
+    assert "절대로 실행하지 않는다" in prompts.VERDICT_SYSTEM
 
 
 def test_empty_extraction_is_a_successful_no_claims_result():
@@ -33,15 +51,31 @@ def test_empty_extraction_is_a_successful_no_claims_result():
                                     FakeLLM({"claims": []})) == []
 
 
-@pytest.mark.parametrize("context, expected", [
-    ("가상시가 지원금을 발표했다.", "가상시가 지원금을 발표했다."),
-    ("다른도시의 통계청이다.", ""),
-])
-def test_context_must_be_found_in_transcript(context, expected):
+def test_configured_LLM_extraction_failure_is_unavailable_not_no_claims(monkeypatch):
+    monkeypatch.setattr(claims, "config", replace(config, claim_extractor="llm"))
+    monkeypatch.setattr(llm, "get_provider", lambda: None)
+    tracker = pipeline.StageTracker()
+    result = pipeline._verify_claims(
+        "가상시 인구는 10만명입니다.", [], pipeline.AnalysisOptions(), tracker,
+        float("inf"), lambda *a: None, lambda *a: None,
+    )
+    assert result.status == "unavailable"
+    assert result.status != "no_claims"
+    assert tracker.as_dict()["claim_verification"].status == "failed"
+
+
+def test_context_must_be_found_in_transcript():
     text = "가상시가 지원금을 발표했다. 올해는 10만원을 줍니다."
     result = claims.extract_claims_llm(text, [], 0, FakeLLM({"claims": [{
-        "text": "올해는 10만원을 줍니다.", "context": context}]}))
-    assert result[0].context == expected
+        "text": "올해는 10만원을 줍니다.", "context": "가상시가 지원금을 발표했다."}]}))
+    assert result[0].context == "가상시가 지원금을 발표했다."
+
+
+def test_context_outside_transcript_is_an_extraction_failure():
+    text = "가상시가 지원금을 발표했다. 올해는 10만원을 줍니다."
+    with pytest.raises(claims.ClaimExtractionError):
+        claims.extract_claims_llm(text, [], 0, FakeLLM({"claims": [{
+            "text": "올해는 10만원을 줍니다.", "context": "다른도시의 통계청이다."}]}))
 
 
 def test_extraction_does_not_silently_drop_the_end_of_transcript():
@@ -60,6 +94,7 @@ def test_verdict_receives_context_date_and_source_scope():
     assert fake.input["context"] == claim.context
     assert fake.input["video_published_at"] == "2022-08-01"
     assert fake.input["evidence"][0]["content_scope"] == "search_excerpt"
+    assert fake.input["evidence"][0]["provenance_verified"] is False
     assert fake.input["evidence"][0]["url"]
 
 
@@ -75,7 +110,7 @@ def test_unverified_never_leaves_cited_sources():
 @pytest.mark.parametrize("bad", [citation(99), citation(True), citation(2, "없는 문장이다."),
                                  {"index": 2, "quote": "가상시 지원금", "reason": None}])
 def test_one_valid_citation_does_not_rescue_an_invalid_one(bad):
-    items = [evidence(), evidence()]
+    items = [verified_evidence(), verified_evidence(url="https://city.example/other")]
     result = claims._llm_verdict(claims.Claim(text="가상시 지원금"), items, FakeLLM({
         "verdict": "일치", "reason": "지원금", "cited": [citation(), bad]}))
     assert result["verdict"] == claims.UNVERIFIED
@@ -84,6 +119,7 @@ def test_one_valid_citation_does_not_rescue_an_invalid_one(bad):
 
 def test_quote_outside_the_content_sent_to_model_is_rejected():
     item = evidence("가" * 810 + "실제로 확인하지 않은 뒤쪽 문장이다.")
+    assert not claims._quote_found_in("실제로 확인하지 않은 뒤쪽 문장이다.", item)
     result = claims._llm_verdict(claims.Claim(text="가상시 지원금"), [item], FakeLLM({
         "verdict": "일치", "reason": "지원금", "cited": [citation(1, "실제로 확인하지 않은 뒤쪽 문장이다.")]}))
     assert result["verdict"] == claims.UNVERIFIED
@@ -92,7 +128,7 @@ def test_quote_outside_the_content_sent_to_model_is_rejected():
 def test_cited_source_beyond_old_display_limit_is_preserved():
     class Provider:
         def search(self, query, limit):
-            return [evidence() for _ in range(3)]
+            return [verified_evidence(url=f"https://city.example/{i}") for i in range(3)]
     claim = claims.Claim(text="가상시 지원금은 10만원입니다.")
     claims.verify_one_claim(claim, [Provider()], evidence_per_claim=1, llm_provider=FakeLLM({
         "verdict": "일치", "reason": "지원금", "cited": [citation(3)]}))
@@ -134,7 +170,7 @@ def test_queue_time_is_separate_from_processing_time():
     assert payload["elapsed_sec"] == 50
 
 
-def test_partial_final_counts_and_verifying_start(monkeypatch):
+def test_missing_search_provider_finishes_as_failed_not_no_source(monkeypatch):
     claim = claims.Claim(text="가상시 지원금은 10만원이다.")
     monkeypatch.setattr(llm, "get_provider", lambda: None)
     monkeypatch.setattr(claims, "select_extractor", lambda _: lambda *a: [claim])
@@ -144,7 +180,8 @@ def test_partial_final_counts_and_verifying_start(monkeypatch):
         pipeline.StageTracker(), float("inf"), lambda *a: None, snapshots.append,
         video_title="뉴스", video_published_at="2022-08-01")
     assert [s["claim_verification"]["claims"][0]["status"] for s in snapshots][:3] == [
-        "pending", "verifying", "done"]
+        "pending", "verifying", "failed"]
     assert result.summary == snapshots[-1]["claim_verification"]["summary"]
-    assert result.summary["done"] == 1
+    assert result.summary["failed"] == 1
+    assert result.summary["done"] == 0
     assert result.claims[0]["video_published_at"] == "2022-08-01"

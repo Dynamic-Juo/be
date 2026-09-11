@@ -1,0 +1,8 @@
+# Test-only layer; never publish this image as the application image.
+ARG APP_IMAGE=conan-ci:test
+FROM ${APP_IMAGE}
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
+COPY tests /app/tests
+COPY docker-compose.yml /app/docker-compose.yml
+CMD ["python", "-m", "pytest", "-q", "/app/tests"]

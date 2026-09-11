@@ -1,4 +1,5 @@
 .venv
+.venv-audit
 __pycache__
 *.pyc
 .git

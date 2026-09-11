@@ -12,8 +12,7 @@ mediapipe>=0.10 the old `mp.solutions.face_detection` bundled API was removed
 in favor of the Tasks API, which requires a locally supplied model asset. See
 README.md for the one-time download step. If the model file isn't present (or
 mediapipe/PIL aren't installed), this degrades gracefully: `crop_face()`
-returns None and callers fall back to the full frame -- same pattern as every
-other optional stage in this project (classifier/VLM missing -> heuristics-only).
+returns None and callers leave the face-based classification unavailable.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ def _get_detector():
         _detector_load_attempted = True
         if not os.path.exists(_MODEL_PATH):
             logger.warning(
-                "얼굴 검출 모델 파일이 없어 얼굴 crop 없이 전체 프레임으로 분류한다 (정확도 저하). %s",
+                "얼굴 검출 모델 파일이 없어 얼굴 기반 분류를 수행하지 않는다. %s",
                 setup_instructions(),
             )
             return None
@@ -65,19 +64,21 @@ def _get_detector():
             _detector = mp_vision.FaceDetector.create_from_options(options)
             logger.info("얼굴 검출기 로드 완료: %s", _MODEL_PATH)
         except Exception as e:
-            logger.warning("얼굴 검출기 로드 실패: %s — 전체 프레임으로 분류한다", e)
+            logger.warning("얼굴 검출기 로드 실패: %s — 얼굴 기반 분류를 수행하지 않는다", e)
             _detector = None
     return _detector
 
 
 def available() -> bool:
-    return os.path.exists(_MODEL_PATH)
+    # 모델 파일 존재만으로 로딩 성공을 주장하지 않는다. 진단 조회 때문에 모델을
+    # 새로 로드하지는 않으며, crop_face가 실제 확보한 실행 가능 상태만 반환한다.
+    return _detector is not None and Image is not None
 
 
 def crop_face(frame_path: str, padding: float = 0.35) -> str | None:
     """Detect the most prominent face in frame_path and save a padded crop
     beside it. Returns the crop's path, or None (no model / no face / error) --
-    callers should fall back to the original frame in that case.
+    callers must not classify the original full frame in that case.
     """
     detector = _get_detector()
     if detector is None or Image is None:

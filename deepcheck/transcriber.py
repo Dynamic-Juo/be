@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -30,6 +31,35 @@ class Transcript:
     @property
     def word_count(self) -> int:
         return len(self.text.split())
+
+
+def segment_coverage_pct(segments: list[dict], duration: float | None) -> float | None:
+    """텍스트가 있는 타임스탬프 구간의 합집합 비율. 전사 정확도는 아니다.
+
+    Whisper의 info.duration은 입력 오디오 길이이므로 인식한 발언의 양으로
+    사용할 수 없다. 중복 구간과 영상 범위 밖 타임스탬프도 그대로 더하지 않는다.
+    """
+    if duration is None or not math.isfinite(duration) or duration <= 0:
+        return None
+    intervals: list[tuple[float, float]] = []
+    for segment in segments:
+        if not str(segment.get("text") or "").strip():
+            continue
+        try:
+            start, end = float(segment["start"]), float(segment["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(start) or not math.isfinite(end):
+            continue
+        start, end = max(0.0, start), min(duration, end)
+        if end > start:
+            intervals.append((start, end))
+    total = 0.0
+    last_end = 0.0
+    for start, end in sorted(intervals):
+        total += max(0.0, end - max(start, last_end))
+        last_end = max(last_end, end)
+    return round(total / duration * 100, 1)
 
 
 def _detect_device() -> tuple[str, str]:
@@ -115,7 +145,7 @@ def transcribe(audio_or_video: str, model_size: str | None = None,
 
     text = " ".join(s["text"] for s in segments).strip()
     logger.info(
-        "STT 완료: %d세그먼트, %d단어, 언어 %s(%.2f), 처리 구간 %.1fs, 소요 %.1fs",
+        "STT 완료: %d세그먼트, %d단어, 언어 %s(%.2f), 입력 오디오 %.1fs, 소요 %.1fs",
         len(segments), len(text.split()), info.language, info.language_probability or 0.0,
         float(info.duration or 0.0), time.monotonic() - started,
     )

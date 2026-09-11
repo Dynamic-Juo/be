@@ -5,6 +5,8 @@
 영상 전체 AI 생성 두 축이 끝까지 분리된 채로 남는다는 규칙을 회귀로부터 지킨다.
 """
 
+import pytest
+
 from deepcheck import report
 from deepcheck.config import config
 
@@ -93,7 +95,7 @@ class TestFaceManipulationUnavailable:
         axis = report.build_face_manipulation(_deepfake(avg=40.0, frames_with_face=3), _text())
         assert axis.status != report.ManipulationState.UNAVAILABLE.value
         assert "3장에서 얼굴을 찾았다" in axis.detail
-        assert "정확도가 낮을 수 있다" in axis.detail
+        assert "집계에서 제외" in axis.detail
 
     def test_분석_범위는_정상일_때도_남긴다(self):
         """화면이 이 축에 "분석한 구간·프레임 범위"를 함께 보여준다. 무엇을 봤는지
@@ -124,6 +126,8 @@ class TestFaceManipulationScoring:
     def test_분류기를_못쓰면_사유를_남긴다(self):
         axis = report.build_face_manipulation(_deepfake(avg=5.0, method="heuristics"), _text())
         assert "분류기" in (axis.detail or "")
+        assert axis.status == report.ManipulationState.UNAVAILABLE.value
+        assert axis.signals["visual_risk"] is None
 
 
 class TestWholeVideoGeneration:
@@ -159,17 +163,20 @@ class TestBuild:
         return stages
 
     def test_모든_단계가_정상이면_complete(self):
-        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(), self._stages())
+        r = report.build(
+            {"url": "u"}, _deepfake(avg=10.0), _text(self_disclosure=90), self._stages(),
+            claim_verification=report.ClaimVerification(status=report.AxisStatus.NO_CLAIMS.value),
+        )
         assert r.analysis_status == report.AnalysisState.COMPLETE.value
 
-    def test_주장검증이_꺼져있는_것은_degraded가_아니다(self):
+    def test_주장검증이_꺼져있으면_필수축_누락으로_partial(self):
         stages = self._stages(
             claim_verification=report.StageStatus(
                 status=report.StageState.SKIPPED.value, detail="옵션이 꺼져 있음"
             )
         )
-        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(), stages)
-        assert r.analysis_status == report.AnalysisState.COMPLETE.value
+        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(self_disclosure=90), stages)
+        assert r.analysis_status == report.AnalysisState.PARTIAL.value
 
     def test_다른_단계가_건너뛰어지면_partial(self):
         stages = self._stages(
@@ -191,12 +198,43 @@ class TestBuild:
         r = report.build({"url": "u"}, _deepfake(frames_analyzed=0), _text(), self._stages())
         assert r.analysis_status == report.AnalysisState.PARTIAL.value
 
-    def test_영상전체축_모델미선정은_degraded가_아니다(self):
-        # 자가표기 없이 face만 정상 분석되면, whole_video_generation이 unavailable이어도
-        # 그건 "아직 모델이 없다"는 정상 상태지 분석 실패가 아니다.
-        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(), self._stages())
+    def test_영상전체축_모델미선정도_필수축_누락으로_partial(self):
+        r = report.build(
+            {"url": "u"}, _deepfake(avg=10.0), _text(), self._stages(),
+            claim_verification=report.ClaimVerification(status=report.AxisStatus.NO_CLAIMS.value),
+        )
         assert r.whole_video_generation.status == report.ManipulationState.UNAVAILABLE.value
-        assert r.analysis_status == report.AnalysisState.COMPLETE.value
+        assert r.analysis_status == report.AnalysisState.PARTIAL.value
+
+    def test_실패한_주장_카드는_전체_완료로_감추지_않는다(self):
+        cv = report.ClaimVerification(
+            status=report.AxisStatus.ANALYZED.value,
+            claims=[{"status": "done"}, {"status": "failed"}],
+            summary={"total": 2, "done": 1, "failed": 1},
+        )
+        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(self_disclosure=90),
+                         self._stages(), claim_verification=cv)
+        assert r.analysis_status == report.AnalysisState.PARTIAL.value
+
+    def test_처리중_카드가_최종_결과에_남아도_partial(self):
+        cv = report.ClaimVerification(status="analyzed", claims=[{"status": "verifying"}])
+        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(self_disclosure=90),
+                         self._stages(), claim_verification=cv)
+        assert r.analysis_status == report.AnalysisState.PARTIAL.value
+
+    def test_STT_입력비율과_텍스트구간비율을_분리한다(self):
+        r = report.build(
+            {"url": "u", "stt_coverage_pct": 100.0,
+             "transcript_coverage_basis": "input_audio_duration",
+             "transcript_segment_coverage_pct": 2.1,
+             "transcript_coverage_detail": "인식 정확도를 뜻하지 않는다."},
+            _deepfake(), _text(), self._stages(),
+        )
+        assert r.transcript.coverage_pct == 100.0
+        assert r.transcript.coverage_basis == "input_audio_duration"
+        assert r.transcript.segment_coverage_pct == 2.1
+        assert "인식 정확도를 뜻하지 않는다" in report.format_text(r)
+        assert "STT 커버리지" not in report.format_text(r)
 
     def test_주장검증_결과를_안_넘기면_수행하지_않은_상태로_남는다(self):
         r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(), self._stages())
@@ -238,6 +276,32 @@ class TestBuild:
 
 
 class TestFormatting:
+    @pytest.mark.parametrize("url", [
+        "javascript:alert(1)", "JaVaScRiPt:alert(1)",
+        "data:text/html,<script>alert(1)</script>", "\njavascript:alert(1)",
+        "//example.com/path", "https://[invalid/",
+    ])
+    def test_HTML_영상과_출처의_실행가능_URL을_링크로_넣지_않는다(self, url):
+        r = report.build(
+            {"url": url, "title": "영상"}, _deepfake(), _text(), {},
+            claim_verification=report.ClaimVerification(claims=[{
+                "text": "주장", "evidence": [{"url": url, "title": "출처"}],
+            }]),
+        )
+        html_out = report.format_html(r)
+        assert html_out.count('href="#"') == 2
+        assert "<script>" not in html_out
+
+    def test_HTML_정상_URL도_따옴표와_태그를_이스케이프한다(self):
+        url = 'https://example.com/?q=\"><script>alert(1)</script>'
+        r = report.build({"url": url, "title": "영상"}, _deepfake(), _text(), {},
+                         claim_verification=report.ClaimVerification(claims=[{
+                             "text": "주장", "evidence": [{"url": url, "title": "출처"}],
+                         }]))
+        html_out = report.format_html(r)
+        assert "<script>" not in html_out
+        assert html_out.count('href="https://example.com/?q=&quot;&gt;&lt;script&gt;') == 2
+
     def test_HTML_출력이_제목을_이스케이프한다(self):
         r = report.build(
             {"url": "u", "title": '<script>alert(1)</script>'},

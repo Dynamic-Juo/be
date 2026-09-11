@@ -4,6 +4,25 @@
 
 규칙은 [AGENTS.md](../AGENTS.md#작업-기록) 참고.
 
+## 2026-09-12 — 기존 동작을 보존한 백엔드 배포 준비
+
+- 사용자가 백엔드 배포 반영·정리를 요청했다. docs PR #7 답글은 사용자가 다음 날 마무리하며 새 docs PR은 만들지 않는다. 서버 조회·변경은 명령별 사전 승인 원칙을 유지한다.
+- fetch로 be main `472aff7`, docs main `8d07ff3`과 작업 브랜치의 원격 동기화를 확인했다. 백엔드 `fix/midpoint-hardening`과 동일한 열린 PR은 준비 시작 시점에 없었다. GitHub 인증값은 출력하지 않았다.
+- 보안 점검에 섞였던 자막 기본값 off 전환을 `5ed4441`에서 기존 manual로 복원했다. 코드·Compose·신규 환경 예제를 일치시키고 명시적 off·any 설정을 유지했다. 실제 `.env.home`은 조회·수정하지 않았다. 수동 등록 CC의 사람 작성·정확성·전문 여부는 보증하지 않는다.
+- 전체 모의 회귀 테스트 **329 passed, 2 warnings (7.53초)**를 확인했다. 이전과 같은 Python 3.14.3 작업 가상환경, 모의 모델·제공자와 Python DNS/TCP 차단 fixture다. 실제 영상·유료 API·Docker 검증은 아니다.
+- 루트 `/` 404는 사용자의 이메일 인증 후 보고와 기존 배포 커밋의 미등록 경로가 일치했다. 브라우저에서 미인증 `/health`의 Access 로그인 이동을 확인했으며 인증 후 health·Swagger·실영상 성공은 확인하지 않았다. 올바른 확인 경로와 한계를 API·FE 문서에 반영했다.
+- 검색 제공자 간 병렬화, 다중 얼굴 분석, 전체 AI 생성 탐지 제외는 이번 변경에서 구현하거나 승인 완료로 처리하지 않았다. 기존 평가·댓글의 제안과 현재 코드 상태를 구분한다. `manual` 정책 복원은 기획 원본을 새로 확정하는 작업이 아니다.
+- CI는 GitHub-hosted ARM64에서 앱 빌드와 네트워크 차단 테스트를 실행하고 main의 같은 검증 이미지만 GHCR에 게시한다. 자동 서버 배포는 없으며, 실제 Actions·이미지·서버 교체 결과는 완료 후 별도 기록한다.
+
+## 2026-09-12 — API·Swagger 인수 문서와 브랜치 공유 준비
+
+- 이번 작업은 `fix/midpoint-hardening` 작업 복사본에서만 수행했다. 브랜치 공유용 코드·테스트 `e8176d8`, CI `729be26` 커밋을 만들었다. 후속 문서와 함께 기존 브랜치에 커밋·푸시만 공유하는 범위이며 main 미반영·미배포 상태다. 새 PR 생성·PR #7 답글·병합·이미지 게시·배포는 하지 않는다. 최종 문서 커밋·원격 반영 결과는 후속 공유 기록으로 확인한다.
+- 최신 전체 회귀 테스트는 **328 passed, 2 warnings**다. 작업 복사본 가상환경에서 모의 모델·제공자 및 Python DNS/TCP 차단 fixture를 사용했다. OS 차원의 전체 네트워크 격리나 실제 영상·모델·YouTube·DeepSeek/NAVER·컨테이너 검증이 아니다. 아래 9월 11일의 314개 테스트와 실제 배포/영상 실측은 각각 당시 기록으로 유지한다.
+- 공개 OpenAPI에 `/health`, `/ready`, `/api/analyze`, `/api/jobs/{job_id}`의 요청·응답 스키마와 설명·예시를 보완했다. debug 목록은 문서에서 숨기며 런타임 응답을 스키마 필터링으로 바꾸지 않는다. Swagger의 인증 쿠키 요청 옵션과 CORS의 `Retry-After`·`X-Request-ID` 노출을 추가했다. 실제 도메인의 Swagger·CORS를 재검증하지 않았다.
+- [API 계약](api-reference.md)을 새로 작성하고 [FE 연동 인수인계](frontend-integration.md)를 개편했다. 요청 기본값의 env 의존, HTTP 200 접수/작업 오류, 부분·종료 상태, 404·422·429, 폴링·재시도, URL만 비교하는 진행 중 중복 처리, 결과 휘발과 근거·STT 범위를 정리했다. Swagger 같은 Origin 테스트와 Vercel의 Access·쿠키·OPTIONS 테스트는 별개이며 팀원 이메일·정확한 Vercel Origin은 아직 필요하다. 서비스 토큰과 LLM/검색 키는 프론트에 전달하지 않는다.
+- 9월 11일 점검에서는 읽지 못했던 PR #7 리뷰를 추가 확인했다. [수동 CC 활용 의견](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3958898775)과 본문의 STT(`off`) 방침 사이 차이를 기록하고 자동 승인으로 간주하지 않았다. [LLM 사용 의견](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3989716198)은 당시 사용 기록이며 이번 실제 env 확인이 아니다. 기획 원본은 바꾸지 않았고 정책 변경은 별도 승인이 필요하다.
+- README·인수인계·배포 문서의 최신 상태를 연결했다. 배포 환경 초기화 예제는 신규 환경에만 적용하며 기존 `.env.home`·키·`manual` 설정을 보존하도록 경고했다. 서버 조회도 명령별 사전 승인이 필요하다. 이번에 서버·Docker·Cloudflare·DNS 명령이나 실제 `.env` 조회·수정을 하지 않았으며 기존 배포는 유지했다.
+
 ---
 
 # 2026-09-10
@@ -216,3 +235,70 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 
 - 사용자가 push를 명시적으로 승인했다. `fix/prompt-handoff`를 `Dynamic-Juo/be`에 새 원격 브랜치로 push했고 upstream 연결을 확인했다. 앞선 승인 대기 기록은 이 항목으로 해소됐다. 원격 main 병합과 맥미니 배포는 실행하지 않았다.
 - 맥미니 배포 기준 구현은 `370749f`다. 개발 기기의 후속 코드 수정과 맥미니의 환경·배포 검증을 분리하고, 서버는 배포할 커밋을 고정하도록 handoff에 기록했다.
+
+## 2026-09-10 백엔드 감사와 실제 맥미니 배포 사전 점검
+
+- 사용자 요청에 따라 앞선 읽기 전용 감사 결과를 docs 저장소의 별도 문서 브랜치에 정리하고, be에서는 서버 점검과 handoff를 갱신한다. 구현은 수정하지 않았다. 로컬·원격 main 472aff7과 fix/prompt-handoff의 병합을 확인해 오래된 handoff를 정정했다.
+- 앞선 감사에서는 임시 환경의 단위 테스트 167건이 통과했다. 실제 queue 포화, URL 중복 제거의 옵션·세션 문제, 모델 실패·provider 장애·부분 실패의 잘못된 완료 표시를 별도 재현했다. 원문·독립 출처 검증과 전체 영상 생성 모델 누락도 확인했다. 이번 문서화에서 해당 테스트를 새로 실행한 것은 아니다.
+- 실제 서버의 Docker 29.4.0, Compose 5.1.2, linux/arm64, 물리 메모리 16GiB, VM 메모리 약 7.8GiB와 기존 실행 서비스 7개를 확인했다. 1회 stats의 컨테이너 메모리 합계는 약 288MiB이며 피크나 VM 전체 사용량이 아니다.
+- 기존 token 기반 cloudflared의 관리 Compose 경로와 두 네트워크만 조회했다. Conan 네트워크·이미지·환경 파일은 아직 없다. 비밀값 없는 격리 작업 복사본으로 Compose 정적 검증을 통과했고 포트 미노출·전용 네트워크·CPU 2개·메모리 3GiB를 확인했다.
+- 판단과 후속 항목은 [배포 점검 기록](deployment-log.md)에 남겼다. 환경 준비 후 내부 시험 배포가 가능하나, 실제 빌드·분석 부하·Tunnel·FE 인증/CORS는 미검증이다. 기존 컨테이너·네트워크·Cloudflare 설정은 변경하지 않았다.
+
+## 2026-09-11 staging 내부 배포
+
+- 사용자 요청으로 맥미니 main 472aff7의 ARM64 이미지를 실제 빌드하고 conan-staging 프로젝트로 기동했다. 이미지 ID·기동 시각·실행 명령은 [배포 기록](deployment-log.md)에 남겼다. 별도 네트워크·모델 볼륨을 만들고 CPU 2개·메모리 3GiB를 적용했으며 호스트 포트는 열지 않았다.
+- /health·/ready, Docker healthy, CPU torch 2.14.0+cpu, 얼굴 검출기, 실제 ViT·Whisper small 로딩을 확인했다. 모델 파일 캐시는 준비됐으나 API 프로세스의 최초 모델 로딩과 실제 영상 처리 시간·피크 메모리는 미측정이다. 기존 7개 서비스는 실행 상태를 유지했다.
+- 사용자가 키를 직접 넣을 .env.home을 권한 600으로 생성했다. 값은 출력하지 않았으며 Git ignore를 확인했다. 키·도메인이 없어 실제 외부 provider·Tunnel·FE 연결은 대기한다. 개발계/운영계 분리와 GitHub-hosted ARM64 CI, 이미지 승격 배포는 제안으로 문서에 기록했고 운영계·Actions runner는 생성하지 않았다.
+- 후속으로 개발계 hostname을 conan-api-dev.dotseven.cloud로 확정했다. DNS는 아직 해석되지 않고 Cloudflare 로그인·Access 허용 이메일·API 키 입력을 기다린다. 현재 staging은 healthy이며 외부 연결은 미실행이다.
+
+### 2026-09-11 — 개발계 Access·Tunnel 연결
+
+- 사용자 승인으로 Conan API Dev 앱과 본인 이메일 한 개만 허용하는 Conan Dev Owner Only 정책을 먼저 저장한 뒤 기존 dotseven-server Tunnel에 개발계 hostname route를 추가했다. DNS 자동 생성과 정책 저장값을 확인했다.
+- 기존 cloudflared에 conan-staging-ingress를 재시작 없이 연결하고 관리 Compose에 external network를 영속화했다. Compose 정적 검증과 Tunnel 네트워크에서 내부 /health 응답을 확인했다. 토큰 포함 Compose는 Git에 복사하지 않았다. 기존 7개 컨테이너와 다른 hostname 경로는 유지됐다.
+- 공개 DNS 두 곳의 응답을 확인했다. 맥미니 기본 resolver는 아직 이름 해석에 실패해 공개 DNS IP를 --resolve로 지정하고 TLS 검증을 유지했다. 미인증 /health·/api/jobs GET 및 /api/analyze POST는 모두 Access 로그인으로 HTTP 302를 반환했다.
+- 본인 인증 후 응답·다른 이메일 거부·키 입력 후 실제 영상 분석·FE CORS는 미검증이다. 운영계 및 Actions는 이번에도 생성하지 않았다.
+
+### 2026-09-11 — CI 초안과 프론트 연동 조건
+
+- 사용자 요청으로 GitHub-hosted ARM64에서 Docker 이미지 빌드·격리 테스트 후 main 이미지를 GHCR에 게시하는 Actions 초안을 추가했다. PR에서는 이미지를 게시하지 않고 provider 키를 전달하지 않는다. 실제 Actions 실행 및 GHCR 권한은 미검증이며 main 병합과 맥미니 자동 배포는 하지 않았다.
+- 개발·운영은 별도 Compose 프로젝트·배포 디렉터리·환경 파일·네트워크·모델 볼륨으로 분리하고 테스트한 이미지 digest를 운영에 승격한다. 운영 hostname과 공개 범위, 제한된 배포 인증 경로는 확정이 필요하다. 맥미니에 범용 self-hosted runner를 설치하지 않았다.
+- 프론트 연동에는 정확한 개발/운영 Origin, API base URL, Access 허용 대상과 인증 쿠키·OPTIONS 검증이 필요하다. 현재 본인 이메일 전용 정책은 팀장님 접속을 허용하지 않는다. POST /api/analyze의 job_id로 GET /api/jobs/{job_id}를 폴링하며 DeepSeek·NAVER 키 및 Access 서비스 토큰은 브라우저 코드에 넣지 않는다.
+
+### 2026-09-11 — 환경 분리 준비와 로컬 CI 검증
+
+- 일반 사용자 공개 목표를 사용자에게 확인했다. 공개 전 입력/실행/조회 제한 검증이 남아 있어 개발계 Access를 유지하고 운영 라우트는 생성하지 않았다.
+- compose.home.yml의 서비스 env_file을 CONAN_ENV_FILE로 선택하고 CONAN_NETWORK_ALIAS를 환경별로 지정할 수 있도록 변경했다. 기존 기본값을 보존했다. 비밀값 없는 작업 복사본에서 conan-staging·conan-production 각각 config --quiet를 통과했다. 실제 서버 Compose 교체와 운영 기동은 하지 않았다.
+- 프론트 연동 문서에 API 접수·폴링, 오류 처리, 정확한 Origin, Access 쿠키/OPTIONS, 팀장님에게 받을 정보를 정리했다.
+- 임시 ARM64 컨테이너에서 기존 배포 이미지와 현재 테스트로 167 passed, 2 warnings, exit 0을 확인했다. macOS bind mount 권한 실패로 docker cp 방식으로 재실행했다. 종료 뒤 테스트의 백그라운드 다운로드가 계속되어 닫힌 스트림 로그 오류가 발생했다. 완전히 격리된 테스트로 간주하지 않으며 fixture 종료 처리가 후속 과제다. 실제 GitHub Actions 실행·새 이미지 빌드 검증은 아니다.
+- 서버 .env.home 키 세 항목은 비어 있었고 일반 curl은 DNS 해석 실패였다. API 키 값은 출력하지 않았다. 따라서 실제 provider·영상 분석 검증은 진행하지 않았다.
+
+### 2026-09-11 — 사용자 지정 영상 개발계 실측
+
+- 사용자 지정 YouTube cYRkZmBuDqI(140초)를 배포 컨테이너 내부 API로 접수했다. job 0dd9b0fd4ce543d5bf51d38a3490c1ee는 25.1초에 completed로 종료했다. 외부 브라우저/Access E2E가 아니다.
+- 다운로드 4.24초, 프레임 추출 6.16초, 미디어 분석 8.99초, 전사 5.7초였다. 8개 프레임 중 5개에서 얼굴을 검출했고 2개 프레임 점수는 약 99%였지만 집계 위험도 25.7로 뚜렷한 조작 징후 없음이 반환됐다. 이 결과만으로 영상 진위나 모델 정확도를 주장하지 않는다.
+- STT는 3단어만 반환했으나 coverage_pct는 100이었다. pipeline.py는 STT duration/영상 duration 비율을 계산하므로 인식된 발언 정확도나 내용 완전성 100%를 뜻하지 않는다. 음성/음악 내용 대조와 인식 실패 원인 검증이 필요하다. 전체 AI 생성은 unavailable, 주장은 no_claims였다.
+- .env.home과 실행 컨테이너에서 DeepSeek·NAVER 키 세 개가 모두 비어 있음을 값 없이 확인했다. 따라서 LLM/검색 provider 성공은 검증하지 못했다. 완료 상태를 전체 기능 성공으로 해석하지 않는다.
+- 분석 후 메모리 약 1.545GiB(피크 아님), healthy·재시작 0·OOM false였다. 기존 컨테이너도 실행 상태를 유지했다.
+- 공개/Tailscale/공유기 및 설정된 IPv6 DNS 서버들은 새 API A 레코드를 반환했다. macOS dscacheutil과 일반 curl은 새 도메인에 실패하지만 기존 lunchpick·cloudflare.com은 성공했다. 로컬 부정 캐시 또는 macOS resolver 경로 문제로 좁혀졌으나 캐시 초기화 전후 비교는 하지 않아 원인을 확정하지 않았다. DNS·VPN 설정은 변경하지 않았다.
+
+### 2026-09-11 — 기존 입력 키의 배포 반영
+
+- 사용자는 서버 .env에 이미 provider 키를 입력했다. 배포 Compose가 별도 .env.home만 읽는 차이를 해소하기 위해 세 provider 설정만 빈 배포 항목에 반영했다. 비밀값은 출력하지 않았고 두 파일 권한을 600으로 맞췄다.
+- 활성 job 0을 확인한 뒤 conan-staging API만 up --no-build로 재생성했다. 기존 다른 서비스와 DNS/Access는 변경하지 않았다. 이전 키 없는 영상 테스트는 provider 검증을 대체하지 않는다.
+
+### 2026-09-11 — 중간 점검 작업 복사본 수정
+
+- 사용자가 전체 점검·수정을 요청하고 work/docs·work/be에서의 조회·편집·로컬 테스트만 승인했다. 서버 조회 명령도 별도 승인이 필요하다. 이번에는 배포 디렉터리·Docker·Cloudflare·macOS DNS 명령을 실행하지 않았다. .env 키도 읽지 않았다.
+- docs 원격 main aedf161을 읽고 be e79a2eb에서 fix/midpoint-hardening, docs main에서 docs/midpoint-review를 만들었다. 기획 원본은 수정하지 않고 평가/RFC에 제안만 남겼다. PR 최신 웹 댓글은 읽지 못했다.
+- 입력을 YouTube canonical URL로 제한하고 다운로드 전 공개/연령/길이 filter·TLS 검증·높이 제한을 보완했다. 내부 네트워크 egress·Shorts/언어 검증과 바이트 상한은 아직 남는다.
+- 무제한 executor 대기 제거, 종료 시 worker 정리, 접수/세션 동시성, 공개 job의 세션정보 제거, 목록 기본 비활성, 원시 예외/요청 ID 보호, 유효 부분 결과 보존과 결과 없는 실패를 수정했다. 하드 실행 중단과 요청별 모델 자원 한도는 아직 없다.
+- 얼굴 crop의 유효 점수만 집계하고 휴리스틱을 정상 판정으로 쓰지 않도록 수정했다. 필수 축 누락·주장 실패는 부분 완료에 반영했다. 전체 AI 모델과 자가표기 정책은 변경하지 않았다.
+- STT 입력 길이 비율을 정확도로 오해하지 않게 설명하고 별도 세그먼트 시간 구간 비율을 제공한다. 실제 3단어 전사 품질을 해결하거나 모델·임계값을 교체한 것은 아니다. 자막 기본값은 확정 T-02에 맞춰 off로 변경했고 API 선택 옵션은 유지했다.
+- 임시 폴더 finally 정리를 성공·예외 경로에서 테스트하고 삭제 실패를 상태와 로그에 남겼다. 명시적 보존 옵션과 강제 종료 한계는 문서화했다. 배포본 잔여 파일은 조회하지 않았다.
+- 근거 원문/출처·인용과 추출 실패 구분을 코드에서 강제하고 프롬프트를 2026-09-11.1로 갱신했다. 실제 원문 수집과 실모델 평가는 미실행이다. 새 프롬프트에 과거 11/11 결과를 적용하지 않는다.
+- HTML 근거/영상 링크의 비 HTTP(S) 스킴을 차단했다. CI 테스트는 별도 이미지에서 network none으로 실행하도록 바꾸고 PR 테스트는 읽기 권한만, main publish는 동일 검증 이미지 artifact를 이어받도록 분리했다. 실제 CI와 Docker 명령은 실행하지 않았다.
+- 테스트 환경은 작업 복사본 .venv-audit의 Python 3.14.3이다. Python DNS/TCP 접근 차단 fixture와 모의 모델/provider를 사용한다. 네이티브/프로세스 전체의 OS 네트워크 격리를 뜻하지 않는다. yt-dlp 2026.8.19의 실제 metadata callback은 이미 추출된 가상 자료로 simulate 검증했으며 실제 YouTube 요청·영상 파일 생성은 없다.
+- 검색 제공자 없음·실패와 정상 빈 검색을 구분했다. 장애 후 유효 근거가 없으면 failed, 일부 검색만 실패했으면 유효 자료와 범위 제한 설명을 함께 보존한다. 검색/LLM HTTP 성공 본문은 2 MiB, 오류 본문은 4,096 bytes로 제한하고 오류 응답 본문을 노출하지 않는다.
+- 작업 복사본 Compose의 자막 기본값도 off로 맞추고 정적 파일 회귀 검사를 추가했다. 실제 Compose 실행·배포 환경 파일 반영은 하지 않았다. README·파이프라인 설명도 수정 코드와 과거 실측을 구분해 정정했다.
+- 일괄 주장 검증 helper의 예산 초과도 done이 아닌 timed_out과 일치하는 부족 사유·라벨로 남긴다. 외부 연결 오류의 원시 reason 로그를 제거했다.
+- 최종 전체 회귀 테스트 314 passed, 2 dependency deprecation warnings(6.01초), compileall·diff-check 통과. 프롬프트 평가 목록 11건/network_calls=0과 CI YAML의 권한·네트워크 정적 검사를 확인했다. 모의 테스트 시간을 실제 영상 성능으로 해석하지 않는다. 커밋·푸시·병합·이미지 게시·배포는 하지 않았다.
