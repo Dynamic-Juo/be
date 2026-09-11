@@ -19,23 +19,46 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Build CPU ARM64 image
         run: docker build --platform linux/arm64 -t conan-ci:test .
       - name: Run isolated tests without provider keys
         run: |
-          docker run --rm --entrypoint sh \
-            -v "$GITHUB_WORKSPACE/tests:/app/tests:ro" \
-            -v "$GITHUB_WORKSPACE/requirements-dev.txt:/tmp/requirements-dev.txt:ro" \
-            conan-ci:test -c 'pip install --no-cache-dir -r /tmp/requirements-dev.txt && python -m pytest -q /app/tests'
-      - name: Publish tested main image
+          docker build --file Dockerfile.test --build-arg APP_IMAGE=conan-ci:test -t conan-ci:tests .
+          docker run --rm --network none --cpus 2 --memory 3g conan-ci:tests
+      - name: Export tested main image
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: docker save conan-ci:test | gzip > conan-image.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          name: conan-image-${{ github.sha }}
+          path: conan-image.tar.gz
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    needs: test-build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: conan-image-${{ github.sha }}
+      - name: Publish the same tested image without rebuilding
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
+          gzip -dc conan-image.tar.gz | docker load
           image="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${GITHUB_SHA}"
           trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
