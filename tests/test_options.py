@@ -34,8 +34,9 @@ def test_주장검증은_기본적으로_켜져있다():
     assert AnalysisOptions().enable_claim_verification is True
 
 
-def test_자막_정책_기본값은_확정된_T02에_따라_STT를_사용한다():
-    assert AnalysisOptions().caption_policy == "off"
+def test_자막_정책_기본값은_기존_배포의_수동_CC_우선을_유지한다():
+    assert Config.caption_policy == "manual"
+    assert AnalysisOptions().caption_policy == "manual"
 
 
 def test_compose_does_not_silently_override_the_caption_default():
@@ -48,9 +49,14 @@ def test_compose_does_not_silently_override_the_caption_default():
     assert match and match.group(1) == Config.caption_policy
 
 
-def test_수동_자막은_명시적으로_선택할_수_있다(monkeypatch):
-    monkeypatch.setenv("DEEPCHECK_CAPTION_POLICY", "manual")
-    assert load_config().caption_policy == "manual"
+def test_명시적인_STT_설정은_기본값보다_우선한다(monkeypatch):
+    monkeypatch.setenv("DEEPCHECK_CAPTION_POLICY", "off")
+    assert load_config().caption_policy == "off"
+
+
+def test_명시적인_자동_CC_허용_설정도_유지한다(monkeypatch):
+    monkeypatch.setenv("DEEPCHECK_CAPTION_POLICY", "any")
+    assert load_config().caption_policy == "any"
 
 
 def test_디버그_목록은_기본적으로_닫는다(monkeypatch):
