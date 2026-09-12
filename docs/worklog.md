@@ -22,6 +22,22 @@
 - 현재 범위는 CI와 승인형 Continuous Delivery이며 GitHub→host 자동 호출은 연결하지 않았다. 현재 image는 container root이므로 cap drop/no-new-privileges는 적용했지만 non-root 전환은 실제 ARM64 검증이 필요한 후속 hardening이다.
 - 격리 가상환경에서 전체 `PYTHONPATH=. python -m pytest -q`를 실행해 **687 passed, 2 warnings (14.07초)**를 확인했다. Fake host controller, GitHub API response 검증과 filesystem/ACL fault injection을 포함한다. Python `py_compile`, workflow/Compose YAML 및 host-config JSON 파싱, `git diff --check`도 통과했다. 실제 Actions·Sigstore bundle·GHCR·Docker/OrbStack·외부 API 검증은 아니다.
 
+## 2026-09-13 자막 기본 미사용과 선택 옵션 유지
+
+- 사용자가 기획 결정권자는 조정준 팀장임을 명시하고 자막 미사용을 기본으로 하되 옵션을 유지하라고 지시했다. 이전 manual 기본 유지 방침을 대체하며 기획 원본을 임의 변경한 것이 아니다.
+- 독립 개발 복사본의 `fix/captions-opt-in`에서 코드·Compose·신규 환경 예제를 off로 일치시켰다. API 요청과 환경변수의 manual/any 선택은 유지한다. 기본 경로가 기존 자막을 읽지 않는지, 명시적 manual에서 CC를 사용하고 STT를 건너뛰는지, 읽기 실패 시 STT로 전환하는지 회귀 검증했다.
+- 전체 333 passed, 2 warnings (7.58초). 기존 개발용 Python 3.14 가상환경의 라이브러리와 Python 네트워크 차단 fixture를 사용했다. 맥미니 서버·Docker·실영상·유료 API는 조회하거나 실행하지 않았다.
+- 기획·파이프라인·CI 점검 세션에 최신 지시를 전달했다. docs 점검 세션이 확인한 [다중 얼굴 댓글](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3958648232)은 여러 명 중 한 명이라도 추출되면 되는지 묻는 질문이며, 모든 얼굴 중 하나라도 이상이면 전체 이상으로 판정하라는 지시까지 확인되지는 않았다. 해당 판정 코드 변경은 하지 않았다. 실제 서버 env 전환·배포도 미실행이다.
+
+## 2026-09-12 — Vercel 주소 확보와 승인된 서버 조회
+
+- 프론트 Origin은 사용자 제공 `https://kimjeonil.vercel.app`다. 브라우저에서 Conan AI 첫 화면을 확인했으며 분석 버튼을 제출하지 않았다.
+- 사용자가 승인한 Docker 조회 4개만 실행했다. 컨텍스트 orbstack, Conan은 이전 `conan-be:472aff7` 이미지로 healthy·재시작 0·OOM false였다. 이미지 ID는 기존 기록과 같은 `sha256:4ecdd77473ce42a9dd0799e46aafb263358dcc34a22d3d88e04c3f44c5d6aed9`이며 관리 경로는 `/Users/dotseven/srv/ConanAi/be`다. 순간 자원은 CPU 0.21%, 메모리 55.71MiB/3GiB였고 분석 부하 측정은 아니다. 기존 다른 7개 서비스도 실행 중이었다. 첫 Docker 소켓 접근은 도구 권한 제한으로 실패해 승인 범위 그대로 권한을 올려 조회했다.
+- 공개 `Dynamic-Juo/fe`를 작업 폴더에 복사해 main `8c3bb9c`를 확인했다. `src/api/realClient.ts`의 실 접수·폴링은 미구현이며 현재 배포 번들에도 같은 오류 문구가 있다. API URL 환경변수 이름은 `VITE_API_BASE_URL`이다. 프론트 코드와 원격 배포는 변경하지 않았다.
+- 추가 서버 조회를 설명하고 승인받아 실행했다. 서버 HEAD `472aff7`, Compose v5.1.2, `config --quiet` 성공을 확인했다. 필터한 설정은 기존 이미지, CORS `http://localhost:3000`, 외부 네트워크 `conan-staging-ingress`와 별칭 `conan-api`, 볼륨 `conan-staging_model-cache`다. 환경 전체와 키는 출력하지 않았다. 내부 `/ready`는 ready이며 작업·진행 URL·대기열은 모두 0건이었다.
+- 서버 `.env.example` 삭제 변경을 발견해 보존하고 서버 `git pull`은 하지 않는다. 새 override 파일에 고정 이미지와 Vercel CORS만 지정하고 Conan 하나를 교체하는 범위의 승인을 요청했다. 아직 파일 생성·이미지 pull·교체·Access 변경은 실행하지 않았다.
+- 사용자는 프론트 구현을 조정준 팀장이 맡는다고 답했다. FE 구현·PR·배포는 진행하지 않는다. 개발계 보호를 해제하거나 서비스 토큰을 프론트에 넣는 방식도 사용하지 않는다.
+
 ## 2026-09-12 — 기존 동작을 보존한 백엔드 배포 준비
 
 - 사용자가 백엔드 배포 반영·정리를 요청했다. docs PR #7 답글은 사용자가 다음 날 마무리하며 새 docs PR은 만들지 않는다. 서버 조회·변경은 명령별 사전 승인 원칙을 유지한다.

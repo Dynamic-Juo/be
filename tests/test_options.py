@@ -34,9 +34,11 @@ def test_주장검증은_기본적으로_켜져있다():
     assert AnalysisOptions().enable_claim_verification is True
 
 
-def test_자막_정책_기본값은_기존_배포의_수동_CC_우선을_유지한다():
-    assert Config.caption_policy == "manual"
-    assert AnalysisOptions().caption_policy == "manual"
+def test_자막_정책_기본값은_미사용이다(monkeypatch):
+    monkeypatch.delenv("DEEPCHECK_CAPTION_POLICY", raising=False)
+    assert Config.caption_policy == "off"
+    assert load_config().caption_policy == "off"
+    assert AnalysisOptions().caption_policy == "off"
 
 
 def test_compose_does_not_silently_override_the_caption_default():
@@ -49,9 +51,18 @@ def test_compose_does_not_silently_override_the_caption_default():
     assert match and match.group(1) == Config.caption_policy
 
 
-def test_명시적인_STT_설정은_기본값보다_우선한다(monkeypatch):
-    monkeypatch.setenv("DEEPCHECK_CAPTION_POLICY", "off")
-    assert load_config().caption_policy == "off"
+def test_명시적인_수동_CC_설정은_기본값보다_우선한다(monkeypatch):
+    monkeypatch.setenv("DEEPCHECK_CAPTION_POLICY", "manual")
+    assert load_config().caption_policy == "manual"
+
+
+def test_API에서_자막을_옵션으로_선택할_수_있다():
+    from backend.app import AnalyzeRequest
+
+    for policy in ("off", "manual", "any"):
+        request = AnalyzeRequest(url="https://www.youtube.com/watch?v=cYRkZmBuDqI",
+                                 caption_policy=policy)
+        assert AnalysisOptions.from_dict(request.model_dump()).caption_policy == policy
 
 
 def test_명시적인_자동_CC_허용_설정도_유지한다(monkeypatch):

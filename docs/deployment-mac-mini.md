@@ -2,6 +2,8 @@
 
 최신 준비 기록: 2026-09-13 보안 CI/CD 코드는 구현·로컬 검증됐지만 GitHub와 맥미니에는 아직 활성화하지 않았다. **정기 배포와 안전한 최초 migration의 현재 기준은 [개발계 CI/CD 보안 런북](development-cd-runbook.md)이다. 아래 로컬 build/tag/up 절차는 과거 기록 또는 별도 승인한 break-glass 참고일 뿐, 보안 컨트롤러 migration에 사용하지 않는다.** 수동 `build`, tag 기반 `up`, `.env.home`의 image 변경으로 우회하면 서명·replay 방지·durable recovery 상태가 어긋난다. [인수인계](handoff.md), [API 계약](api-reference.md)·[FE 연동 문서](frontend-integration.md)를 함께 확인한다.
 
+최신 자막 기준: 2026-09-13 사용자 지시에 따라 기본은 `off`(미사용·STT), `manual`·`any`는 선택 옵션이다. 코드와 신규 환경 예제를 맞췄고 실제 서버 환경·이미지는 변경하지 않았다. 기존 env가 `manual`이면 코드 기본값만 바꿔도 전환되지 않으므로, 승인된 배포에서 해당 항목을 확인하고 `off`로 반영해야 한다. 이전 manual 기본 유지 기록은 이번 지시로 대체한다. [인수인계](handoff.md), [API 계약](api-reference.md)·[FE 연동 문서](frontend-integration.md)를 함께 확인한다. docs 새 PR과 PR #7 답글은 게시하지 않는다.
+
 **서버 명령은 조회도 변경도 명령별로 대상·영향을 설명하고 사전 승인을 받아야 한다.** 이 문서는 실행 허가나 일괄 실행 스크립트가 아니다. 이번 작업에서는 기존 맥미니 서비스·환경 파일·Tunnel·Access·DNS를 조회하거나 변경하지 않았다. 기존 배포를 유지한다.
 
 이전 2026-09-11 초기 기동 기록: 맥미니 conan-staging 내부 기동과 얼굴·ViT·Whisper 모델 로딩, conan-api-dev.dotseven.cloud의 Tunnel·본인 이메일 한정 Access 연결 및 미인증 HTTPS 302를 확인했다. 당시 미확인이던 키는 후속 작업에서 반영했고 도메인 접속은 사용자 보고로 해소됐다. 키 반영 후 실제 영상/제공자 E2E와 FE 연결은 미검증이다. 자세한 경과는 [현재 인수 상태](handoff.md)와 [배포 점검 기록](deployment-log.md)을 따른다. 기존 프로젝트는 `conan-staging`이며 아래 신규 환경용 기본 예시의 `conan-home`과 구분한다.
@@ -40,7 +42,7 @@ cp -n .env.home.example .env.home
 chmod 600 .env.home
 ```
 
-`cp -n`의 덮어쓰기 방지는 보조 장치일 뿐 신규 환경 확인과 사전 승인을 대신하지 않는다. 신규 `.env.home`에 DeepSeek 키·NAVER Client ID/Secret을 넣는다. 비밀값을 Git·작업 로그·프론트에 넣지 않는다. 이 값들이 비어 있어도 API의 health는 성공할 수 있으므로 실제 분석에서 외부 제공자가 활성화됐는지 별도 승인 후 확인해야 한다. 이 배포 예시는 기존 전문기관 판정 경로를 켜지 않는다. 예제 자막 기본값은 기존 동작과 같은 `manual`이며 예제를 기존 환경 파일에 덮어쓰지 않는다. 기획 본문과 리뷰의 정리는 [FE 인수 조건](frontend-integration.md#먼저-구분할-상태)을 확인한다.
+`cp -n`의 덮어쓰기 방지는 보조 장치일 뿐 신규 환경 확인과 사전 승인을 대신하지 않는다. 신규 `.env.home`에 DeepSeek 키·NAVER Client ID/Secret을 넣는다. 비밀값을 Git·작업 로그·프론트에 넣지 않는다. 이 값들이 비어 있어도 API의 health는 성공할 수 있으므로 실제 분석에서 외부 제공자가 활성화됐는지 별도 승인 후 확인해야 한다. 이 배포 예시는 기존 전문기관 판정 경로를 켜지 않는다. 예제 자막 기본값은 `off`이며 예제를 기존 환경 파일에 덮어쓰지 않는다. 현재 자막 옵션은 [FE 인수 조건](frontend-integration.md#먼저-구분할-상태)을 확인한다.
 
 Vercel 주소가 정해지면 `DEEPCHECK_CORS_ORIGINS`에 정확한 `https://...` 오리진을 넣는다. 여러 개는 쉼표로 구분한다. 경로나 마지막 `/`를 넣지 않는다. 예제의 `http://localhost:3000`은 내부 연동용이다.
 
