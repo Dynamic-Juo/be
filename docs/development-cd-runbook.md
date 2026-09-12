@@ -1,200 +1,301 @@
-# 개발계 승인형 CD 런북
+# 개발계 CI/CD 보안 런북
 
-- 상태: `Draft`
-- 기준일: 2026-09-13 KST
-- 코드 기준: be 원격 main `38bd16263afbf79daffd67878277c3af0a4a5d51`
-- 준비 브랜치: `ci/dev-deployment`
-- 대상: 개발계 한 곳. 운영계는 범위 밖이다.
+기준일: 2026-09-13
+상태: 코드 구현 및 로컬 모의 검증 완료, GitHub·맥미니 활성화 미실행
 
-이 문서는 테스트한 ARM64 이미지를 digest로 고정하고 승인 요청과 서버 교체를 분리하는 절차다. 현재 구현은 GitHub-hosted runner에서 승인 요청 artifact를 만드는 지점까지만 연결한다. 맥미니 runner, SSH, secret, environment, 서버 설정과 실제 배포는 만들거나 실행하지 않았다.
+이 런북의 결론은 **GitHub Actions는 GitHub-hosted runner에서 빌드·테스트·서명까지만 하고, 맥미니에는 범용 self-hosted runner를 설치하지 않는다**는 것이다. 맥미니에는 검토한 배포 helper와 대상별 고정 설정만 둔다. Helper는 승인된 다섯 파일을 확인하고 기존 Docker daemon의 한 서비스만 교체한다.
 
-## 현재 확인된 상태
+이번 작업에서는 맥미니, Docker daemon, 실행 중인 Conan·cloudflared·Laravel·모니터링, DNS/Tunnel, 실제 환경 파일을 조회하거나 변경하지 않았다. GitHub 공개 REST API는 읽기 전용으로 조회해 main에 기존 backend CI workflow 하나만 있고 environment는 0개이며 새 deployment workflow는 아직 main에 없음을 확인했지만, repository·Actions·environment 설정은 변경하지 않았다. 예제 설정은 `enabled=false`이며 실제 경로와 현재 image identity도 채우지 않았다.
 
-| 항목 | 확인 결과 | 근거와 한계 |
-| --- | --- | --- |
-| 원격 main | `38bd16263afbf79daffd67878277c3af0a4a5d51` | 2026-09-13 `git fetch origin`과 공개 GitHub API 결과가 같다. |
-| 기존 CI | ARM64 앱 이미지 빌드, 테스트용 파생 이미지의 네트워크 차단 테스트, 동일 앱 이미지 GHCR 게시로 나뉜다. | [기존 workflow](../.github/workflows/backend-ci.yml)와 [Actions run 34625602926](https://github.com/Dynamic-Juo/be/actions/runs/34625602926)을 확인했다. |
-| Actions 결과 | main push run의 `test-build`와 `publish` job 및 주요 단계가 모두 `success`다. | GitHub API에서 2026-09-13 재확인했다. 실제 영상·외부 제공자·서버 검증은 아니다. |
-| 게시 digest | 이전 게시 로그 기록은 `ghcr.io/dynamic-juo/be@sha256:c6e1091c982e528140b06a708573756f6598ace6f43eed6a6b83bf5b5419bec0`이다. | Actions publish 성공은 재확인했다. 익명 GHCR package API는 401이어서 이 세션에서 registry manifest와 pull 가능 여부를 독립 확인하지 못했다. |
-| 기존 개발계 | 과거 승인 점검 기록은 서버가 `conan-be:472aff7`을 사용했고 `38bd162` 이미지는 미배포라고 한다. | 이번 작업에는 서버 조회 승인이 없어 현재 상태로 재확인하지 않았다. |
-| 자막 정책 | main의 코드·개발 Compose 기본은 `manual`이다. `origin/fix/captions-opt-in`의 코드 커밋 `58a51cf`는 기본을 `off`로 바꾸고 옵션을 유지하며, 브랜치 최신은 `1b58097`이다. | `off` 변경 브랜치는 main 미병합·서버 미배포다. 해당 세션 기록의 333개 모의 테스트 성공은 이 CD 세션에서 재실행하지 않았다. CD는 자막 환경값을 생성·출력·수정하지 않는다. |
+현재 완성 범위는 **CI + 승인형 Continuous Delivery**다. GitHub가 검증·승인된 배포 요청 artifact를 만들고, 맥미니의 고정 helper를 운영자가 유지보수 창에서 실행한다. GitHub에서 맥미니까지 자동 호출하는 Continuous Deployment는 아직 연결하지 않았다. 분석 결과가 메모리에만 남는 현재 구조에서 이 자동 호출을 먼저 켜면 사용자가 아직 조회하지 않은 완료 결과를 잃을 수 있기 때문이다.
 
-`sha-<commit>` 태그는 배포 식별에 편리하지만 불변값은 아니다. 같은 source SHA의 workflow를 다시 실행하면 떠 있는 base image, apt와 Python 의존성 때문에 다른 이미지가 만들어지고 같은 태그를 다시 가리킬 수 있다. 배포 기준은 성공한 main push의 `run_id`·`run_attempt`와 실제 `repo@sha256:<digest>`의 조합이다.
+## 왜 이 구조인가
 
-## 준비한 흐름
+앱 호스트에 Docker socket 권한을 가진 GitHub runner를 설치하면 workflow에서 실행되는 코드가 사실상 호스트 전체 Docker 권한을 갖는다. 저장소·Action·dependency 중 하나가 침해되면 Conan뿐 아니라 같은 맥미니의 다른 프로젝트까지 영향받는다. 프로젝트 수가 늘수록 이 blast radius도 커진다.
+
+그래서 빌드 실행 권한과 배포 권한을 나눈다.
 
 ```mermaid
 flowchart LR
-    M[main push] --> C[기존 ARM64 build와 격리 test]
-    C --> P[테스트한 동일 image 게시]
-    P --> D[CI run과 digest metadata]
-    D --> V[수동 CD 요청: run과 metadata 검증]
-    V --> A[conan-development 승인]
-    A --> R[environment-bound request artifact]
-    R -. 접근 방식 미정 .-> H[호스트에 사전 설치한 신뢰 helper]
-    H --> I[외부 접수 차단과 idle 확인]
-    I --> S[대상 서비스만 교체]
-    S --> Q[/health, /ready, image ID 확인]
-    Q -->|성공| K[rollback image 보존]
-    Q -->|실패| B[이전 image로 자동 복구]
+    A[main push] --> B[GitHub-hosted ARM64 build/test]
+    B --> C[GHCR digest 게시]
+    C --> D[release JSON + image/release bundles]
+    D --> E[conan-development 승인]
+    E --> F[request JSON + Sigstore bundle]
+    F --> G[운영자가 5개 파일 전달]
+    G --> H[맥미니의 고정 helper]
+    H --> I[서명·workflow bytes·run·승인 검증]
+    I --> J[신규 접수 drain]
+    J --> K[Conan 서비스 하나만 교체]
+    K -->|성공| L[digest·state commit]
+    K -->|실패| M[이전 image 자동 복구]
 ```
 
-준비 브랜치의 [backend-ci.yml](../.github/workflows/backend-ci.yml)은 앱 이미지를 다시 빌드하지 않는 기존 publish 구조를 유지한다. 게시와 release metadata 생성은 `push/main`에만 허용하고, 수동 dispatch는 build/test까지만 수행한다. 게시 후 실제 RepoDigest, source SHA와 CI run 정보를 `conan-release-<sha>-<attempt>` artifact로 30일간 남긴다. 새 이미지에는 `org.opencontainers.image.revision`과 `org.opencontainers.image.source` 라벨을 넣는다. 선행 job이 만든 artifact 이름을 job output으로 소비 job에 전달해 `Re-run failed jobs`에서도 현재 attempt를 잘못 추정하지 않는다. 이 동작은 실제 Actions에서 아직 실행 검증하지 않았다.
+GitHub는 서버 주소·SSH key·Docker context·Compose 경로를 모른다. 반대로 맥미니 helper는 저장소 코드를 checkout하거나 build하지 않고 `repo@sha256:<digest>`만 실행한다.
 
-기존 run `34625602926`은 이 metadata와 revision 라벨을 만들기 전 실행이다. 기록된 digest가 있더라도 새 검증·승인 흐름의 입력 계약을 충족하지 않는다. 준비 변경이 main에 검토·병합된 뒤 발생한 새 `push/main` CI run부터 이 흐름을 사용할 수 있다. 현재 run을 새 방식으로 배포 완료 처리하지 않는다.
+## 구현된 파일
 
-[dev-deployment.yml](../.github/workflows/dev-deployment.yml)은 `workflow_dispatch`만 허용한다. 입력한 run이 이 저장소의 성공한 `push/main` backend CI이고 SHA·attempt가 일치하는지 GitHub API와 metadata로 확인한다. dispatch 시점의 `github.sha`를 두 job 모두 exact checkout하므로 environment 승인 대기 중 main이 전진해도 다른 스크립트를 실행하지 않는다. `validate`는 검증 artifact만 만들고, `approve`는 아래 두 활성화 표식과 `conan-development` environment를 참조하는 environment-bound request artifact를 만든다.
+- `.github/workflows/backend-ci.yml`: ARM64 build/test, 테스트한 동일 image 게시, image와 release manifest attestation
+- `.github/workflows/dev-deployment.yml`: 성공한 exact `push/main` CI 검증, `conan-development` environment gate, 1시간 request와 attestation 생성
+- `scripts/release_manifest.py`: canonical release schema v2/request schema v3, immutable repository ID, exact run/attempt/SHA/actor ID, 만료 검증
+- `scripts/attestation.py`: 고정 GitHub CLI로 Sigstore bundle 검증 후 인증서 필드를 로컬 정책과 대조
+- `scripts/github_approval.py`: exact backend CI attempt와 exact first-attempt deployment run, 두 reviewed workflow bytes, 현재 environment 보호 설정과 실제 approval history를 GitHub API에서 대조
+- `scripts/dev_deploy.py`: host allowlist, drain, 단일 서비스 교체, rollback, replay/downgrade 방지, `initialize`/`recover`
+- `scripts/deployment_state.py`: schema v2의 target-bound state와 target+transaction-bound journal 검증, 0600 atomic state/journal/image.env, symlink·owner·permission 검사와 fsync
+- `backend/app.py`, `backend/harness.py`: loopback 전용 drain/resume와 접수 fencing
+- `deploy/compose.development.yml`: include/extends 없는 단일 CD용 Compose 계약
+- `deploy/dev-host-config.example.json`: 비활성 host-config schema v4 예제
 
-- 저장소 변수 `CONAN_DEV_DEPLOY_ENABLED=true`
-- environment 변수 `CONAN_DEV_ENVIRONMENT_CONFIGURED=true`
+## GitHub 쪽 계약
 
-두 변수는 현재 만들지 않았다. `vars` context는 값이 environment·repository·organization 중 어느 scope에서 왔는지 증명하지 않으므로 표식 자체가 required reviewer·prevent self-review·main-only branch rule의 기계적 증거는 아니다. 같은 이름의 repository/organization 변수는 두지 않고, 저장소 관리자가 규칙을 API 또는 설정 화면에서 직접 확인한 뒤 environment 변수와 저장소 활성화 변수를 설정해야 한다. Request의 `dispatch_actor`는 workflow를 시작한 사람이지 environment 승인자가 아니다.
+### CI
 
-이 workflow에는 서버 주소, Compose 경로, SSH, self-hosted runner와 Docker 명령이 없다. Environment-bound artifact 자체는 승인자의 신원이나 보호 규칙 구성을 증명하지 않으며 실제 배포를 의미하지 않는다. 소비자는 exact run ID·attempt가 성공했고 `conan-development` 보호를 통과한 artifact인지 GitHub 측 기록과 함께 확인해야 한다. 이 검증 연결은 활성화 전 미완료 항목이다.
+`backend-ci.yml`은 PR·main push·수동 실행에서 build/test를 하지만, GHCR publish는 `push`의 `refs/heads/main`에서만 한다. Publish job은 앞 job이 저장한 테스트 완료 image를 다시 build하지 않고 게시한다. `packages: write` publish와 `id-token`/`attestations: write` signer는 별도 job이며 둘 다 repository를 checkout하거나 repository Python을 실행하지 않는다. Release JSON은 host가 hash로 고정하는 workflow 본문의 `python -I` 코드가 만든다.
 
-## GitHub 보안 기준
+배포 가능한 결과는 다음 identity의 조합이다.
 
-| 통제 | 적용 또는 결정 기준 |
+- repository 이름과 immutable repository ID `1355990630`
+- owner immutable ID `324487638`
+- source SHA
+- backend CI run ID와 run attempt
+- `ghcr.io/dynamic-juo/be@sha256:<digest>`
+- workflow `.github/workflows/backend-ci.yml`, event `push`, ref `refs/heads/main`
+
+CI는 image digest 자체와 canonical `conan-release.json`을 각각 `actions/attest`로 서명한다. CD는 두 bundle을 모두 전달하고, host는 같은 exact CI run/attempt 정책으로 manifest와 `oci://ghcr.io/...@sha256:...` image subject를 각각 검증한다. Host는 image tag를 배포 기준으로 사용하지 않는다.
+
+### 승인 요청
+
+`dev-deployment.yml`은 수동 dispatch만 받는다. 입력 SHA는 dispatch 시점의 `github.sha`와 정확히 같아야 하며, 입력한 backend CI run이 성공한 `push/main` run인지 API record와 release manifest로 확인한다.
+
+`approve` job은 고정 `conan-development` environment를 통과한 뒤 다음 다섯 파일만 한 artifact에 넣는다.
+
+1. `conan-development-request.json`
+2. `conan-development-request.sigstore.json`
+3. `conan-release.json`
+4. `conan-release.sigstore.json`
+5. `conan-image.sigstore.json`
+
+Request는 최대 1시간만 유효하다. 승인 뒤 request를 서명하는 job도 repository를 checkout하거나 repository Python을 실행하지 않고, 고정 workflow 본문의 `python -I` 생성기만 사용한다. GitHub workflow는 여기서 끝나며 서버 명령, SSH, self-hosted runner, Docker context를 사용하지 않는다.
+Approval history API는 attempt별 기록을 제공하지 않으므로 배포 request는 workflow run attempt 1만 허용한다. 실패한 run을 rerun해 만든 artifact는 쓰지 않고 새 workflow run으로 다시 승인한다.
+
+### 활성화할 GitHub 보호 설정
+
+저장소 관리자가 직접 다음을 확인한 뒤에만 두 marker를 설정한다.
+
+- `conan-development` required reviewer는 1~6명의 개별 GitHub User만 사용
+- prevent self-review 활성화
+- 관리자 우회 비활성화
+- deployment branch/tag rule을 `main`으로 제한
+- `main`은 PR과 필수 CI를 거쳐야 하고 force push·branch 삭제·관리자 bypass를 허용하지 않음
+- `.github/workflows/**`, `Dockerfile*`, dependency/lock 파일, 테스트, `scripts/release_manifest.py`는 CODEOWNERS의 독립 승인을 요구하고 새 commit에는 stale approval을 폐기함
+- repository variable `CONAN_DEV_DEPLOY_ENABLED=true`
+- environment variable `CONAN_DEV_ENVIRONMENT_CONFIGURED=true`
+
+Marker는 보호 규칙의 암호학적 증명이 아니다. 관리자가 규칙을 감사했다는 activation fence다. Host는 environment ID, 현재 required-reviewer User ID set, `prevent_self_review=true`와 실제 승인 기록을 API로 다시 확인하지만, 관리자 우회 비활성화와 branch/CODEOWNERS rule 전체는 API 응답만으로 증명하지 못하므로 activation 때 수동으로 감사한다. Workflow bytes pin은 workflow 자체의 테스트 생략 변조를 막지만, 허가된 workflow가 빌드하는 악성 source·Dockerfile·dependency·테스트 변경까지 판별하지는 못한다. 따라서 위 main 보호와 독립 code review가 activation blocker다. 여러 reviewer를 등록해도 GitHub environment는 일반적으로 그중 한 명의 승인으로 진행되므로 reviewer 구성을 그 전제로 정한다.
+
+## Host가 독립 검증하는 내용
+
+`apply`는 owner-only 임시 디렉터리에 다섯 artifact의 byte snapshot을 먼저 만든다. 같은 snapshot의 request/release canonical JSON과 equality를 검사하고 request·release 파일 및 release가 가리키는 exact image digest를 각 bundle로 `gh attestation verify --bundle` 검증한다. Image subject는 반드시 `oci://ghcr.io/...@sha256:...` 형식이며 release와 image bundle은 같은 exact CI policy에 묶인다. 따라서 검증 직후 원본 경로만 바꾸는 TOCTOU 공격이나 manifest만 서명하고 다른 image를 넣는 공격으로 실행 입력을 교체할 수 없다. Local bundle은 attestation API 조회를 대체하지만 OCI subject 확인은 여전히 registry를 조회한다. 이 image 검증 명령에만 owner-only Docker config와 GHCR pull/read-only credential을 주고 request/release 및 GitHub API 명령에는 registry credential을 전달하지 않는다. 이어서 검증된 인증서에서 다음을 모두 exact match한다.
+
+- GitHub OIDC issuer
+- repository 이름, repository ID, owner ID
+- `refs/heads/main`과 source SHA
+- signer workflow path와 signer commit digest
+- `github-hosted` runner
+- `push` 또는 `workflow_dispatch` trigger
+- exact run ID와 attempt의 invocation URI
+
+그 뒤 Docker 명령 전에 GitHub REST API를 fail-closed로 조회한다.
+
+- release가 가리키는 exact `actions/runs/{ci_run_id}/attempts/{ci_run_attempt}`의 run/repository/owner/backend CI workflow ID/path/main/SHA/`push`/completed/success
+- release source commit의 `.github/workflows/backend-ci.yml` bytes SHA-256과 host의 reviewed pin
+- exact `actions/runs/{request_run_id}/attempts/1`의 run/repository/owner/deployment workflow ID/path/main/SHA/`workflow_dispatch`/completed/success/dispatch actor immutable ID
+- request source commit의 `.github/workflows/dev-deployment.yml` bytes SHA-256과 host의 reviewed pin
+- 현재 environment ID/name, required-reviewer rule 한 개, `prevent_self_review=true`, 1~6개 User reviewer ID set과 host allowlist의 exact equality
+- run-level approval history가 exact environment에 대해 정확히 한 건이고 `approved`이며 승인자가 allowlist User이고 dispatch actor와 다른지
+- 승인 조회 뒤 current run을 다시 읽어 attempt가 여전히 1이고 위 identity와 성공 상태가 그대로인지
+
+API/network/JSON 불일치는 모두 배포를 중단한다. Host의 GitHub credential은 대상 repository의 Actions read와 Contents read만 갖고 write 권한은 주지 않는다. 별도 Docker registry credential도 GHCR pull에 필요한 `read:packages`만 허용한다. Admin-bypass 비활성화는 위 API 응답에 포함되지 않으므로 별도 수동 감사 항목이다.
+
+Workflow가 작성할 수 있는 attestation predicate 값은 권한 판단에 사용하지 않는다. 인증서에 들어간 GitHub identity만 사용한다. `gh`, Docker, 독립 Compose binary는 절대 경로와 SHA-256을 설정에 고정하고, 호출자의 `HOME`, `GH_TOKEN`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `XDG_CONFIG_HOME`, `DEEPCHECK_*` 환경을 상속하지 않는다.
+
+모든 host 신뢰 경로는 `/`부터 leaf parent까지 `openat` + `O_DIRECTORY` + `O_NOFOLLOW`로 component별로 연다. 각 디렉터리는 root 또는 helper 실행 계정 소유이고 group/world non-writable이어야 한다. Root-owned sticky 공유 디렉터리(`/private/tmp`, Linux의 `/tmp`)는 중간 ancestor로만 허용하며 그 아래 owner 전용/non-writable parent가 반드시 있어야 한다. macOS `/var`처럼 symlink인 별칭은 사용하지 않고 `/private/var/...` 같은 실제 canonical 경로를 설정한다. Darwin에서는 mode bits 밖에서 권한을 넓히는 extended `allow` ACL도 descriptor 기준으로 거부한다. macOS가 home directory에 기본으로 두는 deny-only ACL은 authority를 넓히지 않으므로 허용한다.
+
+Host 설정은 다음을 로컬 allowlist로 고정한다.
+
+- target/environment와 repository immutable IDs
+- backend CI/deployment workflow immutable ID, environment immutable ID
+- reviewed backend CI/deployment workflow bytes SHA-256와 현재 허용 reviewer User immutable ID allowlist
+- Docker unix endpoint와 audit용 context (`DOCKER_CONTEXT`는 실행 환경에서 제거하고 고정 `DOCKER_HOST`만 사용)
+- Compose project·service·env file과 독립 Compose binary의 절대 경로·SHA-256
+- `include`/`extends`가 없는 단일 flattened `compose.development.yml`의 SHA-256
+- owner-only Docker/GitHub CLI config directory. Docker credential은 GHCR pull/read-only다
+- 모든 프로젝트가 공유하는 global deployment lock
+- 대상별 owner-only state directory
+- 최초 한 번 사용할 현재 image/source/image-ID와 request/CI replay watermark bootstrap
+
+Request JSON의 값으로 path, service, project, command, Docker endpoint를 선택할 수 없다.
+
+### Durable target·transaction binding
+
+State/journal schema v2는 설정을 하나의 넓은 hash로 묶지 않고, 결정적 canonical JSON의 SHA-256 지문 두 개로 나눈다.
+
+- `target_fingerprint`는 명시적 migration 없이 바꾸면 안 되는 장기 target identity다. Target ID, environment, repository 이름·immutable repository/owner ID, immutable backend CI/deployment workflow/environment ID, Docker endpoint, Compose project/service, global lock/state directory, `admission_control`/필수 admission protocol을 포함한다. State와 journal 둘 다 exact match해야 하며, 불일치하면 Docker를 조회·변경하기 전에 닫힌다. 자동 rebind는 없다.
+- `transaction_fingerprint`는 진행 중 교체를 같은 계약으로 복구하기 위한 journal-only identity다. Docker/Compose binary 절대 경로·SHA-256, Docker config directory/context, Compose 경로와 신뢰하는 모든 Compose 파일의 경로·SHA-256, env file 경로를 포함한다.
+- `enabled`, timeout/poll/settle 값, bootstrap, request에만 있는 값은 두 지문에서 제외한다. GitHub CLI binary 경로·hash·config directory와 회전 가능한 reviewed backend CI/deployment workflow SHA-256/reviewer ID allowlist도 이미 시작한 Docker transaction의 복구 target을 결정하지 않으므로 durable 지문에서 제외한다. 다만 이 값들은 여전히 host allowlist이며 새 `apply`의 attestation·API 승인 검증 전에 매번 독립 검증한다. Workflow/reviewer를 정상 회전할 때는 reviewed host config를 원자 교체하며 state/journal을 다시 bind하거나 initialize하지 않는다.
+
+이 분리로 Docker/Compose binary와 Compose 파일을 정상 업그레이드해도 이미 state에 반영된 완료 transaction이 영구 lockout을 만들지 않는다. 반면 어떤 설정 drift도 진행 중 transaction을 새 계약으로 묵시적으로 이어갈 권한을 주지는 않는다. 정확한 복구 경계는 아래와 같다.
+
+## 배포 transaction
+
+Helper는 `down`, `prune`, `rm`, `remove-orphans`, volume/network/Tunnel/DNS 명령을 실행하지 않는다. 지정 서비스에 대해서만 다음을 수행한다.
+
+1. Global non-blocking lock을 잡고 Docker context endpoint를 확인한다.
+2. 이전 journal이 있으면 먼저 `recover`와 같은 방식으로 수렴시킨다.
+3. request replay와 이전 CI run으로의 downgrade를 거부한다.
+4. 현재 컨테이너 image ID가 durable state와 같은지 확인한다. State가 없으면 `apply`는 거부하며 명시적 `initialize`만 허용한다.
+5. 대상 digest를 pull하고 `linux/arm64`, OCI revision label, Compose image 해석을 확인한다.
+6. 이전 image ID에 rollback tag를 만들고 `prepared` journal을 fsync한다.
+7. 컨테이너 내부 loopback API로 신규 접수를 원자적으로 drain한다.
+8. `inflight_urls=0`, `backlog_size=0`을 설정 횟수만큼 연속 확인한다. Timeout 전에는 기다리며 새 접수는 429다.
+9. `switching` journal 뒤 대상 서비스만 stop하고 새 컨테이너를 **startup-drained** 상태로 `up -d --force-recreate --no-build --no-deps --pull never` 기동한다.
+10. 신규 접수가 막힌 상태에서 Docker health, `/health`, `/ready`, 실행 image ID를 확인한다.
+11. `image.env`에 immutable digest를 원자 기록하고 `committed` journal을 commit point로 fsync한 뒤 state를 갱신한다.
+12. Commit/state 뒤 같은 image가 exact durable protocol의 accepting이면 그대로 종료한다. Exact durable draining이 확인된 경우에만 startup fence 없이 한 번 재생성하고 image·health·protocol·accepting을 검증한다. Accepting 성공 직후에는 외부 job이 들어올 수 있으므로 추가 settle/probe/변경을 하지 않고 이 검증을 terminal step으로 끝낸다. 모호함·closed·probe 오류는 파괴적 recreate 없이 fail-closed한다.
+13. Commit 전 실패는 이전 image를 startup-drained로 검증하고 `rolled_back`을 durable하게 만든 뒤 12의 같은 accepting 수렴 규칙을 적용한다. Commit 뒤 실패는 rollback하지 않고 `recover`가 target으로 수렴한다.
+
+Compose/Docker CLI timeout 뒤 daemon 작업이 늦게 끝날 수 있으므로 다음 rollback/recover mutation 전에는 container ID와 image ID가 설정 시간 동안 안정적인지 확인한다. 다만 성공한 accepting start·health·image·protocol 검증 후에는 추가 settle/probe를 실행하지 않는다. CLI process group은 timeout에 종료하고 외부 명령 출력은 1 MiB로 제한한다.
+
+State·journal·image.env는 0600, state directory는 owner-only다. State/journal은 모든 키가 고정된 exact schema v2이고 host config는 schema v4다. 원자 임시 파일 → file fsync → replace → directory fsync 순서를 사용한다. Symlink ancestor/leaf, 비정상 hard link, 다른 owner, group/world writable 파일과 디렉터리, 비-canonical path alias, hash가 달라진 binary/Compose는 fail-closed다. Private env/config/state 파일의 leaf parent도 owner-only여야 한다. Docker endpoint leaf도 no-follow `S_ISSOCK`인지 확인하며 root/helper 계정 소유와 world-write 금지를 강제한다. Group-write socket은 helper 프로세스가 실제 구성원인 그룹만 허용하고, 그 그룹의 모든 구성원은 동일한 Docker host-admin authority를 가진 것으로 취급한다.
+
+Root 또는 helper EUID 소유를 신뢰한다는 것은 같은 UID의 모든 프로세스가 같은 authority에 있다는 뜻이다. 개인 macOS 로그인 계정으로 OrbStack과 helper를 함께 실행하면 그 계정으로 실행되는 기존 앱·서비스의 침해를 경로 검사로 격리할 수 없다. 가능하면 전용 service account와 별도 Docker daemon/VM을 사용한다. OrbStack의 user-owned socket을 그대로 써야 한다면 같은 로그인 UID 전체와 OrbStack daemon을 신뢰하는 잔여 위험을 명시적으로 수용해야 하며, root helper는 user-owned socket을 이 정책상 거부한다.
+
+현재 Docker image는 컨테이너 내부에서 root로 실행한다. 따라서 앱의 0700/0600 marker는 다른 일반 사용자 프로세스와 실수로 공유되는 것을 막지만, 같은 컨테이너의 root 침해를 격리하는 경계는 아니다. `cap_drop: ALL`과 `no-new-privileges`는 적용했지만, non-root image 전환은 모델 cache·미디어 도구·상태 경로 권한을 실제 ARM64 컨테이너에서 재검증한 뒤 별도 hardening으로 진행한다.
+
+### Crash recovery 기준
+
+| 마지막 durable phase | `recover` 결과 |
 | --- | --- |
-| 최소 권한 | workflow 기본 권한은 `{}`다. 검증 job만 `contents: read`, `actions: read`를 사용하고 기존 이미지 publish job만 `packages: write`를 유지한다. [workflow permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)을 따른다. |
-| Action 고정 | 모든 `uses:`는 full commit SHA로 고정한다. GitHub는 full-length SHA 고정을 변경 불가능한 action 사용 기준으로 안내한다. [Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions)를 따른다. |
-| 승인 | `conan-development`에 required reviewer를 지정하고 prevent self-review를 켠다. 관리자 우회를 끄고 deployment branch를 `main`으로만 제한한다. Required reviewer는 여러 명을 넣어도 한 명의 승인으로 진행된다는 점을 승인자 구성에 반영한다. [Deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)와 [환경 관리](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)를 따른다. |
-| 동시 실행 | 고정 concurrency group `conan-development-deployment`와 `cancel-in-progress: false`를 사용한다. 새 요청이 실행 중 교체를 취소하지 않는다. 기본 대기열은 새 pending 요청이 기존 pending 요청을 대체할 수 있으므로 승인된 모든 요청 보존이 필요하면 별도 정책을 결정한다. [concurrency](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency)를 따른다. |
-| 불변 이미지 | 태그를 다시 해석하지 않고 GHCR `@sha256:` digest만 허용한다. [GHCR pull by digest](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pull-by-digest)를 따른다. |
-| self-hosted runner | 앱 서버에 범용 persistent runner를 설치하지 않는다. GitHub는 self-hosted runner가 매 job마다 깨끗한 VM을 보장하지 않으며 공개 저장소의 신뢰하지 못한 코드에 특히 위험하다고 경고한다. [self-hosted runner hardening](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners)을 따른다. |
-| provenance | Artifact attestation은 생성 후 배포 시 검증해야 의미가 있다. 저장소 plan과 사용 가능 여부, 검증 주체를 확인한 뒤 추가한다. 현재 구현 범위에는 넣지 않았다. [artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)을 따른다. |
+| `prepared`, `draining` | 이전 서비스가 살아 있으면 admission을 resume하고 `aborted`로 종료 |
+| `switching`, `verifying`, `rolling_back` | commit 전이므로 rollback tag의 이전 image로 수렴 |
+| `committed` | target digest와 state로 forward 수렴한 뒤 exact durable accepting을 변경 없이 확인하거나, confirmed draining일 때만 fence 없이 수렴 |
+| `aborted`, `rolled_back` | 이전 image와 accepting 상태를 다시 확인하고 state를 완성 |
 
-현재 저장소는 공개 상태로 GitHub API에서 확인했다. Required reviewer와 attestation의 실제 조직 권한·plan 지원 여부는 설정 전에 확인한다. Environment 승인은 runner 격리를 대신하지 않는다.
+실행 image가 journal의 이전/대상 어느 쪽도 아니거나 rollback tag가 사라졌으면 임의 추측하지 않고 수동 확인을 요구한다.
 
-## 서버 접근 선택지
+Fingerprint drift는 다음과 같이 처리한다.
 
-| 방식 | 평가 | 활성화 전에 필요한 승인 |
-| --- | --- | --- |
-| Environment-bound artifact 후 수동 helper | 현재 권고안이다. 맥미니에 inbound credential이나 runner를 추가하지 않는다. 운영자가 artifact와 GitHub 보호 기록 및 신뢰 설정을 확인해 helper를 직접 실행한다. 완전 자동은 아니다. | 서버의 정확한 값 제한 조회, helper·설정 설치 위치, 유지보수 창과 실제 실행 명령 승인 |
-| GitHub-hosted runner에서 forced-command 원격 접근 | 서버에서 임의 shell 대신 사전 설치한 helper에 검증된 digest만 전달할 수 있다. 전용 계정, no-PTY·forwarding 금지, 짧은 credential 또는 제한된 secret이 필요하다. | 네트워크 노출 방식, 계정·키 또는 broker, environment secret, forced-command 설치 승인 |
-| 격리된 self-hosted runner | inbound 연결이 불가능할 때만 검토한다. 앱 서버와 분리한 전용 runner, 선택된 workflow/ref 제한, 가능한 경우 job당 ephemeral 실행이 필요하다. | runner 설치·그룹·label·계정·격리와 업데이트 운영 승인 |
+- State 또는 journal의 `target_fingerprint`가 현재 config와 다르면 phase와 무관하게 Docker 접근 전에 거부한다. 의도한 target 변경은 별도 explicit migration이다.
+- Non-terminal journal이거나 state보다 앞선 journal은 target과 transaction 지문 둘 다 현재 config와 exact match해야 한다. Docker/Compose binary, context, Compose hash, env path 등이 달라졌다면 변경 전에 중단하고 원래 transaction 계약을 복원해야 한다.
+- State에 이미 동일 세대·outcome·active identity로 반영된 terminal journal은 transaction 지문만 오래된 예외를 둔다. 현재 config로 `image.env`가 있으면 state active와 같은지 확인하고, Compose 해석 image, image reference ID, 실행 image ID, Docker/HTTP health, exact durable protocol과 accepting을 모두 **읽기 전용**으로 증명해야 한다. 이 경로에서는 resume/recreate/state·journal 기록을 하지 않으며, 이후 새 `apply`가 현재 transaction 지문의 새 journal로 덮어쓴다.
 
-맥미니 자체에 Docker 권한을 가진 범용 runner를 두고 PR이나 저장소 checkout을 실행하는 방식은 채택하지 않는다. 어떤 자동화 방식에서도 서버는 PR 코드를 checkout·build·실행하지 않고 사전 설치한 helper에 승인된 digest만 전달한다.
+## Drain API 보안 계약
 
-## 호스트 helper의 동작
+내부 endpoint는 OpenAPI에 노출하지 않는다.
 
-[dev_deploy.py](../scripts/dev_deploy.py)는 [비활성 예제 설정](../deploy/dev-host-config.example.json)과 environment-bound request JSON을 입력으로 받는다. 예제는 `enabled=false`, `admission_control=unconfigured`, `request_authentication=unconfigured`이며 실제 경로를 포함하지 않는다. 현재 schema는 `request_authentication=unconfigured` 외 값을 허용하지 않고 CLI `apply`도 이를 이유로 항상 거부한다. 원본 인증 후속 구현을 검토·병합하기 전에는 설정 편집만으로 활성화할 수 없다.
+- `POST /internal/deployment/drain`
+- `POST /internal/deployment/resume`
+- body `{"deployment_id":"..."}`
+- `Authorization: Bearer <DEEPCHECK_DEPLOYMENT_TOKEN>`
 
-`plan`은 설정과 request 형식만 확인하고 Docker를 호출하지 않는다. 향후 `apply`를 열려면 다음 조건을 모두 구현해야 한다.
+직접 ASGI peer가 loopback이어야 하고 forwarded client header가 없어야 한다. 토큰은 32~512자 printable ASCII만 유효하며 Config repr·응답·요청 ID·로그에 넣지 않는다. 미설정, 약한/오류 token, 비-loopback은 이유를 구분하지 않는 404다. Drain 전이와 job submit은 동일 lock에서 직렬화되어 drain 반환 뒤 신규 job이 queue로 들어가는 경쟁을 막는다.
 
-1. 별도 호스트 설정의 `enabled=true`
-2. `admission_control=external-maintenance`
-3. `--confirm-maintenance-window`
-4. GitHub run·environment 보호·artifact 원본의 독립 인증과 replay 방지
-5. 절대 경로로 고정한 검토된 Docker binary, 소유자 전용 Docker config와 승인된 context endpoint
-6. 절대 경로인 신뢰 설정·검증 대상 request·Compose·기존 env 파일
-7. 소유자만 읽을 수 있는 env 파일과 그룹·기타 사용자가 쓸 수 없는 설정 파일
-8. 호스트 lock을 확보한 단일 실행
+Drain owner는 컨테이너 writable layer의 owner-only 파일에 atomic+fsync로 먼저 기록한다. 앱 프로세스가 drain과 stop 사이에 죽어도 같은 컨테이너 재시작은 이 marker를 읽어 draining을 복원한다. Resume은 같은 deployment ID만 명시적 accepting tombstone을 기록할 수 있다. 이 파일은 외부 volume이 아니므로 검증용 `force-recreate` 때 새 컨테이너로 전달되지 않으며, 새 target은 별도의 startup fence를 사용한다.
 
-helper가 수행하도록 준비한 순서는 다음과 같다.
+`/ready.harness.admission_protocol`은 marker가 이 내구성 계약을 제공하는지 증명한다. Durable store가 있을 때만 exact `durable-api-drain-v1`이고, 없으면 `unavailable`이다. Controller의 `initialize`·start·verify·recover는 exact `durable-api-drain-v1`만 인정하며 missing·legacy·`unavailable`을 거부한다. Top-level `/ready.status=saturated`는 이미 job을 받은 정상 accepting 상태일 수 있으므로, `admission_state=accepting`과 `accepting_jobs=true`가 같이 확인되면 `ready`와 동일하게 성공으로 처리하고 recreate 이유로 삼지 않는다.
 
-1. 호출자 `PATH`·`HOME`·`DOCKER_CONFIG`·`XDG_CONFIG_HOME`을 상속하지 않고, 설정에 고정한 절대 Docker binary와 소유자 전용 config를 사용한다. Context endpoint가 승인값과 같은지 확인한다.
-2. 실제 환경을 출력하지 않는 `docker compose config --quiet`와 image 이름만 출력하는 `config --images`를 실행한다. 대상 Compose는 `CONAN_IMAGE`를 유일한 service image로 해석해야 한다.
-3. 기존 컨테이너 image ID를 기록하고 요청 digest를 pull한다.
-4. 대상이 `linux/arm64`이며 OCI revision 라벨이 request의 source SHA와 같은지 확인한다.
-5. `/ready`를 여러 번 확인해 `inflight_urls=0`, `backlog_size=0`인지 검사한다.
-6. 기존 image ID에 충돌 가능성이 낮은 로컬 rollback 태그를 추가한다.
-7. 지정한 Compose project의 서비스 하나만 stop하고 `--no-build --no-deps --pull never`로 대상 digest를 기동한다.
-8. Docker health, 내부 `/health`, `/ready`, 실제 실행 image ID를 확인한다.
-9. 실패하면 보존한 이전 image로 같은 서비스만 다시 기동하고 동일 검사를 수행한다.
+## 다중 프로젝트로 확장하는 방법
 
-helper는 `down`, `prune`, `remove-orphans`, 볼륨 삭제, 네트워크·Tunnel·DNS 변경을 실행하지 않는다. Compose 파일과 env 파일을 생성·출력·수정하지 않으며 `CONAN_IMAGE`만 해당 Compose 프로세스 환경에서 일시적으로 덮어쓴다. `DEEPCHECK_CAPTION_POLICY`를 포함한 앱 설정은 덮어쓰지 않는다. Lock은 `O_NOFOLLOW|O_CLOEXEC`로 열고 descriptor의 종류·소유자·권한을 다시 확인하며 파일 내용을 truncate하거나 쓰지 않는다. Config·request·Compose·env·Docker binary·lock이 같은 inode 또는 경로를 가리키면 실행 전에 거부한다.
+맥미니에 공통 runner 하나를 설치하는 방식으로 확장하지 않는다. 신뢰도가 같은 내부 프로젝트라면 가능한 한 전용 배포 service account/daemon 아래 검토한 helper binary/code는 공용으로 두고 다음만 target별로 분리한다.
 
-## 진행 작업 보호와 남은 한계
+- config, state directory, request inbox
+- repository/owner immutable IDs와 workflow identity
+- Compose project/service와 단일 flattened Compose hash
+- app 전용 drain token과 Docker registry credential
 
-현재 `/ready`는 작업 수를 보여주지만 신규 접수를 닫지 않는다. `0건 확인 → 컨테이너 교체` 사이에 새 POST가 들어올 수 있다. 과거 개발계 이미지의 종료 동작도 현재 main과 같다고 가정할 수 없다. 따라서 idle 이중 확인만으로 무손실 진행 작업 보호가 완료됐다고 표현하지 않는다.
+모든 target은 host-wide global lock 하나를 공유해 Docker daemon mutation이 겹치지 않게 한다. 외부 기여 코드나 신뢰 수준이 다른 프로젝트는 같은 Docker socket 사용자로 합치지 말고 별도 VM/host 또는 별도 Docker daemon으로 분리한다. Docker socket 접근은 사실상 host 관리자 권한에 준하는 trust boundary로 취급한다.
 
-`inflight_urls=0`, `backlog_size=0`은 완료된 결과가 모두 사용자에게 전달됐다는 뜻도 아니다. 완료 job과 결과는 현재 프로세스 메모리에 남고 재시작하면 사라지므로, 분석이 막 끝났지만 FE가 아직 마지막 poll을 하지 않은 경우 결과 조회가 실패할 수 있다. 활성화 전 drain/ack 또는 결과 영속화 정책에서 이 구간도 처리해야 한다.
+## 활성화 절차와 승인 경계
 
-실제 `apply` 전에 다음 중 하나를 선택해야 한다.
+코드가 준비됐다는 것과 실제 배포가 활성화됐다는 것은 다르다. 다음 순서를 지킨다.
 
-1. 유지보수 창 동안 edge 또는 FE에서 신규 접수를 차단하고 차단 상태를 별도로 확인한다.
-2. 별도 코드 작업과 승인을 거쳐 admission-drain 기능을 구현한다.
-3. 개발계의 잔여 경쟁과 요청 실패 가능성을 명시적으로 수용하고 best-effort idle 검사만 사용한다.
+1. 이 변경을 review/merge한다.
+2. GitHub environment 보호 규칙과 관리자 우회 비활성화, 위의 protected-main/CODEOWNERS 정책을 감사하고 marker를 설정한다. Backend CI/deployment workflow immutable ID, environment immutable ID, 현재 reviewer User immutable ID 목록을 기록한다.
+3. Merge 뒤 새 `push/main` CI를 성공시킨다. 과거 artifact는 schema·attestation 계약이 달라 사용하지 않는다.
+4. 서버 조회도 사전 승인받은 뒤 실제 Docker binary/context/socket, Compose project/file dependency, service, env path, 현재 image/source/image ID를 확인한다. 비밀값은 출력하지 않는다.
+5. 별도 승인으로 reviewed helper/config/flattened Compose, 0700 state·inbox·env parent·CLI config directories를 설치하고 Docker·Compose·gh binary 및 Compose SHA-256, reviewed backend CI/deployment workflow bytes SHA-256, GitHub immutable IDs/reviewer allowlist와 bootstrap identity/watermark를 기록한다. GitHub CLI credential은 대상 repository의 Actions/Contents read만 허용하고 Docker config에는 GHCR `read:packages` pull-only credential만 둔다. Helper 코드 자체는 검사 코드보다 먼저 Python이 읽는 root of trust이므로 reviewed 고정 복사본의 전체 ancestor를 root/helper 계정 소유·non-writable·no-symlink canonical 경로로 설치하고 launchd도 그 경로만 실행한다.
+6. 실제 `.env.home`에 충분히 긴 무작위 `DEEPCHECK_DEPLOYMENT_TOKEN`을 비밀로 넣는다.
+7. **현재 배포 image가 exact `durable-api-drain-v1`을 `/ready`로 증명하지 못하면**, `unavailable`을 포함해 controller bootstrap을 실패시킨다. 첫 전환은 edge maintenance 또는 별도 접수 차단 아래 수동으로 durable drain-capable image를 올린 뒤 initialize해야 한다. 구버전의 endpoint나 volatile drain을 helper가 내구적이라고 가정하지 않는다.
+8. `enabled=false` 상태에서 `initialize`를 한 번 실행해 현재 실행 image와 bootstrap을 대조하고 durable replay watermark를 만든다.
+9. Staging에서 정상 교체, drain 중 앱 재시작, target health 실패, 각 journal phase의 helper 강제 종료 뒤 `recover`를 fault-injection으로 검증한다.
+10. 검증 후에만 host config의 `enabled=true`를 적용한다.
 
-현재 helper는 1번 선택만 `external-maintenance`로 표현한다. 차단 기능 자체는 실행하지 않으며 운영자가 외부 차단을 확인해야 한다. 2번은 이 CD 브랜치의 소유 범위 밖이고, 3번은 보호 완료로 볼 수 없어 구현하지 않았다.
+이번 세션에서는 4~10을 실행하지 않았다. 특히 실제 env token 추가, helper 설치, current image bootstrap, 컨테이너 recreate는 모두 서버 변경이므로 정확한 대상과 영향에 대한 사용자 승인 뒤 별도 수행한다.
 
-이미지 override도 env 파일에 영속화하지 않는다. 배포 뒤 다른 사람이 기존 env만으로 Compose를 다시 실행하면 이전 이미지로 돌아갈 수 있다. 성공 digest를 저장할 비밀 없는 전용 상태 파일 또는 승인된 env의 해당 항목 수정 중 하나를 선택하기 전에는 자동 배포를 활성화하지 않는다.
+## 사용 형태
 
-Helper는 Python 예외와 `KeyboardInterrupt`가 발생하면 mutation 시작 이후 rollback을 시도하지만, `SIGKILL`, 호스트 전원 장애, 프로세스 강제 종료를 넘는 durable journal과 시작 시 reconcile은 구현하지 않았다. 대상 컨테이너 기동 뒤 프로세스가 사라지면 자동 복구를 보장할 수 없다.
-
-### 활성화 금지 조건
-
-다음 다섯 항목이 구현되고 별도로 검증되기 전에는 예제의 `enabled=false`를 바꾸거나 workflow를 서버 실행에 연결하지 않는다.
-
-1. Request 소비자가 GitHub의 exact workflow run·attempt, 성공 결론, `conan-development` deployment/environment gate와 artifact 원본을 독립 인증한다.
-2. Helper가 신규 접수 차단 상태를 관측하거나, 애플리케이션의 admission-drain이 마지막 idle 확인부터 stop까지 새 작업을 원자적으로 막는다.
-3. Mutation 전 durable journal을 쓰고, `SIGTERM`·호스트 장애·재시작 뒤 이전/대상 image 상태를 판별해 안전하게 reconcile한다.
-4. 성공한 digest와 마지막 적용 run ID·attempt를 Compose 재생성에도 유지되는 비밀 없는 신뢰 상태에 원자적으로 영속화하고, 재사용·구버전 요청을 기본 거부하되 명시적 rollback과 구분한다.
-5. 신뢰 wrapper가 단 하나의 고정 config와 lock 경로만 허용해 같은 project/service가 다른 lock 파일로 동시에 실행되지 않게 한다.
-
-## 활성화 전 사용자 결정과 승인
-
-위 활성화 금지 조건의 설계가 먼저 정해져야 실제 연결을 구현할 수 있다.
-
-1. 첫 단계 접근 방식은 수동 helper, forced-command 원격 접근, 격리 self-hosted runner 중 무엇인가.
-2. `conan-development` required reviewer는 누구인가. prevent self-review와 관리자 우회 금지를 적용할 수 있는가.
-3. 유지보수 창의 신규 접수를 어디에서 어떻게 차단하고 해제를 확인할 것인가.
-4. 승인된 제한 조회로 실제 Docker context, Compose 파일, project, env 파일, 서비스명과 현재 image ID를 다시 확인해도 되는가. 환경 파일 내용과 키는 출력하지 않는다.
-5. 새 배포 주체의 GHCR pull 인증은 필요한가. 필요하면 어떤 최소 권한 credential을 어디에 보관할 것인가.
-6. 성공 digest를 어떤 비밀 없는 상태 파일에 영속화할 것인가. 기존 env 파일의 전체 덮어쓰기는 허용하지 않는다.
-7. idle 검사 횟수·간격, 기동 health timeout, stop·개별 명령 timeout과 자동 rollback 기준은 무엇인가.
-8. Artifact attestation을 사용 가능한 plan과 검증 도구가 있는가.
-9. 자막 기본 `off` 브랜치가 main에 병합된 뒤 배포할 것인가. 기존 서버 env에 `manual`이 명시돼 있으면 코드 기본값보다 우선하므로 해당 한 항목의 확인·전환을 별도 승인할 것인가.
-10. 유지보수 차단 해제 뒤 새 요청 수락과 결과 poll을 누가 확인할 것인가. Rollback의 구버전 `/ready`에는 `accepting_jobs`가 없을 수 있어 helper만으로 해제 후 수락을 증명하지 않는다.
-
-이 결정이 팀 논의를 필요로 하면 docs 담당자가 `project/project-plan.md` 미결표에 발의자·담당자·상태·원문 링크를 등록해야 한다. 이 CD 런북이나 평가 기록만으로 제품·운영 결정을 완료 처리하지 않는다.
-
-## 승인 뒤의 사용 형태
-
-다음 `plan` 명령은 형식 예시이며 현재 서버에서 실행하라는 지시가 아니다. Helper와 호스트 설정을 신뢰 경로에 설치하고 GitHub 기록과 함께 확인한 environment-bound request artifact를 받은 뒤 실제 절대 경로로만 실행한다.
+`plan`은 JSON 계약만 표시하고 외부 명령을 전혀 실행하지 않는다. Attestation과 GitHub API 승인 검증은 `apply`에서 수행하므로 plan 출력의 `artifact_attestations_verified`와 `github_environment_approval_verified`는 false다.
 
 ```bash
-python /approved/trusted-helper/scripts/dev_deploy.py \
+/approved/runtime/python3 -I /approved/trusted-helper/scripts/dev_deploy.py \
   --config /approved/config/conan-development.json \
-  --request /approved/requests/conan-development-request.json \
-  plan
+  plan \
+  --request /approved/inbox/conan-development-request.json \
+  --request-attestation /approved/inbox/conan-development-request.sigstore.json \
+  --release /approved/inbox/conan-release.json \
+  --release-attestation /approved/inbox/conan-release.sigstore.json \
+  --image-attestation /approved/inbox/conan-image.sigstore.json
 ```
 
-아래는 후속 원본 인증·drain·journal·영속 상태 구현이 끝난 뒤의 목표 형태다. 현재 브랜치에서는 `request_authentication=unconfigured`이므로 명령이 Docker 호출 전에 실패하며, 별도 승인만으로 실행할 수 없다.
+최초 durable state 초기화(`enabled=false`에서도 명시적 명령으로 가능):
 
 ```bash
-python /approved/trusted-helper/scripts/dev_deploy.py \
+/approved/runtime/python3 -I /approved/trusted-helper/scripts/dev_deploy.py \
   --config /approved/config/conan-development.json \
-  --request /approved/requests/conan-development-request.json \
-  apply --confirm-maintenance-window
+  initialize
 ```
 
-GitHub workflow가 이 명령을 자동 호출하는 연결은 아직 없다. 서버용 신뢰 helper는 PR 작업 트리에서 직접 실행하지 않고 검토한 commit의 파일을 별도 설치한다.
+검증과 배포:
 
-## 모의 검증
-
-2026-09-13 독립 복사본에서 다음 CD 전용 테스트를 실행했다.
-
-```text
-python -m pytest -q tests/test_release_manifest.py tests/test_dev_deploy.py tests/test_deployment_workflow.py
-40 passed
+```bash
+/approved/runtime/python3 -I /approved/trusted-helper/scripts/dev_deploy.py \
+  --config /approved/config/conan-development.json \
+  apply \
+  --request /approved/inbox/conan-development-request.json \
+  --request-attestation /approved/inbox/conan-development-request.sigstore.json \
+  --release /approved/inbox/conan-release.json \
+  --release-attestation /approved/inbox/conan-release.sigstore.json \
+  --image-attestation /approved/inbox/conan-image.sigstore.json
 ```
 
-가짜 명령 실행기로 다음을 확인했다.
+중단 transaction 수렴:
 
-- tag·다른 저장소·명령 삽입 형식 거부
-- 성공한 `push/main` backend CI run과 metadata의 SHA·run·digest 일치 검증
-- PR·수동 CI run과 변조된 deployment request 거부. 수동 CI metadata를 main push로 기록하지 않음
-- busy 상태에서 stop 이전 중단
-- 같은 image ID의 no-op
-- stop timeout 또는 target health 실패 시 이전 image 복구와 복구 실패의 별도 오류
-- Compose가 `CONAN_IMAGE`를 정확히 해석하지 않으면 stop 전 중단
-- 승인 endpoint와 다른 Docker context, 호출자 Docker 설정 상속을 거부
-- lock과 env/config/request 경로 충돌 및 lock symlink를 데이터 변경 없이 거부
-- GitHub artifact 원본 인증이 미구현인 동안 CLI `apply`를 강제 차단
-- Actions concurrency와 호스트 lock의 이중 동시 실행 방지
-- 위험한 Compose 명령과 `DEEPCHECK_*` override 부재
-- workflow가 GitHub-hosted runner와 고정 action SHA만 사용하고 서버 명령을 포함하지 않음
+```bash
+/approved/runtime/python3 -I /approved/trusted-helper/scripts/dev_deploy.py \
+  --config /approved/config/conan-development.json \
+  recover
+```
 
-Workflow 시험은 YAML parser와 정적 계약 검사이며 actionlint나 실제 Actions 재실행 semantics 검증은 아니다. 전체 시험은 실제 Docker·Compose·GHCR pull·Actions 실행·environment 승인·맥미니·Cloudflare·Vercel·외부 API·실영상 검증이 아니다. 실제 서버의 경로·네트워크·볼륨·환경·진행 작업과 복구 성공도 확인하지 않았다.
+`enabled=false`는 새 `apply` mutation만 막는다. 초기 검증을 위한 `initialize`와 이미 시작된 transaction을 안전한 terminal 상태로 돌려놓는 `recover`는 비활성 상태에서도 허용한다. 사고 중 `enabled=false`로 바꿨다는 이유만으로 필요한 복구까지 멈추지 않는다.
+
+서버용 helper는 PR worktree에서 직접 실행하지 않고 review한 commit의 고정 복사본으로 설치한다. Helper와 import되는 `scripts/`는 자기 코드가 실행되기 전에 스스로를 검증할 수 없으므로 OS 설치 권한이 root of trust다. 고정 Python runtime과 helper tree를 canonical 절대 경로에 두고, 루트부터 모든 ancestor가 symlink 없이 root 소유·group/world non-writable인지 감사한다. 실행은 고정 interpreter의 isolated mode(`-I`)로 하며 ambient `PYTHONPATH`·user site를 신뢰하지 않는다.
+
+향후 완전 자동화를 추가한다면 이 exact interpreter/helper/config만 호출하고 환경을 비우는 전용 launchd service 또는 forced command를 별도 승인·검토한다. GitHub workflow가 자유로운 shell을 호스트에서 실행하게 만들지 않는다.
+
+## 남은 가용성 한계
+
+Drain은 신규 접수를 막고 queued/running 분석이 끝날 때까지 기다린다. 그러나 완료 결과는 현재 프로세스 메모리에만 있으며, FE가 마지막 poll로 결과를 받았다는 acknowledgment는 서버가 알지 못한다. 따라서 **모든 교체에서** 작업 수가 0이어도 방금 끝난 미조회 결과는 재시작 때 사라질 수 있다.
+
+첫 활성화뿐 아니라 이 위험을 수용하지 않는 동안의 각 배포는 사용자가 없는 유지보수 창에서 수행한다. 완전 자동 CD를 켜기 전 job/result 영속 저장소 또는 결과 acknowledgment/유예 정책을 구현해야 한다. 현재 구현을 “완전 무손실 배포”라고 표현하지 않는다.
+
+## 검증 범위
+
+로컬 검증은 fake Docker/GitHub runner와 filesystem/ACL fault injection을 사용했다. 격리 가상환경에서 최종 전체 `pytest -q` 결과는 **687 passed, 2 warnings (14.07초)**였고, Python `py_compile`, workflow/Compose YAML 및 host-config JSON 파싱, `git diff --check`도 통과했다. 실제 수행한 명령과 한계는 `docs/worklog.md`에 기록한다. 다음은 로컬 테스트가 의미하지 않는 범위다.
+
+- 실제 GitHub Actions·environment approval·GHCR publish
+- 실제 `gh attestation verify`와 GitHub가 생성한 request/release/image bundle 호환성 및 OCI subject의 GHCR 조회
+- 맥미니 Docker/OrbStack·Compose·GHCR pull-only registry login
+- 실행 중 다른 서비스와의 자원 경합
+- Cloudflare/Vercel/실영상/외부 provider E2E
+
+이 항목은 활성화 단계에서 별도 증거로 남긴다.

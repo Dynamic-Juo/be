@@ -8,7 +8,13 @@
 새 기기에서 이어서 작업할 때는 [현재 상태와 읽는 순서](docs/handoff.md)부터 확인하세요.
 [프롬프트·평가 결과](docs/prompt-evaluation.md)와 [M4 맥미니·OrbStack 배포 절차](docs/deployment-mac-mini.md)를 별도로 관리합니다.
 
-2026-09-12 배포 준비: `fix/midpoint-hardening`의 API·Swagger 설명과
+2026-09-13 보안 CI/CD 준비: GitHub-hosted ARM64 CI가 테스트한 image를 digest로 게시·서명하고,
+보호된 environment 승인 뒤 맥미니의 대상 고정 helper가 한 서비스만 교체하는 코드를 구현했습니다.
+범용 self-hosted runner는 설치하지 않으며, 현재 설정은 `enabled=false`라 GitHub와 맥미니에는
+아직 활성화되지 않았습니다. 로컬 통합 검증은 **687 passed, 2 warnings**입니다. 구조·신뢰 경계와
+활성화 전 필수 조건은 [개발계 CI/CD 보안 런북](docs/development-cd-runbook.md)을 따릅니다.
+
+이전 2026-09-12 배포 준비: `fix/midpoint-hardening`의 API·Swagger 설명과
 [FE 연동 인수인계](docs/frontend-integration.md), [요청·응답·오류 API 계약](docs/api-reference.md)을 보완했습니다.
 자막 기본값을 기존 `manual`로 복원한 뒤 로컬 검증은 **329 passed, 2 warnings**입니다. 모의 모델·제공자와
 Python 네트워크 차단 fixture를 사용한 결과이며 실제 영상·외부 API·컨테이너 검증은 아닙니다.
@@ -486,6 +492,9 @@ ollama pull qwen2.5vl:7b
 
 ## 배포 시 주의
 
+- 앱 맥미니에 범용 GitHub self-hosted runner를 설치하지 않습니다. GitHub는 build/test/sign과
+  승인된 artifact 생성까지만 맡고, 실제 교체는 [고정 helper 절차](docs/development-cd-runbook.md)를
+  별도 활성화한 뒤 수행합니다. 기존 Docker 서비스와 실제 환경 파일을 임의로 재시작·덮어쓰지 않습니다.
 - torch/torchvision은 **CPU 전용 wheel index**로 설치합니다. 기본 PyPI 휠은 GPU가 없는
   호스트에도 CUDA 런타임(~2GB)을 끌고 옵니다. Dockerfile에 반영돼 있습니다.
 - uvicorn은 **단일 워커 프로세스**로 띄웁니다. job 상태를 프로세스 메모리에 보관하므로
