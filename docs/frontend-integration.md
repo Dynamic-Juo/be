@@ -6,10 +6,21 @@
 
 | 구분 | 알고 있는 사실 | 아직 확인하지 않은 것 |
 | --- | --- | --- |
-| 기존 개발계 배포 | main `472aff7` 이미지 기록, 사용자 로그인 후 루트 404 보고, 미인증 `/health`의 Access 로그인 이동을 브라우저에서 확인 | 서버 이미지 재조회, 로그인 후 health·Swagger와 실영상 검증 |
+| 기존 개발계 배포 | 승인된 서버 조회에서 `conan-be:472aff7` healthy, 내부 `/ready`의 진행·대기 작업 0건 확인 | 새 이미지 교체, 로그인 후 health·Swagger와 실영상 검증 |
 | Cloudflare Access | 마지막 기록은 소유자 이메일 한 개만 허용 | 팀원 이메일 추가, 실제 FE 브라우저의 로그인·쿠키·CORS |
 | 작업 복사본 | 보안·부분 실패·근거 검증·Swagger 설명을 보완한 미배포 수정안 | 변경 이미지 배포 및 실제 영상·DeepSeek/NAVER E2E |
-| Vercel 프론트 | 팀장님이 제작·배포할 예정 | 정확한 개발·운영 Origin과 저장소·프레임워크 |
+| Vercel 프론트 | `https://kimjeonil.vercel.app`, `Dynamic-Juo/fe` main `8c3bb9c`, React·Vite. 실 API 클라이언트는 미구현 | 조정준 팀장의 클라이언트 구현과 실제 연동 검수 |
+
+서버의 현재 CORS는 `http://localhost:3000`만 허용한다. Vercel Origin 추가와 새 이미지 교체는 제안한 상태이며 아직 실행하지 않았다. 프론트 코드·PR·Vercel 배포는 조정준 팀장이 담당한다.
+
+프론트에 전달할 공개 설정은 다음과 같다. Vite 빌드에 반영한 뒤 팀장님이 재배포해야 한다. 환경변수만 지정해도 미구현 클라이언트가 완성되는 것은 아니다.
+
+```dotenv
+VITE_API_BASE_URL=https://conan-api-dev.dotseven.cloud
+VITE_USE_MOCK=false
+```
+
+팀장님은 `src/api/realClient.ts`에 `POST /api/analyze` 접수와 `GET /api/jobs/{job_id}` 폴링을 구현한다. 인증 쿠키 전송, 인증 실패·비 JSON 응답 구분, 종료 상태·404의 폴링 중단, 429의 `Retry-After` 처리는 아래 절차와 API 계약을 따른다. 분석 POST를 자동 재시도하지 않는다.
 
 수정안 기본 자막 정책을 기존 `manual`로 복원했다. 사용할 업로더 등록 CC가 없으면 STT로 전환하며 자동 생성 CC와 영상 속 글자의 OCR은 포함하지 않는다. 등록 CC의 정확성·전문을 보증하지 않는다. 기획 본문의 STT 방침과 팀장님의 [수동 CC 활용 가능 의견](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3958898775)은 문서 합의로 정리하되, 이번 보안 수정에 기본 정책 전환을 섞지 않고 기존 서버 환경값을 보존한다. 상세는 docs 공유 브랜치의 [백엔드 인수인계](https://github.com/Dynamic-Juo/docs/blob/docs/midpoint-review/operations/backend-handoff.md)를 함께 확인한다.
 
@@ -17,12 +28,12 @@
 
 ## 팀장님에게 받을 정보
 
-연결 설정을 시작하려면 다음 두 가지가 필요하다.
+확인된 주소와 남은 확인 사항은 다음과 같다.
 
-1. 고정된 Vercel 개발 Origin. 예: `https://프로젝트.vercel.app` 또는 확정한 custom domain. 프로토콜·호스트·필요한 포트까지이며 경로·마지막 슬래시는 제외한다.
-2. 개발계 Access에 허용할 팀원 이메일 목록.
+1. 고정 Vercel Origin은 사용자 제공 `https://kimjeonil.vercel.app`다. 경로·마지막 슬래시는 제외한다.
+2. 개발계 Access에 허용할 팀원 이메일 목록은 아직 필요하다.
 
-이어 받을 정보는 프론트 저장소·프레임워크, 필요한 로컬 개발 Origin(예: `http://localhost:3000`), 운영 Origin이다. 임의 Preview 주소 전체나 `*.vercel.app`을 일괄 허용하지 않는다. Preview가 필요하면 고정 테스트 도메인 또는 승인한 개별 Origin으로 범위를 정한다.
+추가 로컬 개발 Origin과 향후 운영 Origin은 별도로 확인한다. 임의 Preview 주소 전체나 `*.vercel.app`을 일괄 허용하지 않는다. Preview가 필요하면 고정 테스트 도메인 또는 승인한 개별 Origin으로 범위를 정한다.
 
 ## 팀장님에게 전달할 주소
 

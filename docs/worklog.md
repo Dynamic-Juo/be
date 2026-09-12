@@ -4,6 +4,15 @@
 
 규칙은 [AGENTS.md](../AGENTS.md#작업-기록) 참고.
 
+## 2026-09-12 — Vercel 주소 확보와 승인된 서버 조회
+
+- 프론트 Origin은 사용자 제공 `https://kimjeonil.vercel.app`다. 브라우저에서 Conan AI 첫 화면을 확인했으며 분석 버튼을 제출하지 않았다.
+- 사용자가 승인한 Docker 조회 4개만 실행했다. 컨텍스트 orbstack, Conan은 이전 `conan-be:472aff7` 이미지로 healthy·재시작 0·OOM false였다. 이미지 ID는 기존 기록과 같은 `sha256:4ecdd77473ce42a9dd0799e46aafb263358dcc34a22d3d88e04c3f44c5d6aed9`이며 관리 경로는 `/Users/dotseven/srv/ConanAi/be`다. 순간 자원은 CPU 0.21%, 메모리 55.71MiB/3GiB였고 분석 부하 측정은 아니다. 기존 다른 7개 서비스도 실행 중이었다. 첫 Docker 소켓 접근은 도구 권한 제한으로 실패해 승인 범위 그대로 권한을 올려 조회했다.
+- 공개 `Dynamic-Juo/fe`를 작업 폴더에 복사해 main `8c3bb9c`를 확인했다. `src/api/realClient.ts`의 실 접수·폴링은 미구현이며 현재 배포 번들에도 같은 오류 문구가 있다. API URL 환경변수 이름은 `VITE_API_BASE_URL`이다. 프론트 코드와 원격 배포는 변경하지 않았다.
+- 추가 서버 조회를 설명하고 승인받아 실행했다. 서버 HEAD `472aff7`, Compose v5.1.2, `config --quiet` 성공을 확인했다. 필터한 설정은 기존 이미지, CORS `http://localhost:3000`, 외부 네트워크 `conan-staging-ingress`와 별칭 `conan-api`, 볼륨 `conan-staging_model-cache`다. 환경 전체와 키는 출력하지 않았다. 내부 `/ready`는 ready이며 작업·진행 URL·대기열은 모두 0건이었다.
+- 서버 `.env.example` 삭제 변경을 발견해 보존하고 서버 `git pull`은 하지 않는다. 새 override 파일에 고정 이미지와 Vercel CORS만 지정하고 Conan 하나를 교체하는 범위의 승인을 요청했다. 아직 파일 생성·이미지 pull·교체·Access 변경은 실행하지 않았다.
+- 사용자는 프론트 구현을 조정준 팀장이 맡는다고 답했다. FE 구현·PR·배포는 진행하지 않는다. 개발계 보호를 해제하거나 서비스 토큰을 프론트에 넣는 방식도 사용하지 않는다.
+
 ## 2026-09-12 — 기존 동작을 보존한 백엔드 배포 준비
 
 - 사용자가 백엔드 배포 반영·정리를 요청했다. docs PR #7 답글은 사용자가 다음 날 마무리하며 새 docs PR은 만들지 않는다. 서버 조회·변경은 명령별 사전 승인 원칙을 유지한다.

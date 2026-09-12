@@ -1,5 +1,14 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-12 Vercel 연결 점검
+
+- 사용자가 `https://kimjeonil.vercel.app`를 프론트 주소로 제공하고 기존에 제시한 Docker 조회 명령 4개를 승인했다. 컨텍스트는 orbstack이며 기존 `conan-staging-deepcheck-api-1`은 `conan-be:472aff7`, healthy·재시작 0·OOM false다. Compose 경로는 `/Users/dotseven/srv/ConanAi/be/compose.home.yml`이다. 기존 다른 7개 서비스도 실행 중이었다. 서버 파일·환경값·컨테이너·Cloudflare 설정은 변경하지 않았다.
+- BE PR #2는 main `38bd162`로 병합됐고 ARM64 CI·GHCR 게시가 성공했지만 맥미니는 아직 이전 이미지를 사용한다. 고정 digest는 docs 공유 브랜치의 인수인계와 직전 배포 인수 기록을 따른다.
+- 프론트 저장소 `Dynamic-Juo/fe` main `8c3bb9c`의 `src/api/realClient.ts`는 접수·폴링 모두 미구현 오류를 던진다. 공개 배포 JS에서도 같은 오류 문구를 확인했다. 프론트 Origin만 CORS에 추가해도 연결되지 않는다. 실제 분석 요청은 제출하지 않았다.
+- 추가 승인 후 서버 Git·Compose 제한 조회와 내부 `/ready`를 확인했다. 서버 HEAD는 `472aff7`, Compose v5.1.2이며 기존 설정 검증은 통과했다. CORS는 `http://localhost:3000`만 허용한다. 진행·대기 작업은 0건이었다. `.env.example` 삭제 변경은 사용자 변경으로 보존하며 서버에서 `git pull`하지 않는다.
+- 외부 네트워크 `conan-staging-ingress`, 별칭 `conan-api`, 캐시 볼륨 `conan-staging_model-cache`를 확인했다. 환경 파일 전체와 키는 출력하지 않았다. 별도 `compose.vercel.yml`로 새 이미지와 Vercel CORS만 지정하는 교체안을 제시했으며 실제 교체 승인은 대기 중이다. 파일 생성·이미지 pull·재시작·Access 변경은 하지 않았다.
+- 프론트 실 API 구현은 사용자 결정에 따라 조정준 팀장이 담당한다. FE 코드·PR·Vercel 배포는 수정하지 않는다. 전달할 설정과 검수 항목은 [FE 연동 안내](frontend-integration.md)를 따른다.
+
 기준일: 2026-09-12. `fix/midpoint-hardening`의 배포 준비 기록이다. 사용자가 백엔드 반영·정리를 요청했으며 docs PR #7 댓글은 직접 다음 날 마무리한다. 문서는 기존 브랜치에만 공유하고 새 docs PR을 만들지 않는다. 서버 명령은 조회도 대상·영향을 설명하고 사전 승인받는다. 이 문서 작성 시점에는 서버를 교체하지 않았다.
 
 ## 2026-09-12 배포 준비와 검증 범위
@@ -35,7 +44,7 @@ CI는 네트워크 없는 테스트 이미지와 읽기 전용 test/main 전용 
 | docs | 팀 기획·결정·전체 평가. 변경 제안은 팀의 문서 운영 규칙을 따른다. |
 | be | 현재 구현·테스트·실행 문서. DeepSeek 주장 추출·판정, NAVER API HUB 뉴스·백과 검색이 이미 구현됐다. |
 | playground | 백엔드를 시작하기 위해 만든 초기 실험 저장소. 현행 API의 기준이 아니다. |
-| fe | 아직 저장소·배포 주소 미확인. 조정준 팀장이 와이어프레임을 기준으로 만들고 Vercel에 배포할 예정이다. |
+| fe | `Dynamic-Juo/fe`, `https://kimjeonil.vercel.app`. 조정준 팀장이 실 API 연결과 Vercel 배포를 담당한다. 확인한 main `8c3bb9c`의 실 API 클라이언트는 미구현이다. |
 
 2026-09-12 배포 준비 시작 때 fetch로 확인한 원격 main은 `472aff7201a834102d6ec2c27096dabb22a5ae4f`다. `fix/prompt-handoff`는 PR #1로 main에 병합됐으며 DeepSeek·NAVER·배포 구성도 main에 포함된다. 과거 미공유·병합 대기 기록은 worklog에 당시 이력으로 보존한다. 실제 후속 병합 여부는 GitHub PR과 원격 커밋으로 확인한다.
 
