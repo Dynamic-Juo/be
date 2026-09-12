@@ -4,5 +4,8 @@ FROM ${APP_IMAGE}
 COPY requirements-dev.txt /tmp/requirements-dev.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
 COPY tests /app/tests
+COPY scripts /app/scripts
+COPY deploy /app/deploy
+COPY .github/workflows /app/.github/workflows
 COPY docker-compose.yml /app/docker-compose.yml
 CMD ["python", "-m", "pytest", "-q", "/app/tests"]
