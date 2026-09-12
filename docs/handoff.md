@@ -1,5 +1,15 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-13 통합 인수: 맥북에서 이어갈 때
+
+- 현재 공유 경로는 `release/dev-integration`, [BE PR #3](https://github.com/Dynamic-Juo/be/pull/3)이다. CI/CD `43eae84`, 자막 `1b58097`, 소스 감사·파이프라인 `6c795ab`을 통합했다. 아래 개별 세션의 미병합 기록은 당시 이력이며 이 통합 기록을 우선한다.
+- 문서 충돌 4곳은 양쪽 이력을 보존했다. 새 CD Compose의 자막 기본값이 manual이던 누락도 off로 수정했다. 실제 서버 환경값은 변경하지 않았다.
+- 통합 `e306349`의 로컬 모의 회귀는 691 passed, 2 warnings다. 실제 [첫 Actions](https://github.com/Dynamic-Juo/be/actions/runs/34726142851)는 ARM64 빌드 성공 후 테스트 이미지의 scripts 누락으로 실패했다. `7ae042a`에서 scripts·deploy·workflow를 테스트 이미지에 포함했고 [재실행](https://github.com/Dynamic-Juo/be/actions/runs/34726301566)의 ARM64 빌드·격리 테스트가 성공했다. 실제 영상 분석이나 API 품질 검증이 아니다.
+- docs는 `docs/midpoint-review`의 `1b0f6bf`에 통합 상태와 리뷰 후속 추적을 반영했다. docs main·PR #7·댓글은 변경하지 않았다. 원문 근거 수집, 전체 AI 생성 모델, 공개 API 보호와 강제 시간 제한 등의 감사 미흡 사항은 여전히 남아 있다.
+- 다음 단계는 PR 최종 검토·병합 후 main의 이미지 게시·서명 확인이다. Environment 승인자·보호 설정과 host helper 설치·최초 migration은 미실행이며 별도 승인이 필요하다. GitHub에서 맥미니를 자동 호출하는 구성은 없다.
+- 이번 통합에서는 서버 명령·실영상 요청을 실행하지 않았다. 사용자에게 제한된 서버 사전 조회와 기존 YouTube `cYRkZmBuDqI`를 자막 off로 1회 분석하는 범위의 승인을 요청한 상태다. 승인이 없으면 실행하지 않는다. 서버 `.env*`, 키, 다른 서비스와 Cloudflare 설정을 보존한다.
+- 맥북의 개발 작업 복사본에서 이 브랜치와 PR Checks를 확인한다. 서버 경로에서 `git pull`하거나 개발 브랜치 체크아웃으로 배포를 대신하지 않는다. FE 구현·Vercel 배포는 팀장 담당이다.
+
 ## 2026-09-13 보안 CI/CD 구현 세션
 
 - 작업 위치는 별도 worktree의 `ci/secure-deployment-controller`이며 기준 commit은 `26a9352` (`origin/ci/dev-deployment`)다. 최신 공유 commit과 원격 반영 여부는 해당 브랜치 자체를 확인한다.
