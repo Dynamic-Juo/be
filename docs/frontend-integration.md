@@ -22,7 +22,7 @@ VITE_USE_MOCK=false
 
 팀장님은 `src/api/realClient.ts`에 `POST /api/analyze` 접수와 `GET /api/jobs/{job_id}` 폴링을 구현한다. 인증 쿠키 전송, 인증 실패·비 JSON 응답 구분, 종료 상태·404의 폴링 중단, 429의 `Retry-After` 처리는 아래 절차와 API 계약을 따른다. 분석 POST를 자동 재시도하지 않는다.
 
-수정안 기본 자막 정책을 기존 `manual`로 복원했다. 사용할 업로더 등록 CC가 없으면 STT로 전환하며 자동 생성 CC와 영상 속 글자의 OCR은 포함하지 않는다. 등록 CC의 정확성·전문을 보증하지 않는다. 기획 본문의 STT 방침과 팀장님의 [수동 CC 활용 가능 의견](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3958898775)은 문서 합의로 정리하되, 이번 보안 수정에 기본 정책 전환을 섞지 않고 기존 서버 환경값을 보존한다. 상세는 docs 공유 브랜치의 [백엔드 인수인계](https://github.com/Dynamic-Juo/docs/blob/docs/midpoint-review/operations/backend-handoff.md)를 함께 확인한다.
+2026-09-13 사용자 지시에 따라 기획 결정권자는 조정준 팀장이며 자막 기본값은 `off`(미사용·STT)로 맞춘다. `manual`은 등록 수동 CC 우선, `any`는 자동 CC도 허용하는 선택 옵션으로 유지한다. 사용할 CC가 없으면 STT로 전환하며 영상 속 글자의 OCR은 포함하지 않는다. 등록 CC의 정확성·전문을 보증하지 않는다. 과거 manual 기본 유지 기록은 이번 지시로 대체됐다. 이 문서는 작업 브랜치 기준이며 실제 서버 환경값과 이미지는 바꾸지 않았다. FE에서 자막 미사용을 명시하려면 요청에 `caption_policy: "off"`를 넣는다. 진행 중 동일 URL은 옵션이 달라도 먼저 접수된 작업을 재사용하므로 옵션 비교는 기존 작업 종료 후 수행한다.
 
 일반 사용자 공개가 목표지만 지금은 팀 개발계다. 공개 MVP의 로그인·회원가입 없음과 현재 개발계 Access 이메일 인증을 구분한다. 공개 전 남용 방지·결과 접근·실행 제한은 별도 준비와 승인이 필요하다.
 
