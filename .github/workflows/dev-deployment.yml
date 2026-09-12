@@ -1,0 +1,179 @@
+name: Development deployment request
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Validate only, or create an environment-bound request artifact
+        required: true
+        type: choice
+        default: validate
+        options:
+          - validate
+          - approve
+      ci_run_id:
+        description: Successful backend CI run ID from a main push
+        required: true
+        type: string
+      ci_run_attempt:
+        description: Attempt number of the backend CI run
+        required: true
+        type: string
+        default: "1"
+      source_sha:
+        description: Full 40-character source commit SHA tested by that run
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: conan-development-deployment
+  cancel-in-progress: false
+
+jobs:
+  verify-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      verified-release-artifact: ${{ steps.verified-release-artifact.outputs.name }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require an exact main dispatch
+        env:
+          REQUEST_REF: ${{ github.ref }}
+        run: |
+          set -eu
+          if [ "$REQUEST_REF" != "refs/heads/main" ]; then
+            echo "::error::Development requests must be dispatched from main."
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate request identifiers
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ inputs.ci_run_attempt }}
+        run: |
+          python scripts/release_manifest.py validate-identifiers \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$SOURCE_SHA" \
+            --ci-run-id "$CI_RUN_ID" \
+            --ci-run-attempt "$CI_RUN_ATTEMPT"
+      - name: Verify the successful main push run
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ inputs.ci_run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          curl --fail --silent --show-error --location \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output "$RUNNER_TEMP/ci-run.json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID"
+          python scripts/release_manifest.py verify-run \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$SOURCE_SHA" \
+            --ci-run-id "$CI_RUN_ID" \
+            --ci-run-attempt "$CI_RUN_ATTEMPT" \
+            --run-record "$RUNNER_TEMP/ci-run.json"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: conan-release-${{ inputs.source_sha }}-${{ inputs.ci_run_attempt }}
+          path: verified-release
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.ci_run_id }}
+      - name: Verify immutable release metadata
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ inputs.ci_run_attempt }}
+        run: |
+          python scripts/release_manifest.py verify \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$SOURCE_SHA" \
+            --ci-run-id "$CI_RUN_ID" \
+            --ci-run-attempt "$CI_RUN_ATTEMPT" \
+            --manifest verified-release/conan-release.json
+      - name: Record verified release artifact identity
+        id: verified-release-artifact
+        run: echo "name=verified-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.verified-release-artifact.outputs.name }}
+          path: verified-release/conan-release.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: Fail closed until approval automation is enabled
+        if: ${{ inputs.action == 'approve' }}
+        env:
+          DEPLOY_ENABLED: ${{ vars.CONAN_DEV_DEPLOY_ENABLED }}
+        run: |
+          set -eu
+          if [ "$DEPLOY_ENABLED" != "true" ]; then
+            echo "::error::Set CONAN_DEV_DEPLOY_ENABLED only after the protected environment is configured."
+            exit 1
+          fi
+      - name: Record validation scope
+        run: |
+          echo "The release metadata was validated. No server was contacted and nothing was deployed." >> "$GITHUB_STEP_SUMMARY"
+
+  approve-development:
+    if: ${{ inputs.action == 'approve' }}
+    needs: verify-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: conan-development
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require the environment protection audit marker
+        env:
+          ENVIRONMENT_CONFIGURED: ${{ vars.CONAN_DEV_ENVIRONMENT_CONFIGURED }}
+        run: |
+          set -eu
+          if [ "$ENVIRONMENT_CONFIGURED" != "true" ]; then
+            echo "::error::Set the marker only after required reviewers and the main-only branch rule are audited."
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.verify-release.outputs.verified-release-artifact }}
+          path: gated-request
+      - name: Create the environment-bound request envelope
+        env:
+          DISPATCH_ACTOR: ${{ github.actor }}
+        run: |
+          python scripts/release_manifest.py create-request \
+            --repository "$GITHUB_REPOSITORY" \
+            --environment conan-development \
+            --manifest gated-request/conan-release.json \
+            --request-run-id "$GITHUB_RUN_ID" \
+            --request-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --request-sha "$GITHUB_SHA" \
+            --dispatch-actor "$DISPATCH_ACTOR" \
+            --output gated-request/conan-development-request.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: environment-bound-conan-development-${{ inputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: gated-request/conan-development-request.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Record approval boundary
+        run: |
+          echo "An environment-bound request artifact was created. It does not prove protection rules or identify a reviewer; this workflow has no server access and did not deploy it." >> "$GITHUB_STEP_SUMMARY"

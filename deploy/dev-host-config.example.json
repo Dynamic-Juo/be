@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "repository": "Dynamic-Juo/be",
+  "request_authentication": "unconfigured",
+  "docker_binary": "/absolute/path/to/reviewed-docker-binary",
+  "docker_config_dir": "/absolute/path/to/owner-only-docker-config",
+  "docker_context": "replace-with-approved-context",
+  "docker_endpoint": "unix:///absolute/path/to/approved-docker.sock",
+  "project": "replace-with-approved-project",
+  "compose_file": "/absolute/path/to/approved-compose.yml",
+  "env_file": "/absolute/path/to/existing-environment-file",
+  "service": "replace-with-approved-service",
+  "lock_file": "/absolute/path/to/conan-development-deploy.lock",
+  "admission_control": "unconfigured",
+  "idle_checks": 3,
+  "idle_interval_seconds": 5,
+  "health_timeout_seconds": 180,
+  "health_interval_seconds": 3,
+  "stop_timeout_seconds": 660,
+  "command_timeout_seconds": 1200
+}
