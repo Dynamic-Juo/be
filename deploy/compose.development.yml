@@ -1,0 +1,69 @@
+# CI/CD host controller 전용 flattened Compose 계약이다.
+# include/extends/build/host port를 사용하지 않고 검증된 digest만 받는다.
+name: conan-development
+
+services:
+  deepcheck-api:
+    image: ${CONAN_IMAGE:?immutable image digest is required}
+    platform: linux/arm64
+    restart: unless-stopped
+    env_file:
+      - path: ${CONAN_ENV_FILE:?absolute environment file is required}
+        required: true
+    environment:
+      DEEPCHECK_WORKERS: "${DEEPCHECK_WORKERS:-1}"
+      DEEPCHECK_CLAIM_WORKERS: "${DEEPCHECK_CLAIM_WORKERS:-3}"
+      DEEPCHECK_LOG_LEVEL: "${DEEPCHECK_LOG_LEVEL:-INFO}"
+      DEEPCHECK_LOG_FORMAT: json
+      DEEPCHECK_CORS_ORIGINS: ${DEEPCHECK_CORS_ORIGINS:?explicit CORS origins are required}
+      DEEPCHECK_VLM_MODEL: "${DEEPCHECK_VLM_MODEL:-}"
+      DEEPCHECK_CAPTION_POLICY: "${DEEPCHECK_CAPTION_POLICY:-manual}"
+      DEEPCHECK_GOOGLE_FACTCHECK_API_KEY: "${DEEPCHECK_GOOGLE_FACTCHECK_API_KEY:-}"
+      DEEPCHECK_MAX_CLAIMS: "${DEEPCHECK_MAX_CLAIMS:-0}"
+      DEEPCHECK_MAX_VIDEO_SEC: "${DEEPCHECK_MAX_VIDEO_SEC:-180}"
+      DEEPCHECK_LLM_PROVIDER: "${DEEPCHECK_LLM_PROVIDER:-off}"
+      DEEPCHECK_LLM_MODEL: "${DEEPCHECK_LLM_MODEL:-deepseek-chat}"
+      DEEPCHECK_CLAIM_EXTRACTOR: "${DEEPCHECK_CLAIM_EXTRACTOR:-rule}"
+      DEEPCHECK_EVIDENCE_PROVIDERS: "${DEEPCHECK_EVIDENCE_PROVIDERS:-factcheck,naver_news,naver_encyc,wikipedia,wikipedia_en}"
+      HF_TOKEN: "${HF_TOKEN:-}"
+      DEEPCHECK_START_DRAINED: "${DEEPCHECK_START_DRAINED:-}"
+      DEEPCHECK_DEPLOYMENT_STATE_FILE: /var/lib/deepcheck/deployment-admission.json
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+    cpus: ${CONAN_CPUS:-2}
+    mem_limit: ${CONAN_MEMORY:-3g}
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      ingress:
+        aliases:
+          - ${CONAN_NETWORK_ALIAS:-conan-api}
+    volumes:
+      - model-cache:/root/.cache
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;urllib.request.urlopen('http://localhost:8000/health',timeout=5)
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  ingress:
+    external: true
+    name: ${CONAN_NETWORK:-conan-ingress}
+
+volumes:
+  model-cache:

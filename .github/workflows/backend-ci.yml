@@ -58,17 +58,18 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
+    outputs:
+      image-repository: ${{ steps.publish-image.outputs.repository }}
+      image-digest: ${{ steps.publish-image.outputs.digest }}
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ needs.test-build.outputs.tested-image-artifact }}
       - name: Publish the same tested image without rebuilding
+        id: publish-image
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -80,18 +81,117 @@ jobs:
           docker tag conan-ci:test "$image"
           docker push "$image"
           digest_ref="$(docker inspect --format '{{index .RepoDigests 0}}' "$image")"
-          python scripts/release_manifest.py create \
-            --repository "$GITHUB_REPOSITORY" \
-            --source-sha "$GITHUB_SHA" \
-            --ci-run-id "$GITHUB_RUN_ID" \
-            --ci-run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --event "$GITHUB_EVENT_NAME" \
-            --image "$digest_ref" \
-            --output conan-release.json
+          image_repository="${digest_ref%@*}"
+          image_digest="${digest_ref#*@}"
+          echo "repository=$image_repository" >> "$GITHUB_OUTPUT"
+          echo "digest=$image_digest" >> "$GITHUB_OUTPUT"
           printf 'Published immutable image: `%s`\n' "$digest_ref" >> "$GITHUB_STEP_SUMMARY"
+
+  attest-release:
+    needs: publish
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: write
+      artifact-metadata: write
+      id-token: write
+    steps:
+      - name: Create canonical release metadata from the pinned workflow
+        env:
+          IMAGE_REPOSITORY: ${{ needs.publish.outputs.image-repository }}
+          IMAGE_DIGEST: ${{ needs.publish.outputs.image-digest }}
+        run: |
+          set -euo pipefail
+          python -I - <<'PY'
+          from datetime import datetime, timezone
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          source_sha = os.environ["GITHUB_SHA"]
+          image_repository = os.environ["IMAGE_REPOSITORY"]
+          image_digest = os.environ["IMAGE_DIGEST"]
+          if os.environ["GITHUB_EVENT_NAME"] != "push" or os.environ["GITHUB_REF"] != "refs/heads/main":
+              raise SystemExit("release metadata is only valid for push/main")
+          if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
+              raise SystemExit("invalid repository")
+          if re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+              raise SystemExit("invalid source SHA")
+          if image_repository != f"ghcr.io/{repository.lower()}":
+              raise SystemExit("unexpected image repository")
+          if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
+              raise SystemExit("invalid image digest")
+
+          def positive(name):
+              raw = os.environ[name]
+              if re.fullmatch(r"[1-9][0-9]*", raw) is None:
+                  raise SystemExit(f"invalid {name}")
+              return int(raw)
+
+          release = {
+              "ci_run_attempt": positive("GITHUB_RUN_ATTEMPT"),
+              "ci_run_id": positive("GITHUB_RUN_ID"),
+              "created_at": datetime.now(timezone.utc).isoformat(),
+              "event": "push",
+              "image": f"{image_repository}@{image_digest}",
+              "image_digest": image_digest,
+              "image_repository": image_repository,
+              "repository": repository,
+              "repository_id": positive("GITHUB_REPOSITORY_ID"),
+              "repository_owner_id": positive("GITHUB_REPOSITORY_OWNER_ID"),
+              "schema_version": 2,
+              "source_sha": source_sha,
+              "workflow_path": ".github/workflows/backend-ci.yml",
+          }
+          Path("conan-release.json").write_text(
+              json.dumps(release, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Attest the published image digest
+        id: attest-image
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ${{ needs.publish.outputs.image-repository }}
+          subject-digest: ${{ needs.publish.outputs.image-digest }}
+      - name: Include the image verification bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest-image.outputs.bundle-path }}
+        run: |
+          set -eu
+          cp -- "$ATTESTATION_BUNDLE" conan-image.sigstore.json
+      - name: Attest the exact release manifest
+        id: attest-release
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: conan-release.json
+      - name: Include the release verification bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest-release.outputs.bundle-path }}
+        run: |
+          set -eu
+          cp -- "$ATTESTATION_BUNDLE" conan-release.sigstore.json
+      - name: Require the exact release attestation set
+        run: |
+          set -eu
+          for file in \
+            conan-release.json \
+            conan-release.sigstore.json \
+            conan-image.sigstore.json; do
+            if [ ! -f "$file" ] || [ -L "$file" ] || [ ! -s "$file" ]; then
+              echo "::error::Missing or unsafe release artifact file: $file"
+              exit 1
+            fi
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: conan-release-${{ github.sha }}-${{ github.run_attempt }}
-          path: conan-release.json
+          path: |
+            conan-release.json
+            conan-release.sigstore.json
+            conan-image.sigstore.json
           retention-days: 30
           if-no-files-found: error
