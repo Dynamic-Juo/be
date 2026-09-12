@@ -24,8 +24,8 @@ services:
       DEEPCHECK_CORS_ORIGINS: "${DEEPCHECK_CORS_ORIGINS:-*}"
       # 지정할 때만 VLM 단계를 실행한다. 제공자는 DEEPCHECK_VLM_PROVIDER로 교체 가능.
       DEEPCHECK_VLM_MODEL: "${DEEPCHECK_VLM_MODEL:-}"
-      # 기존 수동 CC 우선 기본값을 유지한다. 사용할 CC가 없으면 STT로 전환한다.
-      DEEPCHECK_CAPTION_POLICY: "${DEEPCHECK_CAPTION_POLICY:-manual}"
+      # 기본은 자막 미사용(STT). manual/any를 지정하면 자막을 선택적으로 사용한다.
+      DEEPCHECK_CAPTION_POLICY: "${DEEPCHECK_CAPTION_POLICY:-off}"
       # 전문 기관의 공개 판정을 검색한다. rating만으로 확정 판정하지 않는다.
       DEEPCHECK_GOOGLE_FACTCHECK_API_KEY: "${DEEPCHECK_GOOGLE_FACTCHECK_API_KEY:-}"
       # 0이면 무제한. M-04가 "검증 가능한 주장을 모두 검증"으로 정해서,

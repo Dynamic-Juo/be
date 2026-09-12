@@ -196,7 +196,7 @@ class AnalyzeRequest(BaseModel):
     enable_claim_verification: bool = Field(default=True, description="주장 검증 수행 여부")
     caption_policy: str = Field(default_factory=lambda: config.caption_policy,
                                 pattern="^(manual|any|off)$",
-                                description="manual: 수동 자막 우선, any: 자동 자막도 허용, off: STT. 생략하면 배포 서버 설정을 따릅니다.")
+                                description="off: 자막 미사용(STT), manual: 등록 수동 자막 우선, any: 자동 자막도 허용. 코드 기본은 off이며 생략하면 배포 서버 설정을 따릅니다.")
     session_id: str | None = Field(default=None, max_length=64,
                                    description="첫 요청에는 생략하고 응답값을 이후 요청에 재사용합니다. 인증/접근권한 토큰이 아닙니다.")
 

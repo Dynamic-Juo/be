@@ -86,10 +86,10 @@ class Config:
     level_caution: float = 25.0
 
     # --- 발언 텍스트 확보 ---
-    # 기존 배포의 수동 CC 우선 동작을 유지한다. 사용할 CC가 없으면 STT로 전환한다.
+    # 기획 기본은 자막 미사용(STT). 자막은 명시적으로 선택할 때만 사용한다.
     # manual=업로더 등록 CC만, any=자동 CC도 허용, off=항상 STT.
     # 등록 CC라는 분류가 사람 작성·전문·정확성을 보증하지는 않는다.
-    caption_policy: str = "manual"
+    caption_policy: str = "off"
 
     # --- LLM (주장 추출·판정) ---
     # off면 전부 규칙 기반으로 동작한다. deepseek/openai_compatible/ollama 지원.
