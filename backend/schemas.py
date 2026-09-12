@@ -52,11 +52,15 @@ class HarnessStats(APIModel):
     backlog_size: int
     max_workers: int
     accepting_jobs: bool
+    admission_state: Literal["accepting", "draining", "closed"]
+    admission_protocol: Literal["durable-api-drain-v1", "unavailable"]
     job_counts: dict[str, int] = Field(description="현재 보관한 작업의 생명주기별 개수")
 
 
 class ReadyResponse(APIModel):
-    status: Literal["ready", "saturated"] = Field(description="saturated도 HTTP 200이다.")
+    status: Literal["ready", "saturated", "draining"] = Field(
+        description="draining은 배포를 위해 신규 접수만 닫힌 상태이며, 모든 상태가 HTTP 200이다."
+    )
     harness: HarnessStats
 
 

@@ -15,9 +15,12 @@ request_id는 응답 헤더(`X-Request-ID`)와 로그에 함께 남아서, 사�
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import json
 import logging
 import queue
 import re
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -26,9 +29,14 @@ from fastapi import FastAPI, Path, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from deepcheck.config import config, default_vlm_model
+from deepcheck.config import (
+    config,
+    default_vlm_model,
+    is_valid_deployment_id,
+    is_valid_deployment_token,
+)
 from deepcheck.errors import (
     DeepCheckError,
     JobNotFoundError,
@@ -37,7 +45,7 @@ from deepcheck.errors import (
 from deepcheck.logging_setup import current_request_id, setup_logging
 from deepcheck.url_policy import normalize_youtube_url
 
-from .harness import Harness
+from .harness import AdmissionConflictError, AdmissionStateError, Harness
 from .schemas import (
     AnalyzeResponse, ErrorResponse, HealthResponse, JOB_EXAMPLES, JobResponse, ReadyResponse,
 )
@@ -47,11 +55,22 @@ logger = logging.getLogger(__name__)
 
 harness: Harness | None = None
 
+_DEPLOYMENT_CONTROL_PATHS = frozenset({
+    "/internal/deployment/drain",
+    "/internal/deployment/resume",
+})
+_FORWARDED_CLIENT_HEADERS = frozenset({"forwarded", "x-forwarded-for", "x-real-ip"})
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global harness
-    running_harness = Harness()
+    # Construct the deployment fence before publishing the Harness or yielding
+    # startup, so no request can observe an accepting target first.
+    running_harness = Harness(
+        start_drained=config.start_drained,
+        deployment_state_file=config.deployment_state_file,
+    )
     harness = running_harness
     logger.info("API 시작")
     try:
@@ -108,28 +127,27 @@ _EDGE_LOGIN = {
 }
 
 _allowed_origins = [o.strip() for o in config.cors_origins.split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_allowed_origins,
-    # 오리진이 "*"이면 자격증명을 허용할 수 없다(브라우저가 거부한다). 실제로
-    # 자격증명이 필요해지면 DEEPCHECK_CORS_ORIGINS에 오리진을 명시해야 한다.
-    allow_credentials="*" not in _allowed_origins,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-    expose_headers=["X-Request-ID", "Retry-After"],
-)
 
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
     """요청마다 id를 부여하고, 처리 시간과 결과를 한 줄로 남긴다."""
-    supplied_id = request.headers.get("X-Request-ID", "")
+    internal_control = request.url.path.rstrip("/") in _DEPLOYMENT_CONTROL_PATHS
+    # Internal control calls never trust a caller-selected trace value. Besides
+    # log injection, it could accidentally contain the deployment credential.
+    supplied_id = ("" if internal_control
+                   else request.headers.get("X-Request-ID", ""))
     request_id = (supplied_id if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", supplied_id)
                   else uuid.uuid4().hex[:12])
     token = current_request_id.set(request_id)
     started = time.monotonic()
     try:
-        response = await call_next(request)
+        # Apply authorization before routing so unsupported methods, trailing
+        # slashes and malformed bodies cannot reveal a configured control route.
+        if internal_control and not _deployment_control_authorized(request):
+            response = _deployment_control_not_found()
+        else:
+            response = await call_next(request)
         elapsed_ms = (time.monotonic() - started) * 1000
         response.headers["X-Request-ID"] = request_id
         # 로그는 contextvar를 되돌리기 전에 남긴다. 순서가 바뀌면 접근 로그의
@@ -141,6 +159,20 @@ async def request_context(request: Request, call_next):
         return response
     finally:
         current_request_id.reset(token)
+
+
+# Register CORS after the request middleware so it remains the outer layer and
+# decorates an internal 404 exactly as it would a normal missing-route response.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    # 오리진이 "*"이면 자격증명을 허용할 수 없다(브라우저가 거부한다). 실제로
+    # 자격증명이 필요해지면 DEEPCHECK_CORS_ORIGINS에 오리진을 명시해야 한다.
+    allow_credentials="*" not in _allowed_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-ID", "Retry-After"],
+)
 
 
 def _error_response(status: int, code: str, message: str, retryable: bool = False,
@@ -201,6 +233,69 @@ class AnalyzeRequest(BaseModel):
                                    description="첫 요청에는 생략하고 응답값을 이후 요청에 재사용합니다. 인증/접근권한 토큰이 아닙니다.")
 
 
+class DeploymentControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    deployment_id: str = Field(
+        min_length=1,
+        max_length=128,
+    )
+
+
+def _is_loopback_client(request: Request) -> bool:
+    """Trust the ASGI peer only; forwarded client headers are not authority."""
+    if request.client is None:
+        return False
+    try:
+        return ipaddress.ip_address(request.client.host).is_loopback
+    except ValueError:
+        return False
+
+
+def _deployment_control_authorized(request: Request) -> bool:
+    token = config.deployment_token
+    header_names = {name.lower() for name in request.headers.keys()}
+    # Uvicorn can trust proxy headers from selected peers and replace the ASGI
+    # client address. This endpoint is direct-loopback only, so any forwarded
+    # client metadata makes the request ineligible even if the rewritten address
+    # looks like loopback.
+    if not is_valid_deployment_token(token) or header_names & _FORWARDED_CLIENT_HEADERS:
+        return False
+    assert token is not None
+    authorization = request.headers.get("Authorization", "")
+    scheme, separator, credential = authorization.partition(" ")
+    # Byte comparison also makes malformed/non-ASCII credentials a clean
+    # authentication miss instead of an exception with distinguishable output.
+    token_matches = secrets.compare_digest(credential.encode(), token.encode())
+    return (
+        _is_loopback_client(request)
+        and bool(separator)
+        and scheme.lower() == "bearer"
+        and token_matches
+    )
+
+
+def _deployment_control_not_found() -> JSONResponse:
+    # Missing configuration, remote callers and bad credentials deliberately
+    # receive the same status and body without disclosing which check failed.
+    return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+
+async def _deployment_control_id(request: Request) -> tuple[str | None, JSONResponse | None]:
+    try:
+        raw = await request.body()
+        if len(raw) > 1024:
+            raise ValueError("request too large")
+        payload = DeploymentControlRequest.model_validate(json.loads(raw))
+        if not is_valid_deployment_id(payload.deployment_id):
+            raise ValueError("invalid deployment id")
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, ValidationError, TypeError):
+        return None, _error_response(
+            422, "invalid_request", "요청 값이 올바르지 않습니다."
+        )
+    return payload.deployment_id, None
+
+
 @app.get("/health", tags=["상태"], operation_id="getHealth", summary="프로세스 상태",
          response_model=None,
          responses={200: {"model": HealthResponse, "headers": _REQUEST_ID_HEADER}, 302: _EDGE_LOGIN})
@@ -211,14 +306,60 @@ def health() -> dict:
 
 @app.get("/ready", tags=["상태"], operation_id="getReadiness", summary="대기열 여력",
          response_model=None,
-         responses={200: {"model": ReadyResponse, "description": "ready 또는 saturated (모두 HTTP 200)", "headers": _REQUEST_ID_HEADER},
+         responses={200: {"model": ReadyResponse, "description": "ready, saturated 또는 draining (모두 HTTP 200)", "headers": _REQUEST_ID_HEADER},
                     429: _BUSY_ERROR, 500: _SERVER_ERROR})
 def ready() -> dict:
-    """요청을 받을 여력이 있는지. 대기열이 가득 차면 준비되지 않은 것으로 본다."""
+    """접수 상태와 대기열 여력. drain 중인 기존 작업은 계속 처리한다."""
     active = _active_harness()
     stats = active.stats()
-    is_ready = stats["accepting_jobs"] and stats["backlog_size"] < active.backlog
-    return {"status": "ready" if is_ready else "saturated", "harness": stats}
+    if stats["admission_state"] == "draining":
+        status = "draining"
+    else:
+        is_ready = stats["accepting_jobs"] and stats["backlog_size"] < active.backlog
+        status = "ready" if is_ready else "saturated"
+    return {"status": status, "harness": stats}
+
+
+@app.post("/internal/deployment/drain", include_in_schema=False, response_model=None)
+async def begin_deployment_drain(request: Request) -> dict | JSONResponse:
+    if not _deployment_control_authorized(request):
+        return _deployment_control_not_found()
+    deployment_id, error = await _deployment_control_id(request)
+    if error is not None:
+        return error
+    assert deployment_id is not None
+    try:
+        changed = _active_harness().begin_drain(deployment_id)
+    except AdmissionConflictError:
+        return _error_response(
+            409, "deployment_conflict", "배포 제어 상태가 충돌했습니다."
+        )
+    except AdmissionStateError:
+        return _error_response(
+            503, "deployment_state_unavailable", "배포 제어 상태를 저장할 수 없습니다."
+        )
+    return {"status": "draining", "changed": changed}
+
+
+@app.post("/internal/deployment/resume", include_in_schema=False, response_model=None)
+async def resume_deployment_admission(request: Request) -> dict | JSONResponse:
+    if not _deployment_control_authorized(request):
+        return _deployment_control_not_found()
+    deployment_id, error = await _deployment_control_id(request)
+    if error is not None:
+        return error
+    assert deployment_id is not None
+    try:
+        changed = _active_harness().resume(deployment_id)
+    except AdmissionConflictError:
+        return _error_response(
+            409, "deployment_conflict", "배포 제어 상태가 충돌했습니다."
+        )
+    except AdmissionStateError:
+        return _error_response(
+            503, "deployment_state_unavailable", "배포 제어 상태를 저장할 수 없습니다."
+        )
+    return {"status": "accepting", "changed": changed}
 
 
 @app.post("/api/analyze", tags=["분석"], operation_id="submitAnalysis", summary="영상 분석 접수",

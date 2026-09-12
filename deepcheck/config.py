@@ -11,7 +11,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 
 def _env_str(name: str, default: str) -> str:
@@ -21,6 +22,66 @@ def _env_str(name: str, default: str) -> str:
 def _env_opt_str(name: str) -> str | None:
     value = os.environ.get(f"DEEPCHECK_{name}", "").strip()
     return value or None
+
+
+def is_valid_deployment_token(value: str | None) -> bool:
+    """Deployment bearer tokens must be long, bounded printable ASCII."""
+    return (
+        isinstance(value, str)
+        and 32 <= len(value) <= 512
+        and all(33 <= ord(character) <= 126 for character in value)
+    )
+
+
+def is_valid_deployment_id(value: str | None) -> bool:
+    """Return whether value is the canonical deployment fencing identifier."""
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value) is not None
+    )
+
+
+def is_valid_deployment_state_file(value: str | None) -> bool:
+    """Deployment state must use one unambiguous absolute POSIX path."""
+    if not isinstance(value, str) or "\x00" in value or not os.path.isabs(value):
+        return False
+    try:
+        if len(os.fsencode(value)) > 4096:
+            return False
+    except UnicodeError:
+        return False
+    components = value.split("/")[1:]
+    return (
+        os.path.normpath(value) == value
+        and bool(components)
+        and all(component not in {"", ".", ".."} for component in components)
+        and all(len(os.fsencode(component)) <= 255 for component in components)
+        and len(os.fsencode(components[-1])) <= 240
+    )
+
+
+def _env_deployment_token() -> str | None:
+    value = _env_opt_str("DEPLOYMENT_TOKEN")
+    return value if is_valid_deployment_token(value) else None
+
+
+def _env_start_drained() -> str | None:
+    value = os.environ.get("DEEPCHECK_START_DRAINED")
+    if value is None or value == "":
+        return None
+    if not is_valid_deployment_id(value):
+        # Never include the caller-controlled value in startup diagnostics.
+        raise ValueError("DEEPCHECK_START_DRAINED must be a canonical deployment ID")
+    return value
+
+
+def _env_deployment_state_file() -> str | None:
+    value = os.environ.get("DEEPCHECK_DEPLOYMENT_STATE_FILE")
+    if value is None or value == "":
+        return None
+    if not is_valid_deployment_state_file(value):
+        raise ValueError("DEEPCHECK_DEPLOYMENT_STATE_FILE must be a safe absolute path")
+    return value
 
 
 def _env_int(name: str, default: int) -> int:
@@ -163,6 +224,16 @@ class Config:
     max_retained_jobs: int = 200
     # 전체 job/session 목록은 내부 디버그용이며 공개 기본값에서는 닫는다.
     enable_debug_endpoints: bool = False
+    # 컨테이너 loopback에서 배포 helper가 admission drain/resume에 쓰는 토큰.
+    # 비어 있거나 안전 형식이 아니면 내부 제어 endpoint가 404로 닫힌다. repr에서도 제외해
+    # 설정 객체를 진단 로그에 남기더라도 토큰이 출력되지 않게 한다.
+    deployment_token: str | None = field(default=None, repr=False)
+    # 새 컨테이너가 외부 트래픽을 받기 전에 적용하는 deployment fence.
+    # ID도 운영 로그/Config repr에 노출하지 않는다.
+    start_drained: str | None = field(default=None, repr=False)
+    # process restart에도 drain fence를 복원하는 container-local durable state.
+    # Compose가 writable layer의 고정 절대 경로를 주입한다.
+    deployment_state_file: str | None = field(default=None, repr=False)
 
     log_level: str = "INFO"
     # json으로 두면 로그가 한 줄짜리 JSON으로 나가서 나중에 수집·검색이 쉽다.
@@ -172,6 +243,15 @@ class Config:
 
 
 def load_config() -> Config:
+    deployment_token = _env_deployment_token()
+    start_drained = _env_start_drained()
+    deployment_state_file = _env_deployment_state_file()
+    if (deployment_token is not None or start_drained is not None) and (
+        deployment_state_file is None
+    ):
+        # A configured control plane must never silently fall back to volatile
+        # in-memory admission state.
+        raise ValueError("durable deployment admission state file is required")
     return Config(
         classifier_model=_env_str("CLASSIFIER_MODEL", Config.classifier_model),
         whisper_model_size=_env_str("WHISPER_MODEL_SIZE", Config.whisper_model_size),
@@ -231,6 +311,9 @@ def load_config() -> Config:
         backlog=_env_int("BACKLOG", Config.backlog),
         max_retained_jobs=_env_int("MAX_RETAINED_JOBS", Config.max_retained_jobs),
         enable_debug_endpoints=_env_bool("ENABLE_DEBUG_ENDPOINTS", Config.enable_debug_endpoints),
+        deployment_token=deployment_token,
+        start_drained=start_drained,
+        deployment_state_file=deployment_state_file,
         log_level=_env_str("LOG_LEVEL", Config.log_level).upper(),
         log_format=_env_str("LOG_FORMAT", Config.log_format).lower(),
         cors_origins=_env_str("CORS_ORIGINS", Config.cors_origins),
