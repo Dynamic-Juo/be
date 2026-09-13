@@ -66,6 +66,8 @@ from scripts.secure_paths import (  # noqa: E402
 
 
 CONFIG_SCHEMA_VERSION = 4
+AUTO_AUTHENTICATION = "github-main-push-image-and-manifest-v1"
+REVIEW_AUTHENTICATION = "github-image-and-manifest-attestations-ci-and-environment-review-v3"
 MAX_EXTERNAL_OUTPUT_BYTES = 1024 * 1024
 EXPECTED_PLATFORM = "linux/arm64"
 DURABLE_ADMISSION_PROTOCOL = "durable-api-drain-v1"
@@ -137,9 +139,9 @@ class DeploymentConfig:
     repository_owner_id: int
     backend_ci_workflow_id: int
     backend_ci_workflow_sha256: str
-    deployment_workflow_id: int
-    deployment_workflow_sha256: str
-    environment_id: int
+    deployment_workflow_id: int | None
+    deployment_workflow_sha256: str | None
+    environment_id: int | None
     allowed_reviewer_user_ids: frozenset[int]
     request_authentication: str
     gh_binary: Path
@@ -205,6 +207,9 @@ class DeploymentConfig:
             "admission_control": self.admission_control,
             "required_admission_protocol": DURABLE_ADMISSION_PROTOCOL,
         }
+        if self.request_authentication == AUTO_AUTHENTICATION:
+            contract["request_authentication"] = AUTO_AUTHENTICATION
+            contract["required_result_persistence"] = "durable-terminal-v1"
         return _canonical_fingerprint(contract)
 
     @property
@@ -259,7 +264,8 @@ class DeploymentConfig:
                 f"호스트 설정 필드가 계약과 다르다: 누락={sorted(missing)}, "
                 f"미지원={sorted(unknown)}"
             )
-        if value["schema_version"] != CONFIG_SCHEMA_VERSION:
+        automatic = value["request_authentication"] == AUTO_AUTHENTICATION
+        if value["schema_version"] != (5 if automatic else CONFIG_SCHEMA_VERSION):
             raise DeploymentError("지원하지 않는 호스트 설정 schema_version이다")
         if type(value["enabled"]) is not bool:
             raise DeploymentError("enabled는 boolean이어야 한다")
@@ -277,25 +283,30 @@ class DeploymentConfig:
             )
         except ManifestError as exc:
             raise DeploymentError(str(exc)) from exc
-        immutable_ids: dict[str, int] = {}
+        immutable_ids: dict[str, int | None] = {}
         for key in (
             "backend_ci_workflow_id", "deployment_workflow_id", "environment_id"
         ):
             item = value[key]
+            if automatic and key != "backend_ci_workflow_id":
+                if item is not None:
+                    raise DeploymentError(f"automatic mode의 {key}는 null이어야 한다")
+                immutable_ids[key] = None
+                continue
             if type(item) is not int or not 1 <= item < 1 << 63:
                 raise DeploymentError(f"{key}는 64-bit 범위의 양의 정수여야 한다")
             immutable_ids[key] = item
         raw_reviewers = value["allowed_reviewer_user_ids"]
-        if type(raw_reviewers) is not list or not 1 <= len(raw_reviewers) <= 6:
+        if type(raw_reviewers) is not list or not (
+            len(raw_reviewers) == 0 if automatic else 1 <= len(raw_reviewers) <= 6
+        ):
             raise DeploymentError("allowed_reviewer_user_ids는 1~6개 ID 배열이어야 한다")
         if any(type(item) is not int or not 1 <= item < 1 << 63 for item in raw_reviewers):
             raise DeploymentError("allowed_reviewer_user_ids는 양의 64-bit 정수만 허용한다")
         allowed_reviewer_user_ids = frozenset(raw_reviewers)
         if len(allowed_reviewer_user_ids) != len(raw_reviewers):
             raise DeploymentError("allowed_reviewer_user_ids에 중복 ID가 있다")
-        if value["request_authentication"] != (
-            "github-image-and-manifest-attestations-ci-and-environment-review-v3"
-        ):
+        if value["request_authentication"] not in {REVIEW_AUTHENTICATION, AUTO_AUTHENTICATION}:
             raise DeploymentError(
                 "request_authentication은 "
                 "github-image-and-manifest-attestations-ci-and-environment-review-v3"
@@ -365,6 +376,10 @@ class DeploymentConfig:
 
         bootstrap = _bootstrap(value["bootstrap_active"])
         if bootstrap is not None:
+            if automatic and (
+                bootstrap.request_run_id, bootstrap.request_run_attempt
+            ) != (bootstrap.ci_run_id, bootstrap.ci_run_attempt):
+                raise DeploymentError("automatic bootstrap의 request watermark는 CI namespace와 같아야 한다")
             try:
                 validate_image_reference(bootstrap.image, repository)
             except ManifestError as exc:
@@ -378,9 +393,8 @@ class DeploymentConfig:
             backend_ci_workflow_id=immutable_ids["backend_ci_workflow_id"],
             backend_ci_workflow_sha256=hashes["backend_ci_workflow_sha256"],
             deployment_workflow_id=immutable_ids["deployment_workflow_id"],
-            deployment_workflow_sha256=_sha256(
-                value["deployment_workflow_sha256"], "deployment_workflow_sha256"
-            ),
+            deployment_workflow_sha256=_automatic_empty_hash(value) if automatic else _sha256(
+                value["deployment_workflow_sha256"], "deployment_workflow_sha256"),
             environment_id=immutable_ids["environment_id"],
             allowed_reviewer_user_ids=allowed_reviewer_user_ids,
             request_authentication=value["request_authentication"],
@@ -428,6 +442,14 @@ class SubprocessRunner:
         self.timeout_seconds = timeout_seconds
 
     def run(self, args: list[str], *, env: dict[str, str]) -> CommandResult:
+        payload = self.run_bytes(args, env=env)
+        try:
+            return CommandResult(stdout=payload.decode("utf-8", errors="strict"))
+        except UnicodeError as exc:
+            raise DeploymentError("외부 명령 출력이 UTF-8이 아니다") from exc
+
+    def run_bytes(self, args: list[str], *, env: dict[str, str],
+                  max_bytes: int = MAX_EXTERNAL_OUTPUT_BYTES) -> bytes:
         # stdout/stderr를 각각 제한해 memory와 temporary disk flood를 막는다.
         # 두 pipe를 동시에 비우고 새 process group 전체를 timeout/overflow에 종료한다.
         try:
@@ -465,7 +487,7 @@ class SubprocessRunner:
                     if not chunk:
                         return
                     total += len(chunk)
-                    if total > MAX_EXTERNAL_OUTPUT_BYTES:
+                    if total > (max_bytes if retain else MAX_EXTERNAL_OUTPUT_BYTES):
                         overflow.set()
                         terminate_group()
                         return
@@ -510,13 +532,13 @@ class SubprocessRunner:
             raise DeploymentError(
                 f"외부 명령이 종료 코드 {returncode}로 실패했다: {_command_label(args)}"
             )
-        try:
-            output = b"".join(stdout_chunks).decode("utf-8", errors="strict")
-        except UnicodeError as exc:
-            raise DeploymentError(
-                f"외부 명령 출력이 UTF-8이 아니다: {_command_label(args)}"
-            ) from exc
-        return CommandResult(stdout=output)
+        return b"".join(stdout_chunks)
+
+
+def _automatic_empty_hash(value: dict[str, Any]) -> None:
+    if value["deployment_workflow_sha256"] is not None:
+        raise DeploymentError("automatic mode의 deployment_workflow_sha256는 null이어야 한다")
+    return None
 
 
 def _safe_name(value: Any, label: str) -> str:
@@ -1166,6 +1188,12 @@ def _harness_stats(value: dict[str, Any]) -> dict[str, Any]:
     return stats
 
 
+def _require_result_persistence(config: DeploymentConfig, value: dict[str, Any]) -> None:
+    if config.request_authentication == AUTO_AUTHENTICATION:
+        if _harness_stats(value).get("result_persistence") != "durable-terminal-v1":
+            raise DeploymentError("자동 배포에 durable-terminal-v1 결과 저장이 필요하다")
+
+
 def _assert_accepting_ready(value: dict[str, Any]) -> None:
     stats = _harness_stats(value)
     if (
@@ -1203,6 +1231,7 @@ def _wait_until_idle(
     consecutive = 0
     while True:
         value = _probe_json(runner, config, "ready")
+        _require_result_persistence(config, value)
         stats = _harness_stats(value)
         if (
             value.get("status") != "draining"
@@ -1269,6 +1298,7 @@ def _wait_for_service(
     ).get("status") != "ok":
         raise DeploymentError("/health 응답이 ok가 아니다")
     ready = _probe_json(runner, config, "ready", compose_image=compose_image)
+    _require_result_persistence(config, ready)
     if expected_admission == "accepting":
         _assert_accepting_ready(ready)
     else:
@@ -2051,6 +2081,8 @@ def apply_deployment(
     source_sha = release["source_sha"]
     state, existing_journal = _load_state_files(config)
     _validate_reconcile_binding(config, state, existing_journal)
+    if config.request_authentication == AUTO_AUTHENTICATION:
+        _require_result_persistence(config, _probe_json(runner, config, "ready"))
     _verify_docker_target(runner, config)
     state, existing_journal = _reconcile(
         runner, config, state, existing_journal,
@@ -2437,11 +2469,15 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     config = read_config(args.config)
     if args.command == "plan":
+        if config.request_authentication != REVIEW_AUTHENTICATION:
+            raise DeploymentError("자동 인증 모드는 auto_deploy.py 전용이다")
         request, _ = _validated_inputs(config, args.request, args.release)
         print(json.dumps(plan(config, request), ensure_ascii=False, indent=2))
         return 0
     if args.command == "apply" and not config.enabled:
         raise DeploymentError("호스트 설정 enabled가 false라 mutation을 거부했다")
+    if args.command == "apply" and config.request_authentication != REVIEW_AUTHENTICATION:
+        raise DeploymentError("자동 인증 모드는 auto_deploy.py 전용이다")
 
     runner = SubprocessRunner(config.command_timeout_seconds)
     if args.command in {"initialize", "recover"}:
