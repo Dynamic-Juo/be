@@ -68,7 +68,8 @@ class ResultStore:
             raise ValueError('result snapshot exceeds limit')
         data = json.loads(raw)
         if (type(data) is not dict or set(data) != {'version', 'jobs'}
-                or data['version'] != 1 or type(data['jobs']) is not list):
+                or type(data['version']) is not int or data['version'] != 1
+                or type(data['jobs']) is not list):
             raise ValueError('unsupported result snapshot')
         return data['jobs']
 

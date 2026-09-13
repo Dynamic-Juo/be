@@ -14,6 +14,7 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
+import math
 import os
 import queue
 import stat
@@ -537,7 +538,17 @@ class Harness:
                 self._result_store = ResultStore(result_state_file)
                 for record in self._result_store.read():
                     job = Job(**record)
-                    if not job.finished or job.id in self._jobs:
+                    if (not isinstance(job.id, str) or len(job.id) != 32
+                            or any(c not in '0123456789abcdef' for c in job.id)
+                            or not isinstance(job.status, str) or not job.finished
+                            or job.id in self._jobs
+                            or not isinstance(job.session_id, str)
+                            or not isinstance(job.url, str)
+                            or type(job.params) is not dict
+                            or type(job.session_ids) is not list
+                            or any(not isinstance(s, str) for s in job.session_ids)
+                            or any(type(t) not in (int, float) or not math.isfinite(t)
+                                   for t in (job.created_at, job.updated_at))):
                         raise ValueError('invalid terminal job snapshot')
                     self._jobs[job.id] = job
                 self._evict_old_jobs_locked()
