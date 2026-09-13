@@ -1,5 +1,54 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-13 통합 인수: 맥북에서 이어갈 때
+
+- 현재 공유 경로는 `release/dev-integration`, [BE PR #3](https://github.com/Dynamic-Juo/be/pull/3)이다. CI/CD `43eae84`, 자막 `1b58097`, 소스 감사·파이프라인 `6c795ab`을 통합했다. 아래 개별 세션의 미병합 기록은 당시 이력이며 이 통합 기록을 우선한다.
+- 문서 충돌 4곳은 양쪽 이력을 보존했다. 새 CD Compose의 자막 기본값이 manual이던 누락도 off로 수정했다. 실제 서버 환경값은 변경하지 않았다.
+- 통합 `e306349`의 로컬 모의 회귀는 691 passed, 2 warnings다. 실제 [첫 Actions](https://github.com/Dynamic-Juo/be/actions/runs/34726142851)는 ARM64 빌드 성공 후 테스트 이미지의 scripts 누락으로 실패했다. `7ae042a`에서 scripts·deploy·workflow를 테스트 이미지에 포함했고 [재실행](https://github.com/Dynamic-Juo/be/actions/runs/34726301566)의 ARM64 빌드·격리 테스트가 성공했다. 실제 영상 분석이나 API 품질 검증이 아니다.
+- docs는 `docs/midpoint-review`의 `1b0f6bf`에 통합 상태와 리뷰 후속 추적을 반영했다. docs main·PR #7·댓글은 변경하지 않았다. 원문 근거 수집, 전체 AI 생성 모델, 공개 API 보호와 강제 시간 제한 등의 감사 미흡 사항은 여전히 남아 있다.
+- 다음 단계는 PR 최종 검토·병합 후 main의 이미지 게시·서명 확인이다. Environment 승인자·보호 설정과 host helper 설치·최초 migration은 미실행이며 별도 승인이 필요하다. GitHub에서 맥미니를 자동 호출하는 구성은 없다.
+- 이번 통합에서는 서버 명령·실영상 요청을 실행하지 않았다. 사용자에게 제한된 서버 사전 조회와 기존 YouTube `cYRkZmBuDqI`를 자막 off로 1회 분석하는 범위의 승인을 요청한 상태다. 승인이 없으면 실행하지 않는다. 서버 `.env*`, 키, 다른 서비스와 Cloudflare 설정을 보존한다.
+- 맥북의 개발 작업 복사본에서 이 브랜치와 PR Checks를 확인한다. 서버 경로에서 `git pull`하거나 개발 브랜치 체크아웃으로 배포를 대신하지 않는다. FE 구현·Vercel 배포는 팀장 담당이다.
+
+## 2026-09-13 보안 CI/CD 구현 세션
+
+- 작업 위치는 별도 worktree의 `ci/secure-deployment-controller`이며 기준 commit은 `26a9352` (`origin/ci/dev-deployment`)다. 최신 공유 commit과 원격 반영 여부는 해당 브랜치 자체를 확인한다.
+- 구현 commit은 API의 durable admission fence `6d4310a`, 서명·승인형 host controller `4b7ce7a`다. 이 문서의 containing commit과 함께 `ci/secure-deployment-controller` 이력을 기준으로 인수한다.
+- 작업 종료 시 clean worktree의 전체 이력을 `origin/ci/secure-deployment-controller` tracking branch에 push했다. PR 생성·main 병합·GitHub 보호 설정 변경·맥미니 배포는 수행하지 않았다.
+- GitHub-hosted ARM64 CI가 테스트한 동일 image를 GHCR digest로 게시하고 image/release를 각각 attestation하도록 보완했다. Package publish와 signer 권한을 별도 job으로 나눴고 두 특권 job 및 environment 승인 뒤 request signer는 repository를 checkout하거나 repository 코드를 실행하지 않는다. Host-pinned workflow 본문의 isolated Python만 manifest/request를 만든다. `conan-development` environment를 통과한 workflow는 1시간짜리 request, request/release manifest, request/release/image Sigstore bundle의 정확히 다섯 파일만 만든다. GitHub workflow는 서버에 접속하거나 배포하지 않는다.
+- Host helper는 request/release canonical JSON과 세 bundle 인증서의 repository/owner immutable ID, exact workflow/ref/SHA/event/run/attempt를 확인하고 image bundle은 release의 `oci://...@sha256:...` subject에 묶는다. 이어 GitHub API에서 exact backend CI attempt와 exact first-attempt deployment run, source commit의 두 reviewed workflow bytes SHA-256, immutable environment ID와 현재 required-reviewer User ID set/`prevent_self_review`, 실제 승인자와 승인 뒤 attempt 불변을 확인한다. API/network 불일치는 Docker 명령 전에 닫힌다. 고정 Docker/Compose/gh binary hash, Docker unix endpoint, 단일 flattened Compose hash와 로컬 target allowlist도 검증한다.
+- Durable state/journal exact schema는 v2이고 host config는 v4다. State와 journal의 `target_fingerprint`는 repository immutable identity·environment·immutable backend CI/deployment workflow 및 environment ID·Docker endpoint·project/service·global lock/state directory·admission protocol 같은 장기 target을 canonical SHA-256으로 묶는다. Journal의 `transaction_fingerprint`는 Docker/Compose binary 경로·hash, Docker config/context, Compose 경로·trusted hash, env path를 별도로 묶는다. `enabled`·timeouts·bootstrap·request 값과 recover target이 아닌 GitHub CLI 경로/hash/config 및 회전 가능한 두 reviewed workflow SHA-256/reviewer allowlist는 지문에서 제외되지만 새 apply마다 검증된다.
+- Target 지문 drift는 항상 Docker 접근 전 fail-closed하며 explicit migration 없이 rebind하지 않는다. Non-terminal 또는 state보다 앞선 journal의 transaction drift도 변경 전 거부한다. State에 이미 반영된 terminal journal이 transaction 지문만 오래된 경우에만, 현재 config로 state/Compose/image ID/health/exact durable accepting과, desired image가 있으면 state와의 일치까지 읽기 전용으로 재증명한 뒤 변경 없이 통과한다. 다음 `apply`가 새 transaction 지문으로 journal을 교체한다.
+- 애플리케이션에 loopback bearer 기반 drain/resume을 추가했다. Job submit과 drain은 같은 lock에서 직렬화되며 기존 queued/running job이 끝날 때까지 기다린다. Drain/accepting marker는 컨테이너 writable layer에 atomic+fsync로 남아 같은 컨테이너의 프로세스 재시작에도 fence를 복원한다. `/ready.harness.admission_protocol`은 durable store가 있을 때 exact `durable-api-drain-v1`, 없을 때 `unavailable`이며 controller는 후자와 missing/legacy capability를 거부한다. 토큰 미설정·오류·비-loopback은 같은 404로 닫는다.
+- 배포 helper는 새 image를 startup-drained로 검증한 후에만 commit한다. Terminal 수렴에서 같은 image가 top-level `ready` 또는 `saturated`이고 exact durable accepting이면 재생성하지 않고, exact durable draining이 확인된 경우에만 fence 없이 한 번 재생성한다. 성공한 start의 image·health·protocol·accepting 검증을 끝으로 추가 settle/probe/변경을 하지 않고, 모호한 readiness에서는 파괴 없이 닫힌다. Durable journal/state/image.env, replay·downgrade 방지, host-wide lock, target health 실패 rollback과 `recover`도 구현했다. `down`, volume/network 삭제, Tunnel/DNS/다른 서비스 명령은 없다.
+- Host 신뢰 경로는 `/`부터 descriptor/no-follow로 검증하고 canonical raw path, owner, mode, hard-link와 Docker socket 유형을 고정한다. Darwin에서는 authority를 넓히는 extended allow ACL을 거부하며 deny-only system ACL만 허용한다. 일반 macOS 로그인 UID로 helper/OrbStack을 함께 실행하면 동일 UID 전체가 같은 권한이므로 실제 격리는 전용 service account와 별도 daemon/VM이 필요하다.
+- `deploy/dev-host-config.example.json`은 schema v4이고 계속 `enabled=false`, `bootstrap_active=null`이다. 실제 server path, binary/Compose/workflow hash, workflow/environment/reviewer ID, current image identity와 token은 확인하거나 설정하지 않았다.
+- 이 세션에서는 `/Users/dotseven/srv/ConanAi`, Docker/OrbStack, 실행 컨테이너와 실제 `.env.home`을 조회·변경하지 않았다. GitHub 공개 REST API는 읽기 전용으로 조회해 main의 기존 backend CI workflow와 environment 0개를 확인했으며 설정은 변경하지 않았다. 새 deployment workflow와 environment는 아직 활성화되지 않았다. 활성화는 [개발계 CI/CD 런북](development-cd-runbook.md)의 승인 절차를 따른다.
+- `fix/captions-opt-in` worktree/branch는 별도로 유지되며 이 CD branch에 병합하지 않았다. 자막 기본 정책과 서버 env 변경을 CD 구현으로 암묵 적용하지 않는다.
+- 격리 가상환경의 최종 전체 로컬 회귀는 **687 passed, 2 warnings (14.07초)**다. Python `py_compile`, workflow/Compose YAML 및 host-config JSON 파싱, `git diff --check`도 통과했다. Fake Docker/GitHub API와 filesystem/ACL fault injection이며 실제 Actions·bundle·맥미니 검증은 아니다.
+- 완료 결과는 여전히 process memory에만 있어 drain 뒤 마지막 poll 전 결과가 재시작으로 사라질 수 있다. 이 위험을 수용하거나 결과를 영속화하기 전에는 매 배포를 사용자가 없는 유지보수 창에서 실행하며, GitHub→host 자동 호출이나 완전 무손실을 주장하지 않는다.
+
+아래 2026-09-12 내용은 이전 구현·배포 준비 이력이다. 최신 CD 상태는 위 문단과 런북을 우선한다.
+
+## 2026-09-13 팀장 기획 기준과 자막 옵션 반영
+
+- 기획 결정권자는 조정준 팀장이다. 사용자는 팀장 지시를 따르며 자막은 기본 미사용으로 하고 옵션으로 사용할 수 있게 유지하라고 명시했다. 이전 manual 기본 유지 방침은 이 지시로 대체한다.
+- 최신 main `38bd162`에서 분기한 `fix/captions-opt-in`에서 코드·독립 개발 Compose·신규 환경 예제 기본을 `off`로 맞췄다. `manual`·`any` 선택과 자막 실패 시 STT 전환을 유지하고 API·FE 문서를 갱신했다. 기존 Vercel 인수 문서 커밋 `69cd939`도 이 브랜치에 가져왔다.
+- 전체 로컬 모의 테스트는 333 passed, 2 warnings (7.58초)다. Python 3.14 환경의 네트워크 차단 fixture를 사용했으며 서버·모델·실영상·유료 API 검증은 아니다.
+- 다중 얼굴은 팀장 원문 확인 후 기준이 일치할 때 구현하라는 조건부 지시다. docs 점검 세션이 확인한 [팀장 원문](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3958648232)은 여러 명 중 한 명이라도 추출되면 되는지 묻는 질문이다. 모든 얼굴을 검사해 하나라도 이상이면 전체 이상으로 판정하라는 확정 지시와는 다르며 해당 thread의 후속 답변도 확인되지 않았다. 집계 코드는 변경하지 않았다. 다른 지시가 있다면 원문 확인이 필요하다. 세 점검 세션에도 최신 결정을 전달했다.
+- 서버 명령·환경값·컨테이너·Cloudflare는 변경하지 않았다. 실제 env에 `manual`이 있으면 코드 기본값 변경만으로 STT가 되지 않는다. 이후 승인된 배포에서 해당 항목을 확인하고 `off`로 전환해야 한다. 키와 환경 파일 전체를 덮어쓰지 않는다.
+
+아래 2026-09-12 기록은 당시 상태다. 자막 정책은 위 최신 지시가 우선한다.
+
+## 2026-09-12 Vercel 연결 점검
+
+- 사용자가 `https://kimjeonil.vercel.app`를 프론트 주소로 제공하고 기존에 제시한 Docker 조회 명령 4개를 승인했다. 컨텍스트는 orbstack이며 기존 `conan-staging-deepcheck-api-1`은 `conan-be:472aff7`, healthy·재시작 0·OOM false다. Compose 경로는 `/Users/dotseven/srv/ConanAi/be/compose.home.yml`이다. 기존 다른 7개 서비스도 실행 중이었다. 서버 파일·환경값·컨테이너·Cloudflare 설정은 변경하지 않았다.
+- BE PR #2는 main `38bd162`로 병합됐고 ARM64 CI·GHCR 게시가 성공했지만 맥미니는 아직 이전 이미지를 사용한다. 고정 digest는 docs 공유 브랜치의 인수인계와 직전 배포 인수 기록을 따른다.
+- 프론트 저장소 `Dynamic-Juo/fe` main `8c3bb9c`의 `src/api/realClient.ts`는 접수·폴링 모두 미구현 오류를 던진다. 공개 배포 JS에서도 같은 오류 문구를 확인했다. 프론트 Origin만 CORS에 추가해도 연결되지 않는다. 실제 분석 요청은 제출하지 않았다.
+- 추가 승인 후 서버 Git·Compose 제한 조회와 내부 `/ready`를 확인했다. 서버 HEAD는 `472aff7`, Compose v5.1.2이며 기존 설정 검증은 통과했다. CORS는 `http://localhost:3000`만 허용한다. 진행·대기 작업은 0건이었다. `.env.example` 삭제 변경은 사용자 변경으로 보존하며 서버에서 `git pull`하지 않는다.
+- 외부 네트워크 `conan-staging-ingress`, 별칭 `conan-api`, 캐시 볼륨 `conan-staging_model-cache`를 확인했다. 환경 파일 전체와 키는 출력하지 않았다. 별도 `compose.vercel.yml`로 새 이미지와 Vercel CORS만 지정하는 교체안을 제시했으며 실제 교체 승인은 대기 중이다. 파일 생성·이미지 pull·재시작·Access 변경은 하지 않았다.
+- 프론트 실 API 구현은 사용자 결정에 따라 조정준 팀장이 담당한다. FE 코드·PR·Vercel 배포는 수정하지 않는다. 전달할 설정과 검수 항목은 [FE 연동 안내](frontend-integration.md)를 따른다.
+
 기준일: 2026-09-12. `fix/midpoint-hardening`의 배포 준비 기록이다. 사용자가 백엔드 반영·정리를 요청했으며 docs PR #7 댓글은 직접 다음 날 마무리한다. 문서는 기존 브랜치에만 공유하고 새 docs PR을 만들지 않는다. 서버 명령은 조회도 대상·영향을 설명하고 사전 승인받는다. 이 문서 작성 시점에는 서버를 교체하지 않았다.
 
 ## 2026-09-12 배포 준비와 검증 범위
@@ -35,7 +84,7 @@ CI는 네트워크 없는 테스트 이미지와 읽기 전용 test/main 전용 
 | docs | 팀 기획·결정·전체 평가. 변경 제안은 팀의 문서 운영 규칙을 따른다. |
 | be | 현재 구현·테스트·실행 문서. DeepSeek 주장 추출·판정, NAVER API HUB 뉴스·백과 검색이 이미 구현됐다. |
 | playground | 백엔드를 시작하기 위해 만든 초기 실험 저장소. 현행 API의 기준이 아니다. |
-| fe | 아직 저장소·배포 주소 미확인. 조정준 팀장이 와이어프레임을 기준으로 만들고 Vercel에 배포할 예정이다. |
+| fe | `Dynamic-Juo/fe`, `https://kimjeonil.vercel.app`. 조정준 팀장이 실 API 연결과 Vercel 배포를 담당한다. 확인한 main `8c3bb9c`의 실 API 클라이언트는 미구현이다. |
 
 2026-09-12 배포 준비 시작 때 fetch로 확인한 원격 main은 `472aff7201a834102d6ec2c27096dabb22a5ae4f`다. `fix/prompt-handoff`는 PR #1로 main에 병합됐으며 DeepSeek·NAVER·배포 구성도 main에 포함된다. 과거 미공유·병합 대기 기록은 worklog에 당시 이력으로 보존한다. 실제 후속 병합 여부는 GitHub PR과 원격 커밋으로 확인한다.
 

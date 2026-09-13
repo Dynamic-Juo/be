@@ -11,16 +11,25 @@
 
 from __future__ import annotations
 
+import fcntl
+import json
 import logging
+import os
 import queue
+import stat
 import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from deepcheck.config import config
+from deepcheck.config import (
+    config,
+    is_valid_deployment_id,
+    is_valid_deployment_state_file,
+)
 from deepcheck.errors import SessionBusyError, as_error_dict
 from deepcheck.logging_setup import current_job_id
 from deepcheck.pipeline import AnalysisOptions, analyze_url
@@ -39,6 +48,357 @@ FAILED = "failed"
 TIMED_OUT = "timed_out"
 
 _TERMINAL = (COMPLETED, COMPLETED_WITH_LIMITATIONS, FAILED, TIMED_OUT)
+
+# Admission is a separate lifecycle from worker shutdown. A deployment drain
+# stops only new registrations; work already queued or running must continue.
+ACCEPTING = "accepting"
+DRAINING = "draining"
+CLOSED = "closed"
+ADMISSION_PROTOCOL = "durable-api-drain-v1"
+ADMISSION_PROTOCOL_UNAVAILABLE = "unavailable"
+
+
+class AdmissionConflictError(RuntimeError):
+    """A different deployment owns the current admission transition."""
+
+
+class AdmissionStateError(RuntimeError):
+    """Durable admission state cannot be trusted or committed."""
+
+
+@dataclass(frozen=True)
+class _AdmissionRecord:
+    state: str
+    deployment_id: str
+
+
+_ADMISSION_RECORD_VERSION = 1
+_MAX_ADMISSION_RECORD_BYTES = 512
+
+
+def _encode_admission_record(record: _AdmissionRecord) -> bytes:
+    return (
+        json.dumps(
+            {
+                "deployment_id": record.deployment_id,
+                "state": record.state,
+                "version": _ADMISSION_RECORD_VERSION,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        + b"\n"
+    )
+
+
+def _decode_admission_record(raw: bytes) -> _AdmissionRecord:
+    try:
+        value = json.loads(raw.decode("ascii"))
+    except (UnicodeError, json.JSONDecodeError):
+        raise AdmissionStateError("durable admission state is invalid") from None
+    if (
+        type(value) is not dict
+        or set(value) != {"deployment_id", "state", "version"}
+        or value.get("version") != _ADMISSION_RECORD_VERSION
+        or value.get("state") not in {ACCEPTING, DRAINING}
+        or not is_valid_deployment_id(value.get("deployment_id"))
+    ):
+        raise AdmissionStateError("durable admission state is invalid")
+    record = _AdmissionRecord(value["state"], value["deployment_id"])
+    if raw != _encode_admission_record(record):
+        raise AdmissionStateError("durable admission state is not canonical")
+    return record
+
+
+class _AdmissionStateStore:
+    """Owner-private, directory-fsynced marker anchored by a no-follow dirfd."""
+
+    def __init__(self, path: str):
+        if not is_valid_deployment_state_file(path):
+            raise AdmissionStateError("durable admission state path is invalid")
+        self._directory_fd = -1
+        self._lock_fd = -1
+        self._filename = ""
+        try:
+            self._directory_fd, self._filename = self._open_private_parent(path)
+            self._acquire_process_lock()
+        except (AdmissionStateError, OSError):
+            self.close()
+            raise AdmissionStateError("durable admission state directory is unsafe") from None
+
+    @staticmethod
+    def _directory_open_flags() -> int:
+        return (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+
+    @classmethod
+    def _open_private_parent(cls, raw_path: str) -> tuple[int, str]:
+        path = Path(raw_path)
+        components = path.parts[1:-1]
+        if not components:
+            raise AdmissionStateError("durable admission state needs a private directory")
+        current_fd = os.open("/", cls._directory_open_flags())
+        try:
+            cls._validate_ancestor_directory(os.fstat(current_fd))
+            for index, component in enumerate(components):
+                created = False
+                try:
+                    next_fd = os.open(
+                        component, cls._directory_open_flags(), dir_fd=current_fd
+                    )
+                except FileNotFoundError:
+                    # Only the dedicated final directory may be created. Its
+                    # ancestors are deployment-owned image paths, not app data.
+                    if index != len(components) - 1:
+                        raise
+                    try:
+                        os.mkdir(component, 0o700, dir_fd=current_fd)
+                        created = True
+                    except FileExistsError:
+                        pass
+                    next_fd = os.open(
+                        component, cls._directory_open_flags(), dir_fd=current_fd
+                    )
+                if created:
+                    try:
+                        os.fchmod(next_fd, 0o700)
+                        cls._validate_private_directory(os.fstat(next_fd))
+                        # Persist both the new directory metadata and its entry
+                        # in the already-existing parent before it can hold a marker.
+                        os.fsync(next_fd)
+                        os.fsync(current_fd)
+                    except BaseException:
+                        os.close(next_fd)
+                        raise
+                os.close(current_fd)
+                current_fd = next_fd
+                metadata = os.fstat(current_fd)
+                if index == len(components) - 1:
+                    cls._validate_private_directory(metadata)
+                else:
+                    cls._validate_ancestor_directory(metadata)
+            return current_fd, path.name
+        except BaseException:
+            os.close(current_fd)
+            raise
+
+    @staticmethod
+    def _validate_ancestor_directory(metadata: os.stat_result) -> None:
+        mode = stat.S_IMODE(metadata.st_mode)
+        shared_sticky_root = (
+            metadata.st_uid == 0
+            and bool(metadata.st_mode & stat.S_ISVTX)
+            and bool(mode & 0o022)
+        )
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid not in {0, os.geteuid()}
+            or (bool(mode & 0o022) and not shared_sticky_root)
+        ):
+            raise AdmissionStateError("durable admission state ancestor is unsafe")
+
+    @staticmethod
+    def _validate_private_directory(metadata: os.stat_result) -> None:
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        ):
+            raise AdmissionStateError("durable admission state directory is unsafe")
+
+    @staticmethod
+    def _validate_private_file(metadata: os.stat_result) -> None:
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+        ):
+            raise AdmissionStateError("durable admission state file is unsafe")
+
+    def _check_directory(self) -> None:
+        if self._directory_fd < 0:
+            raise AdmissionStateError("durable admission state is closed")
+        self._validate_private_directory(os.fstat(self._directory_fd))
+
+    def _acquire_process_lock(self) -> None:
+        """Hold an exclusive lock so accidental multi-process writers fail closed."""
+        lock_name = f".{self._filename}.lock"
+        flags = (
+            os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        created = False
+        try:
+            metadata = os.stat(
+                lock_name,
+                dir_fd=self._directory_fd,
+                follow_symlinks=False,
+            )
+            self._validate_private_file(metadata)
+            if metadata.st_size != 0:
+                raise AdmissionStateError("durable admission lock file is invalid")
+            descriptor = os.open(lock_name, flags, dir_fd=self._directory_fd)
+        except FileNotFoundError:
+            descriptor = os.open(
+                lock_name,
+                flags | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=self._directory_fd,
+            )
+            created = True
+        try:
+            if created:
+                os.fchmod(descriptor, 0o600)
+                os.fsync(descriptor)
+                os.fsync(self._directory_fd)
+            opened_metadata = os.fstat(descriptor)
+            self._validate_private_file(opened_metadata)
+            if (
+                not created
+                and (
+                    opened_metadata.st_dev != metadata.st_dev
+                    or opened_metadata.st_ino != metadata.st_ino
+                )
+            ):
+                raise AdmissionStateError("durable admission lock changed while opening")
+            if opened_metadata.st_size != 0:
+                raise AdmissionStateError("durable admission lock file is invalid")
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        self._lock_fd = descriptor
+
+    def _read(self) -> _AdmissionRecord | None:
+        self._check_directory()
+        try:
+            metadata = os.stat(
+                self._filename,
+                dir_fd=self._directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return None
+        self._validate_private_file(metadata)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        try:
+            descriptor = os.open(self._filename, flags, dir_fd=self._directory_fd)
+        except FileNotFoundError:
+            raise AdmissionStateError("durable admission state changed while reading") from None
+        try:
+            opened_metadata = os.fstat(descriptor)
+            self._validate_private_file(opened_metadata)
+            if (
+                opened_metadata.st_dev != metadata.st_dev
+                or opened_metadata.st_ino != metadata.st_ino
+            ):
+                raise AdmissionStateError("durable admission state changed while opening")
+            if not (1 <= opened_metadata.st_size <= _MAX_ADMISSION_RECORD_BYTES):
+                raise AdmissionStateError("durable admission state size is invalid")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(descriptor, _MAX_ADMISSION_RECORD_BYTES + 1 - total)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_ADMISSION_RECORD_BYTES:
+                    raise AdmissionStateError("durable admission state is too large")
+            raw = b"".join(chunks)
+            if len(raw) != opened_metadata.st_size:
+                raise AdmissionStateError("durable admission state changed while reading")
+            return _decode_admission_record(raw)
+        finally:
+            os.close(descriptor)
+
+    def read(self) -> _AdmissionRecord | None:
+        try:
+            return self._read()
+        except AdmissionStateError:
+            raise
+        except OSError:
+            raise AdmissionStateError("durable admission state cannot be read") from None
+
+    def assert_current(self, expected: _AdmissionRecord | None) -> None:
+        if self.read() != expected:
+            raise AdmissionStateError("durable admission state changed unexpectedly")
+
+    def replace(
+        self,
+        expected: _AdmissionRecord | None,
+        record: _AdmissionRecord,
+    ) -> None:
+        try:
+            self.assert_current(expected)
+            payload = _encode_admission_record(record)
+            temporary = f".admission-{uuid.uuid4().hex}.tmp"
+            descriptor = -1
+            replaced = False
+            try:
+                flags = (
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                descriptor = os.open(
+                    temporary, flags, 0o600, dir_fd=self._directory_fd
+                )
+                os.fchmod(descriptor, 0o600)
+                remaining = memoryview(payload)
+                while remaining:
+                    written = os.write(descriptor, remaining)
+                    if written <= 0:
+                        raise OSError("short admission state write")
+                    remaining = remaining[written:]
+                os.fsync(descriptor)
+                os.close(descriptor)
+                descriptor = -1
+                os.replace(
+                    temporary,
+                    self._filename,
+                    src_dir_fd=self._directory_fd,
+                    dst_dir_fd=self._directory_fd,
+                )
+                replaced = True
+                # The rename itself is not crash-durable until the directory
+                # entry has also been flushed.
+                os.fsync(self._directory_fd)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                if not replaced:
+                    try:
+                        os.unlink(temporary, dir_fd=self._directory_fd)
+                    except FileNotFoundError:
+                        pass
+        except AdmissionStateError:
+            raise
+        except OSError:
+            raise AdmissionStateError("durable admission state cannot be committed") from None
+
+    def close(self) -> None:
+        if self._lock_fd >= 0:
+            os.close(self._lock_fd)
+            self._lock_fd = -1
+        if self._directory_fd >= 0:
+            os.close(self._directory_fd)
+            self._directory_fd = -1
 
 
 
@@ -108,19 +468,82 @@ class Job:
 class Harness:
     """상한이 있는 대기열 + 워커 풀 + 세션 그룹핑."""
 
-    def __init__(self, max_workers: int | None = None, backlog: int | None = None,
-                 max_retained_jobs: int | None = None):
+    def __init__(
+        self,
+        max_workers: int | None = None,
+        backlog: int | None = None,
+        max_retained_jobs: int | None = None,
+        start_drained: str | None = None,
+        deployment_state_file: str | None = None,
+    ):
         self.max_workers = config.workers if max_workers is None else max_workers
         self.backlog = config.backlog if backlog is None else backlog
         self.max_retained_jobs = (config.max_retained_jobs if max_retained_jobs is None
                                   else max_retained_jobs)
         if min(self.max_workers, self.backlog, self.max_retained_jobs) < 1:
             raise ValueError("workers, backlog and retained jobs must be positive")
+        initial_deployment_id = config.start_drained if start_drained is None else start_drained
+        # The environment loader represents an unset/empty value as None. Keep
+        # the constructor equally safe for direct callers and tests.
+        if initial_deployment_id == "":
+            initial_deployment_id = None
+        if initial_deployment_id is not None and not is_valid_deployment_id(
+            initial_deployment_id
+        ):
+            raise ValueError("start_drained must be a canonical deployment ID")
+        assert initial_deployment_id is None or isinstance(initial_deployment_id, str)
+        state_path = (
+            config.deployment_state_file
+            if deployment_state_file is None
+            else deployment_state_file
+        )
+        if state_path == "":
+            state_path = None
+        if state_path is not None and not is_valid_deployment_state_file(state_path):
+            raise ValueError("deployment_state_file must be a safe absolute path")
+        if initial_deployment_id is not None and state_path is None:
+            raise AdmissionStateError("startup drain requires durable admission state")
+
+        state_store: _AdmissionStateStore | None = None
+        durable_record: _AdmissionRecord | None = None
+        try:
+            if state_path is not None:
+                state_store = _AdmissionStateStore(state_path)
+                durable_record = state_store.read()
+                if durable_record is None and initial_deployment_id is not None:
+                    durable_record = _AdmissionRecord(DRAINING, initial_deployment_id)
+                    state_store.replace(None, durable_record)
+                elif (
+                    durable_record is not None
+                    and initial_deployment_id is not None
+                    and durable_record.deployment_id != initial_deployment_id
+                ):
+                    # A persisted fencing epoch is authoritative. A different
+                    # bootstrap ID may never take it over implicitly.
+                    raise AdmissionStateError("startup admission ownership conflicts")
+        except BaseException:
+            if state_store is not None:
+                state_store.close()
+            raise
+
         self._queue: queue.Queue = queue.Queue(maxsize=self.backlog)
         self._jobs: dict[str, Job] = {}
         self._inflight_url: dict[str, str] = {}
         self._lock = threading.Lock()
         self._closed = False
+        self._admission_store = state_store
+        self._durable_record = durable_record
+        self._admission_state = (
+            durable_record.state if durable_record is not None else ACCEPTING
+        )
+        self._deployment_id: str | None = (
+            durable_record.deployment_id if self._admission_state == DRAINING else None
+        )
+        self._completed_deployment_ids: set[str] = (
+            {durable_record.deployment_id}
+            if durable_record is not None and durable_record.state == ACCEPTING
+            else set()
+        )
         # Consume the bounded queue directly. ThreadPoolExecutor.submit() would
         # otherwise move every queued job into its own unbounded internal queue.
         self._workers = [
@@ -146,7 +569,10 @@ class Harness:
         대기열이 가득 차면 queue.Full을 올리고, 호출자가 429로 변환한다.
         """
         with self._lock:
-            if self._closed:
+            # This check and queue insertion intentionally share the same lock
+            # as begin_drain(). Once drain returns, no later submit can pass the
+            # admission boundary (the deployer's last-idle race).
+            if self._admission_state != ACCEPTING:
                 raise queue.Full
             active = self._active_job_for_session_locked(session_id)
             if active is not None and active.url != url:
@@ -176,6 +602,80 @@ class Harness:
             self._evict_old_jobs_locked()
         logger.info("job 등록: %s (session %s) %s", job.id, session_id, url)
         return job, False
+
+    # ---- deployment admission control ----
+    def _assert_durable_admission_locked(self) -> None:
+        if self._admission_store is None:
+            raise AdmissionStateError("durable admission state is unavailable")
+        self._admission_store.assert_current(self._durable_record)
+
+    def _persist_admission_locked(self, record: _AdmissionRecord) -> None:
+        if self._admission_store is None:
+            raise AdmissionStateError("durable admission state is unavailable")
+        self._admission_store.replace(self._durable_record, record)
+        self._durable_record = record
+
+    def begin_drain(self, deployment_id: str) -> bool:
+        """Atomically stop new submissions without cancelling existing work.
+
+        Returns True only for the transition that started the drain. Retries
+        from the same deployment are idempotent. A stale/different deployment
+        cannot take over an active drain.
+        """
+        if not is_valid_deployment_id(deployment_id):
+            raise ValueError("deployment_id must be a canonical deployment ID")
+        with self._lock:
+            if self._closed:
+                raise AdmissionConflictError("admission is closed")
+            if self._admission_state == DRAINING:
+                if self._deployment_id != deployment_id:
+                    raise AdmissionConflictError("admission transition conflict")
+                self._assert_durable_admission_locked()
+                return False
+            # Deployment IDs are one-shot fencing epochs. Treat a delayed drain
+            # after its matching resume as replay instead of claiming to be
+            # draining while admission is actually open.
+            if deployment_id in self._completed_deployment_ids:
+                raise AdmissionConflictError("completed deployment replay")
+            record = _AdmissionRecord(DRAINING, deployment_id)
+            try:
+                # The queue admission check cannot interleave: persistence and
+                # the in-memory transition both happen while holding _lock.
+                self._persist_admission_locked(record)
+            except AdmissionStateError:
+                # If persistence is uncertain, stop admission in memory too.
+                # The call does not report success, but this process still errs
+                # toward rejecting work rather than violating a possible fence.
+                self._deployment_id = deployment_id
+                self._admission_state = DRAINING
+                raise
+            self._deployment_id = deployment_id
+            self._admission_state = DRAINING
+            return True
+
+    def resume(self, deployment_id: str) -> bool:
+        """Resume admission for the deployment that owns the drain."""
+        if not is_valid_deployment_id(deployment_id):
+            raise ValueError("deployment_id must be a canonical deployment ID")
+        with self._lock:
+            if self._closed:
+                raise AdmissionConflictError("admission is closed")
+            if self._admission_state == ACCEPTING:
+                if deployment_id in self._completed_deployment_ids:
+                    self._assert_durable_admission_locked()
+                    return False
+                raise AdmissionConflictError("admission transition conflict")
+            if self._deployment_id != deployment_id:
+                raise AdmissionConflictError("admission transition conflict")
+            # Keep an explicit accepting tombstone for this owner. The
+            # container retains DEEPCHECK_START_DRAINED across a process
+            # restart, so deleting the marker would incorrectly re-drain it.
+            record = _AdmissionRecord(ACCEPTING, deployment_id)
+            self._persist_admission_locked(record)
+            self._admission_state = ACCEPTING
+            self._deployment_id = None
+            self._completed_deployment_ids.add(deployment_id)
+            return True
 
     # ---- worker flow ----
     def _work(self) -> None:
@@ -332,7 +832,13 @@ class Harness:
                 "inflight_urls": len(self._inflight_url),
                 "backlog_size": self._queue.qsize(),
                 "max_workers": self.max_workers,
-                "accepting_jobs": not self._closed,
+                "accepting_jobs": self._admission_state == ACCEPTING,
+                "admission_state": self._admission_state,
+                "admission_protocol": (
+                    ADMISSION_PROTOCOL
+                    if self._admission_store is not None
+                    else ADMISSION_PROTOCOL_UNAVAILABLE
+                ),
                 "job_counts": counts,
             }
 
@@ -353,6 +859,7 @@ class Harness:
         """
         with self._lock:
             self._closed = True
+            self._admission_state = CLOSED
             while True:
                 try:
                     job = self._queue.get_nowait()
@@ -363,6 +870,8 @@ class Harness:
         if wait:
             for worker in self._workers:
                 worker.join()
+        if self._admission_store is not None:
+            self._admission_store.close()
 
 
 def _has_usable_result(result: dict | None) -> bool:

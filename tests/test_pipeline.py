@@ -234,3 +234,50 @@ class TestFailureIsolation:
             pipeline.StageTracker(),
         )
         assert result.source == "stt"
+
+    def test_default_policy_ignores_captions(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+        from deepcheck import captions
+
+        def reject(*args, **kwargs):
+            raise AssertionError("default must not load captions")
+
+        monkeypatch.setattr(captions, "load_track", reject)
+        result = pipeline._collect_transcript(
+            _fake_media(caption_path="unused.vtt"), pipeline.AnalysisOptions(),
+            pipeline.StageTracker(),
+        )
+        assert result.source == "stt"
+
+    def test_manual_option_uses_captions_and_skips_stt(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+        from types import SimpleNamespace
+        from deepcheck import captions
+
+        track = SimpleNamespace(text="등록된 자막", language="ko", word_count=2,
+                                duration=5.0, segments=[{"start": 0.0, "end": 5.0,
+                                                         "text": "등록된 자막"}])
+        monkeypatch.setattr(captions, "load_track", lambda *args: track)
+
+        def reject(*args, **kwargs):
+            raise AssertionError("usable opt-in captions must skip STT")
+
+        monkeypatch.setattr(transcriber, "transcribe", reject)
+        result = pipeline._collect_transcript(
+            _fake_media(caption_path="fixture.vtt", caption_source="manual",
+                        caption_language="ko"),
+            pipeline.AnalysisOptions(caption_policy="manual"), pipeline.StageTracker(),
+        )
+        assert result.source == "caption"
+        assert result.text == "등록된 자막"
+
+    def test_manual_option_falls_back_to_stt_if_captions_unusable(self, monkeypatch):
+        _wire_fast_pipeline(monkeypatch)
+        from deepcheck import captions
+
+        monkeypatch.setattr(captions, "load_track", lambda *args: None)
+        result = pipeline._collect_transcript(
+            _fake_media(caption_path="unusable.vtt"),
+            pipeline.AnalysisOptions(caption_policy="manual"), pipeline.StageTracker(),
+        )
+        assert result.source == "stt"

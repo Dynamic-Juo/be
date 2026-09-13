@@ -5,6 +5,7 @@
 
 import threading
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,9 @@ from backend import app as app_module
 from backend import harness as harness_module
 from backend.app import app
 from deepcheck.errors import DownloadError, as_error_dict
+
+
+DEPLOYMENT_TOKEN = "deployment-control-token-0123456789abcdef"
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +29,13 @@ def no_real_analysis(monkeypatch):
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch, tmp_path):
+    tmp_path = tmp_path.resolve()
+    monkeypatch.setattr(app_module, "config", replace(
+        app_module.config,
+        start_drained=None,
+        deployment_state_file=str(tmp_path / "admission-private" / "state.json"),
+    ))
     with TestClient(app) as c:
         yield c
 
@@ -42,6 +52,394 @@ class TestHealth:
         body = r.json()
         assert body["status"] == "ready"
         assert "backlog_size" in body["harness"]
+        assert body["harness"]["admission_state"] == "accepting"
+        assert body["harness"]["admission_protocol"] == "durable-api-drain-v1"
+
+
+class TestDeploymentControl:
+    def test_start_drained는_빈값만_accepting이고_잘못된_ID는_startup을_막는다(
+        self, monkeypatch, tmp_path,
+    ):
+        from deepcheck.config import load_config
+
+        monkeypatch.setenv(
+            "DEEPCHECK_DEPLOYMENT_STATE_FILE",
+            str(tmp_path / "admission-private" / "state.json"),
+        )
+        monkeypatch.delenv("DEEPCHECK_START_DRAINED", raising=False)
+        assert load_config().start_drained is None
+        monkeypatch.setenv("DEEPCHECK_START_DRAINED", "")
+        assert load_config().start_drained is None
+
+        deployment_id = "startup-deployment-sensitive-id"
+        monkeypatch.setenv("DEEPCHECK_START_DRAINED", deployment_id)
+        loaded = load_config()
+        assert loaded.start_drained == deployment_id
+        assert deployment_id not in repr(loaded)
+
+        for invalid in (" leading-space", "bad/id", "bad\nline", "x" * 129):
+            monkeypatch.setenv("DEEPCHECK_START_DRAINED", invalid)
+            with pytest.raises(ValueError) as raised:
+                load_config()
+            assert invalid not in str(raised.value)
+
+    def test_배포토큰_설정은_길이와_header_safe_문자를_검증한다(
+        self, monkeypatch, tmp_path,
+    ):
+        from deepcheck.config import load_config
+
+        monkeypatch.setenv(
+            "DEEPCHECK_DEPLOYMENT_STATE_FILE",
+            str(tmp_path / "admission-private" / "state.json"),
+        )
+        for invalid in ("short", "x" * 513, "한" * 32, "x" * 16 + " " + "y" * 16):
+            monkeypatch.setenv("DEEPCHECK_DEPLOYMENT_TOKEN", invalid)
+            assert load_config().deployment_token is None
+        monkeypatch.setenv("DEEPCHECK_DEPLOYMENT_TOKEN", DEPLOYMENT_TOKEN)
+        loaded = load_config()
+        assert loaded.deployment_token == DEPLOYMENT_TOKEN
+        assert DEPLOYMENT_TOKEN not in repr(loaded)
+
+    def test_배포제어_설정은_안전한_절대_state_path를_필수로_한다(
+        self, monkeypatch,
+    ):
+        from deepcheck.config import load_config
+
+        monkeypatch.delenv("DEEPCHECK_DEPLOYMENT_STATE_FILE", raising=False)
+        monkeypatch.setenv("DEEPCHECK_DEPLOYMENT_TOKEN", DEPLOYMENT_TOKEN)
+        with pytest.raises(ValueError):
+            load_config()
+
+        monkeypatch.delenv("DEEPCHECK_DEPLOYMENT_TOKEN", raising=False)
+        monkeypatch.setenv("DEEPCHECK_START_DRAINED", "startup-deploy-a")
+        with pytest.raises(ValueError):
+            load_config()
+
+        monkeypatch.delenv("DEEPCHECK_START_DRAINED", raising=False)
+        for invalid in (
+            "relative/state.json",
+            "/tmp/../unsafe.json",
+            "/tmp//unsafe.json",
+            "/tmp/trailing/",
+        ):
+            monkeypatch.setenv("DEEPCHECK_DEPLOYMENT_STATE_FILE", invalid)
+            with pytest.raises(ValueError) as raised:
+                load_config()
+            assert invalid not in str(raised.value)
+
+    def test_start_drained_app은_첫_요청부터_닫히고_소유_ID로만_resume한다(
+        self, monkeypatch, tmp_path,
+    ):
+        tmp_path = tmp_path.resolve()
+        deployment_id = "startup-deploy-a"
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config,
+            deployment_token=DEPLOYMENT_TOKEN,
+            start_drained=deployment_id,
+            deployment_state_file=str(
+                tmp_path / "admission-private" / "state.json"
+            ),
+        ))
+        monkeypatch.setattr(app_module, "_is_loopback_client", lambda _: True)
+        headers = {"Authorization": f"Bearer {DEPLOYMENT_TOKEN}"}
+
+        with TestClient(app) as startup_client:
+            readiness = startup_client.get("/ready")
+            assert readiness.status_code == 200
+            assert readiness.json()["status"] == "draining"
+            assert readiness.json()["harness"]["accepting_jobs"] is False
+            assert readiness.json()["harness"]["admission_state"] == "draining"
+            assert deployment_id not in readiness.text
+
+            rejected = startup_client.post(
+                "/api/analyze", json={"url": "https://youtu.be/dQw4w9WgXcQ"}
+            )
+            assert rejected.status_code == 429
+            assert rejected.json()["error"]["code"] == "server_busy"
+
+            wrong_owner = startup_client.post(
+                "/internal/deployment/resume",
+                json={"deployment_id": "startup-deploy-b"},
+                headers=headers,
+            )
+            assert wrong_owner.status_code == 409
+            assert deployment_id not in wrong_owner.text
+
+            resumed = startup_client.post(
+                "/internal/deployment/resume",
+                json={"deployment_id": deployment_id},
+                headers=headers,
+            )
+            assert resumed.status_code == 200
+            assert resumed.json() == {"status": "accepting", "changed": True}
+            assert deployment_id not in resumed.text
+            assert startup_client.get("/ready").json()["status"] == "ready"
+
+        # Docker keeps START_DRAINED in the container environment across a
+        # process restart. The durable accepting tombstone must therefore win
+        # over the same bootstrap ID and prevent an accidental re-drain.
+        with TestClient(app) as restarted_client:
+            assert restarted_client.get("/ready").json()["status"] == "ready"
+            retry = restarted_client.post(
+                "/internal/deployment/resume",
+                json={"deployment_id": deployment_id},
+                headers=headers,
+            )
+            assert retry.status_code == 200
+            assert retry.json() == {"status": "accepting", "changed": False}
+
+    def test_잘못된_start_drained는_lifespan이_열리기전에_실패한다(
+        self, monkeypatch, tmp_path,
+    ):
+        tmp_path = tmp_path.resolve()
+        invalid = "sensitive/bad-id"
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config,
+            start_drained=invalid,
+            deployment_state_file=str(
+                tmp_path / "admission-private" / "state.json"
+            ),
+        ))
+        with pytest.raises(ValueError) as raised:
+            with TestClient(app):
+                pytest.fail("invalid startup configuration entered lifespan")
+        assert invalid not in str(raised.value)
+
+    @pytest.mark.parametrize("host,expected", [
+        ("127.0.0.1", True),
+        ("127.12.34.56", True),
+        ("::1", True),
+        ("::ffff:127.0.0.1", True),
+        ("10.0.0.1", False),
+        ("testclient", False),
+        ("not-an-ip", False),
+    ])
+    def test_ASGI_peer의_loopback만_신뢰한다(self, host, expected):
+        request = SimpleNamespace(client=SimpleNamespace(host=host))
+        assert app_module._is_loopback_client(request) is expected
+
+    @pytest.mark.parametrize("path", [
+        "/internal/deployment/drain",
+        "/internal/deployment/resume",
+    ])
+    def test_토큰_미설정_오류토큰_비loopback은_동일한_404다(
+        self, client, monkeypatch, path,
+    ):
+        payload = {"deployment_id": "deploy-a"}
+
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config, deployment_token=None))
+        monkeypatch.setattr(app_module, "_is_loopback_client", lambda _: True)
+        unconfigured = client.post(
+            path, json=payload, headers={"Authorization": f"Bearer {DEPLOYMENT_TOKEN}"}
+        )
+        unconfigured_method_probe = client.get(
+            f"{path}/", headers={"X-Request-ID": "missing-route-probe"}
+        )
+        assert unconfigured_method_probe.headers["X-Request-ID"] != "missing-route-probe"
+
+        weak_token = "too-short"
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config, deployment_token=weak_token))
+        weak_configuration = client.post(
+            path, json=payload, headers={"Authorization": f"Bearer {weak_token}"}
+        )
+
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config, deployment_token=DEPLOYMENT_TOKEN))
+        wrong_token = client.post(
+            path, content=b"not-json", headers={"Authorization": "Bearer wrong-token"}
+        )
+
+        monkeypatch.setattr(app_module, "_is_loopback_client", lambda _: False)
+        remote = client.post(
+            path,
+            json=payload,
+            headers={"Authorization": f"Bearer {DEPLOYMENT_TOKEN}"},
+        )
+        monkeypatch.setattr(app_module, "_is_loopback_client", lambda _: True)
+        forwarded_loopback = client.post(
+            path,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {DEPLOYMENT_TOKEN}",
+                "X-Forwarded-For": "127.0.0.1",
+            },
+        )
+
+        for response in (
+            unconfigured, unconfigured_method_probe, weak_configuration,
+            wrong_token, remote, forwarded_loopback,
+        ):
+            assert response.status_code == 404
+            assert response.json() == {"detail": "Not Found"}
+
+    def test_인증뒤에도_deployment_id_계약은_fail_closed다(self, client, monkeypatch):
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config, deployment_token=DEPLOYMENT_TOKEN))
+        monkeypatch.setattr(app_module, "_is_loopback_client", lambda _: True)
+        headers = {"Authorization": f"Bearer {DEPLOYMENT_TOKEN}"}
+
+        for payload in (
+            {"deployment_id": "deploy-a\n"},
+            {"deployment_id": "deploy-a", "unexpected": True},
+            {"deployment_id": "x" * 129},
+            {"deployment_id": 123},
+        ):
+            response = client.post(
+                "/internal/deployment/drain", json=payload, headers=headers
+            )
+            assert response.status_code == 422
+            assert response.json()["error"]["code"] == "invalid_request"
+        assert client.get("/ready").json()["harness"]["admission_state"] == "accepting"
+
+    def test_인증실패_404는_일반_없는경로와_CORS_표면도_같다(self, client, monkeypatch):
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config, deployment_token=None))
+        origin = "https://example.org"
+        headers = {"Origin": origin, "X-Request-ID": "route-probe"}
+        hidden = client.post(
+            "/internal/deployment/drain", json={"deployment_id": "deploy-a"},
+            headers=headers,
+        )
+        missing = client.post("/definitely-not-a-route", json={}, headers=headers)
+
+        assert hidden.status_code == missing.status_code == 404
+        assert hidden.json() == missing.json() == {"detail": "Not Found"}
+        assert hidden.headers["X-Request-ID"] != "route-probe"
+        assert missing.headers["X-Request-ID"] == "route-probe"
+        assert hidden.headers.get("access-control-allow-origin") == missing.headers.get(
+            "access-control-allow-origin"
+        )
+
+    def test_drain_resume과_ready가_접수상태를_일관되게_보인다(
+        self, client, monkeypatch,
+    ):
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config, deployment_token=DEPLOYMENT_TOKEN))
+        monkeypatch.setattr(app_module, "_is_loopback_client", lambda _: True)
+        headers = {"Authorization": f"Bearer {DEPLOYMENT_TOKEN}"}
+
+        first = client.post(
+            "/internal/deployment/drain",
+            json={"deployment_id": "deploy-a"},
+            headers=headers,
+        )
+        retry = client.post(
+            "/internal/deployment/drain",
+            json={"deployment_id": "deploy-a"},
+            headers=headers,
+        )
+        assert first.status_code == 200 and first.json() == {
+            "status": "draining", "changed": True,
+        }
+        assert retry.status_code == 200 and retry.json() == {
+            "status": "draining", "changed": False,
+        }
+        readiness = client.get("/ready").json()
+        assert readiness["status"] == "draining"
+        assert readiness["harness"]["accepting_jobs"] is False
+        assert readiness["harness"]["admission_state"] == "draining"
+        assert "deployment_id" not in str(readiness)
+
+        rejected = client.post(
+            "/api/analyze", json={"url": "https://youtu.be/cYRkZmBuDqI"}
+        )
+        assert rejected.status_code == 429
+        assert rejected.json()["error"]["code"] == "server_busy"
+
+        conflict = client.post(
+            "/internal/deployment/resume",
+            json={"deployment_id": "deploy-b"},
+            headers=headers,
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "deployment_conflict"
+        assert "deploy-a" not in conflict.text and "deploy-b" not in conflict.text
+
+        resumed = client.post(
+            "/internal/deployment/resume",
+            json={"deployment_id": "deploy-a"},
+            headers=headers,
+        )
+        resumed_retry = client.post(
+            "/internal/deployment/resume",
+            json={"deployment_id": "deploy-a"},
+            headers=headers,
+        )
+        assert resumed.status_code == 200 and resumed.json() == {
+            "status": "accepting", "changed": True,
+        }
+        assert resumed_retry.status_code == 200 and resumed_retry.json() == {
+            "status": "accepting", "changed": False,
+        }
+        replay = client.post(
+            "/internal/deployment/drain",
+            json={"deployment_id": "deploy-a"},
+            headers=headers,
+        )
+        assert replay.status_code == 409
+        assert replay.json()["error"]["code"] == "deployment_conflict"
+        readiness = client.get("/ready").json()
+        assert readiness["status"] == "ready"
+        assert readiness["harness"]["accepting_jobs"] is True
+
+    def test_durable_state_commit실패는_503이고_접수는_fail_closed다(
+        self, client, monkeypatch,
+    ):
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config, deployment_token=DEPLOYMENT_TOKEN))
+        monkeypatch.setattr(app_module, "_is_loopback_client", lambda _: True)
+        active = app_module._active_harness()
+        assert active._admission_store is not None
+        monkeypatch.setattr(
+            active._admission_store,
+            "replace",
+            lambda expected, record: (_ for _ in ()).throw(
+                harness_module.AdmissionStateError("sensitive/path/deploy-a")
+            ),
+        )
+
+        response = client.post(
+            "/internal/deployment/drain",
+            json={"deployment_id": "deploy-a"},
+            headers={"Authorization": f"Bearer {DEPLOYMENT_TOKEN}"},
+        )
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "deployment_state_unavailable"
+        assert "deploy-a" not in response.text
+        readiness = client.get("/ready").json()
+        assert readiness["status"] == "draining"
+        assert readiness["harness"]["accepting_jobs"] is False
+
+    def test_배포토큰은_응답_요청id_설정repr_로그에_남지_않는다(
+        self, client, monkeypatch, caplog,
+    ):
+        monkeypatch.setattr(app_module, "config", replace(
+            app_module.config, deployment_token=DEPLOYMENT_TOKEN))
+        monkeypatch.setattr(app_module, "_is_loopback_client", lambda _: True)
+
+        with caplog.at_level("INFO", logger="backend.app"):
+            response = client.post(
+                "/internal/deployment/drain",
+                # Even if an operator accidentally repeats the secret in another
+                # accepted field, the control response/access log must not echo it.
+                json={"deployment_id": DEPLOYMENT_TOKEN},
+                headers={
+                    "Authorization": f"Bearer {DEPLOYMENT_TOKEN}",
+                    "X-Request-ID": DEPLOYMENT_TOKEN,
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.headers["X-Request-ID"] != DEPLOYMENT_TOKEN
+        assert DEPLOYMENT_TOKEN not in response.text
+        assert DEPLOYMENT_TOKEN not in repr(app_module.config)
+        assert any(
+            "POST /internal/deployment/drain" in record.getMessage()
+            for record in caplog.records
+        )
+        assert DEPLOYMENT_TOKEN not in caplog.text
 
 
 class TestErrorEnvelope:

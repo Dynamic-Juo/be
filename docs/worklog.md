@@ -1,8 +1,48 @@
 # 작업 로그
 
+## 2026-09-13 통합 및 실제 Actions 재검증
+
+- `release/dev-integration`과 BE PR #3에 세 세션을 통합했다. 문서 충돌은 이력을 보존해 해결했고 새 CD Compose의 자막 기본값 누락을 off로 수정했다.
+- 로컬 모의 회귀는 691개 통과했다. 실제 Actions run `34726142851`에서 ARM64 빌드는 성공했으나 테스트 이미지에 배포 스크립트가 없어 수집 오류 7건이 발생했다. `7ae042a`에서 테스트 전용 이미지에 scripts·deploy·workflow를 포함한 뒤 run `34726301566`에서 빌드·격리 테스트가 성공했다. 앱 이미지에 host helper를 넣은 것이 아니다.
+- docs 기존 공유 브랜치 `1b0f6bf`에 리뷰 미결 추적과 통합 상태를 반영했다. 서버 변경·실영상 분석·제공자 호출·배포 활성화는 하지 않았다. 상세 남은 절차는 handoff를 따른다.
+
 기획에서 벗어난 것, 계획에 없었지만 해야 했던 변경, 테스트에서 발견한 것을 그때그때 적는다. 다듬지 않는다 — 나중에 이 로그를 근거로 `Dynamic-Juo/docs`의 평가 문서를 정리한다.
 
 규칙은 [AGENTS.md](../AGENTS.md#작업-기록) 참고.
+
+## 2026-09-13 — 맥미니 공존형 보안 CI/CD 컨트롤러
+
+- 구현은 durable admission fence `6d4310a`와 서명·승인형 host controller `4b7ce7a`로 분리해 기록했다. 문서는 별도 docs commit으로 정리한다.
+- 전체 구현과 문서를 `origin/ci/secure-deployment-controller`에 push해 공유했다. PR·main merge·Actions 실행·GitHub 보호 설정·맥미니 배포는 하지 않았다.
+- 범용 self-hosted GitHub runner를 앱 맥미니에 설치하는 안을 제외했다. Docker socket 권한을 가진 runner가 저장소 코드와 third-party Action을 실행하면 같은 daemon의 Conan·cloudflared·Laravel·모니터링 및 향후 프로젝트까지 한 trust boundary가 되기 때문이다. GitHub-hosted CI는 build/test/sign까지만 하고 맥미니의 사전 설치 helper가 고정 target만 교체하도록 구현했다.
+- image digest, release manifest, environment-gated request를 각각 Sigstore attestation과 묶었다. Host는 이름뿐 아니라 repository/owner immutable ID, exact workflow/ref/SHA/event/run/attempt, GitHub-hosted runner 인증서 identity를 검사하고 release와 image bundle을 같은 exact CI attempt에 결합한다. Workflow-controlled predicate는 권한 근거로 쓰지 않는다. 최종 감사에서 변경 가능한 repository script가 registry·OIDC 권한 job 안에서 실행되던 provenance 공백을 발견해 packages publish와 signer를 분리하고, 두 signer와 publish에서 checkout/repository code 실행을 제거했다. Manifest/request는 host-pinned workflow 본문의 `python -I` 코드만 생성한다.
+- Attestation만으로 required reviewer 승인 사실이나 workflow bytes를 증명할 수 없는 틈을 닫았다. Host config schema v4가 immutable backend CI/deployment workflow 및 environment ID, 두 reviewed workflow bytes SHA-256, reviewer User immutable ID allowlist를 고정한다. Apply는 GitHub API에서 exact backend CI attempt와 exact first-attempt deployment run, 각 source commit의 workflow bytes, 현재 environment reviewer 정책과 `prevent_self_review`, 실제 승인자와 승인 뒤 current attempt를 Docker 명령 전에 확인한다. API/network 실패는 fail-closed하며 admin bypass와 branch/CODEOWNERS 보호는 activation 수동 감사로 남겼다.
+- Request가 서버 path·project·service·command를 선택하지 못하게 하고, host config에 Docker/독립 Compose/gh binary SHA-256, unix endpoint, include/extends 없는 단일 flattened Compose hash, owner-only config/state directory를 고정했다. 호출자 HOME/GitHub·Docker token/context/app 환경을 상속하지 않는다.
+- State/journal exact schema를 v2로 올리고 canonical SHA-256을 두 축으로 나눴다. State+journal의 `target_fingerprint`는 repository immutable identity/environment, immutable backend CI/deployment workflow 및 environment ID, Docker endpoint, project/service, global lock/state directory, durable admission protocol 같은 명시적 migration 대상을 묶는다. Journal의 `transaction_fingerprint`는 Docker/Compose binary 경로·hash, Docker config/context, Compose 경로·trusted hash, env path 같은 해당 교체의 복구 도구를 묶는다. Enabled/timeouts/bootstrap/request 값과 recover target에 불필요한 GitHub CLI 경로/hash/config, 정상 회전 가능한 두 workflow SHA-256/reviewer allowlist는 지문에서 제외했다.
+- Host 경로 검증을 공용 `secure_paths.py`로 통합했다. `/`부터 component별 `openat`/`O_DIRECTORY`/`O_NOFOLLOW`, canonical raw path, root/helper owner, non-writable ancestor, private leaf parent, regular-file hard-link와 Docker socket 권한을 검증한다. Darwin extended allow ACL은 거부하고 authority를 늘리지 않는 deny-only ACL만 허용한다. 같은 macOS 로그인 UID 전체가 신뢰된다는 잔여 위험과 전용 account/별도 daemon·VM 권고를 런북에 남겼다.
+- Broad fingerprint 하나를 쓰면 Compose/hash/tool을 정상 교체한 뒤 이미 완료된 journal 때문에 영구 교착될 수 있어 복구 경계를 나눴다. Target drift는 phase와 관계없이 Docker 접근 전 fail-closed하고, non-terminal 또는 state보다 앞선 journal의 transaction drift도 변경 전 거부한다. State에 이미 반영된 terminal journal의 transaction 지문만 오래된 경우에는 현재 config로 state/Compose/image ID/health/durable accepting과, desired image가 있으면 state와의 일치까지 읽기 전용으로 증명하고 아무 mutation 없이 통과시켜, 다음 apply가 새 journal을 쓰게 했다.
+- 신규 접수 drain/resume을 Harness submit과 동일 lock에 연결했다. 내부 API는 loopback+32자 이상 bearer만 허용하고 forwarded client header, 잘못된 토큰, 미설정 상태를 같은 404로 처리한다. 토큰은 repr·로그·응답에 남기지 않는다. Drain/accepting marker는 atomic file+directory fsync로 남아 프로세스 재시작에도 복원되며, 손상·symlink·잘못된 owner/mode/hardlink는 startup을 막는다. `/ready.harness.admission_protocol`은 durable store가 있으면 exact `durable-api-drain-v1`, 없으면 `unavailable`이고 controller는 missing·legacy·`unavailable`을 bootstrap/start/verify/recover에서 거부한다.
+- `prepared → draining → switching → verifying → committed/rolled_back/aborted` durable journal과 atomic state/image.env를 추가했다. 새 image는 startup-drained로 검증하고 commit/state 뒤 같은 image가 durable accepting이면 변경 없이 종료한다. Exact durable draining이 확인된 경우에만 fence 없이 한 번 재생성하고, start의 image·health·protocol·accepting 검증 후에는 late settle/probe/변경을 하지 않는다. Unknown·closed·probe 오류에서는 파괴 없이 닫힌다. `/ready.status=saturated`도 durable accepting이면 정상이며 recreate하지 않는다. Replay와 CI downgrade를 거부하고, commit 전 crash는 이전 image, commit 뒤 crash는 target image로 `recover`가 수렴한다. 대상 서비스 외의 `down`·volume/network/Tunnel/DNS 명령은 없다.
+- 진행 중 job drain은 해결했지만 완료 결과가 process memory에만 있는 기존 구조는 유지된다. 마지막 FE poll 전 재시작 손실을 완전히 막지는 못하므로 이 위험을 수용하거나 결과를 영속화하기 전에는 매 교체를 사용자 없는 유지보수 창에서 실행하고, 무손실 요구에는 result persistence/ack가 후속으로 필요하다.
+- 실제 맥미니·Docker·실행 서비스·환경 파일은 조회/변경하지 않았다. GitHub 공개 REST API는 읽기 전용으로 조회해 main의 기존 backend CI workflow 하나와 environment 0개를 확인했고 repository·Actions·environment 설정은 변경하지 않았다. 예제는 `enabled=false`, bootstrap 미설정이다. 기존 image가 drain API 이전 버전이면 최초 migration은 별도 접수 차단과 서버 변경 승인이 필요하다.
+- 현재 범위는 CI와 승인형 Continuous Delivery이며 GitHub→host 자동 호출은 연결하지 않았다. 현재 image는 container root이므로 cap drop/no-new-privileges는 적용했지만 non-root 전환은 실제 ARM64 검증이 필요한 후속 hardening이다.
+- 격리 가상환경에서 전체 `PYTHONPATH=. python -m pytest -q`를 실행해 **687 passed, 2 warnings (14.07초)**를 확인했다. Fake host controller, GitHub API response 검증과 filesystem/ACL fault injection을 포함한다. Python `py_compile`, workflow/Compose YAML 및 host-config JSON 파싱, `git diff --check`도 통과했다. 실제 Actions·Sigstore bundle·GHCR·Docker/OrbStack·외부 API 검증은 아니다.
+
+## 2026-09-13 자막 기본 미사용과 선택 옵션 유지
+
+- 사용자가 기획 결정권자는 조정준 팀장임을 명시하고 자막 미사용을 기본으로 하되 옵션을 유지하라고 지시했다. 이전 manual 기본 유지 방침을 대체하며 기획 원본을 임의 변경한 것이 아니다.
+- 독립 개발 복사본의 `fix/captions-opt-in`에서 코드·Compose·신규 환경 예제를 off로 일치시켰다. API 요청과 환경변수의 manual/any 선택은 유지한다. 기본 경로가 기존 자막을 읽지 않는지, 명시적 manual에서 CC를 사용하고 STT를 건너뛰는지, 읽기 실패 시 STT로 전환하는지 회귀 검증했다.
+- 전체 333 passed, 2 warnings (7.58초). 기존 개발용 Python 3.14 가상환경의 라이브러리와 Python 네트워크 차단 fixture를 사용했다. 맥미니 서버·Docker·실영상·유료 API는 조회하거나 실행하지 않았다.
+- 기획·파이프라인·CI 점검 세션에 최신 지시를 전달했다. docs 점검 세션이 확인한 [다중 얼굴 댓글](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3958648232)은 여러 명 중 한 명이라도 추출되면 되는지 묻는 질문이며, 모든 얼굴 중 하나라도 이상이면 전체 이상으로 판정하라는 지시까지 확인되지는 않았다. 해당 판정 코드 변경은 하지 않았다. 실제 서버 env 전환·배포도 미실행이다.
+
+## 2026-09-12 — Vercel 주소 확보와 승인된 서버 조회
+
+- 프론트 Origin은 사용자 제공 `https://kimjeonil.vercel.app`다. 브라우저에서 Conan AI 첫 화면을 확인했으며 분석 버튼을 제출하지 않았다.
+- 사용자가 승인한 Docker 조회 4개만 실행했다. 컨텍스트 orbstack, Conan은 이전 `conan-be:472aff7` 이미지로 healthy·재시작 0·OOM false였다. 이미지 ID는 기존 기록과 같은 `sha256:4ecdd77473ce42a9dd0799e46aafb263358dcc34a22d3d88e04c3f44c5d6aed9`이며 관리 경로는 `/Users/dotseven/srv/ConanAi/be`다. 순간 자원은 CPU 0.21%, 메모리 55.71MiB/3GiB였고 분석 부하 측정은 아니다. 기존 다른 7개 서비스도 실행 중이었다. 첫 Docker 소켓 접근은 도구 권한 제한으로 실패해 승인 범위 그대로 권한을 올려 조회했다.
+- 공개 `Dynamic-Juo/fe`를 작업 폴더에 복사해 main `8c3bb9c`를 확인했다. `src/api/realClient.ts`의 실 접수·폴링은 미구현이며 현재 배포 번들에도 같은 오류 문구가 있다. API URL 환경변수 이름은 `VITE_API_BASE_URL`이다. 프론트 코드와 원격 배포는 변경하지 않았다.
+- 추가 서버 조회를 설명하고 승인받아 실행했다. 서버 HEAD `472aff7`, Compose v5.1.2, `config --quiet` 성공을 확인했다. 필터한 설정은 기존 이미지, CORS `http://localhost:3000`, 외부 네트워크 `conan-staging-ingress`와 별칭 `conan-api`, 볼륨 `conan-staging_model-cache`다. 환경 전체와 키는 출력하지 않았다. 내부 `/ready`는 ready이며 작업·진행 URL·대기열은 모두 0건이었다.
+- 서버 `.env.example` 삭제 변경을 발견해 보존하고 서버 `git pull`은 하지 않는다. 새 override 파일에 고정 이미지와 Vercel CORS만 지정하고 Conan 하나를 교체하는 범위의 승인을 요청했다. 아직 파일 생성·이미지 pull·교체·Access 변경은 실행하지 않았다.
+- 사용자는 프론트 구현을 조정준 팀장이 맡는다고 답했다. FE 구현·PR·배포는 진행하지 않는다. 개발계 보호를 해제하거나 서비스 토큰을 프론트에 넣는 방식도 사용하지 않는다.
 
 ## 2026-09-12 — 기존 동작을 보존한 백엔드 배포 준비
 

@@ -45,9 +45,9 @@ Swagger에는 `getHealth`, `getReadiness`, `submitAnalysis`, `getAnalysisJob` �
 | `use_classifier` | boolean | `true` | false를 정상 영상 판정으로 읽지 않음 |
 | `vlm_model` | string 또는 null, 최대 128자 | 미설정 시 null | 서버 `DEEPCHECK_VLM_MODEL`에 따라 달라짐. FE 임의 모델 선택 비권장 |
 | `enable_claim_verification` | boolean | `true` | false는 주장 축 미실행이며 성공의 대용이 아님 |
-| `caption_policy` | off, manual, any | `manual` | `DEEPCHECK_CAPTION_POLICY`에 따라 달라짐 |
+| `caption_policy` | off, manual, any | `off` | `DEEPCHECK_CAPTION_POLICY`에 따라 달라짐 |
 
-표는 환경변수를 주지 않은 **코드 기본값**이다. 보안 수정에 정책 전환을 섞지 않도록 기존 `manual`로 복원했다. `manual`은 등록 CC 우선이며 자동 생성 CC를 제외하고 사용할 CC가 없으면 STT로 전환한다. CC의 정확성·전문을 보증하지 않으며 [기획 본문과 리뷰의 정리](frontend-integration.md#먼저-구분할-상태)는 별도다. 배포 환경이 명시한 값은 유지하므로 인수 전에 적용 정책·버전을 확인한다. `workdir`, `keep_workdir`, `save_transcript`, API 키, LLM 제공자·모델은 공개 요청 필드가 아니다.
+표는 환경변수를 주지 않은 **코드 기본값**이다. 2026-09-13 사용자가 전달한 팀장 기획 기준에 따라 기본은 `off`(자막 미사용·STT)다. 요청에서 `manual`을 선택하면 등록 CC를 우선 사용하고 사용할 CC가 없으면 STT로 전환한다. `any`는 자동 CC도 허용한다. CC의 정확성·전문을 보증하지 않는다. 배포 환경이 명시한 값은 코드 기본값보다 우선하므로 인수 전에 적용 정책·버전을 확인한다. 진행 중 동일 URL은 옵션이 달라도 기존 작업을 재사용하는 현행 한계가 있다. `workdir`, `keep_workdir`, `save_transcript`, API 키, LLM 제공자·모델은 공개 요청 필드가 아니다.
 
 LLM 제공자와 주장 추출기는 BE 환경 설정이다. 코드 기본은 `DEEPCHECK_LLM_PROVIDER=off`, `DEEPCHECK_CLAIM_EXTRACTOR=rule`이고, 배포 예시의 DeepSeek+llm 구성과 구분한다. [기존 PR의 LLM 사용 설명](https://github.com/Dynamic-Juo/docs/pull/7#discussion_r3989716198)은 당시 공유 기록이지 이번 live 환경 재검증이 아니다. FE 요청의 `model_size`는 Whisper 크기이며 DeepSeek 모델 설정이 아니다. 키를 프론트 번들·공개 환경변수로 전달하지 않는다.
 

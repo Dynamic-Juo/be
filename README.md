@@ -8,7 +8,17 @@
 새 기기에서 이어서 작업할 때는 [현재 상태와 읽는 순서](docs/handoff.md)부터 확인하세요.
 [프롬프트·평가 결과](docs/prompt-evaluation.md)와 [M4 맥미니·OrbStack 배포 절차](docs/deployment-mac-mini.md)를 별도로 관리합니다.
 
-2026-09-12 배포 준비: `fix/midpoint-hardening`의 API·Swagger 설명과
+2026-09-13 보안 CI/CD 준비: GitHub-hosted ARM64 CI가 테스트한 image를 digest로 게시·서명하고,
+보호된 environment 승인 뒤 맥미니의 대상 고정 helper가 한 서비스만 교체하는 코드를 구현했습니다.
+범용 self-hosted runner는 설치하지 않으며, 현재 설정은 `enabled=false`라 GitHub와 맥미니에는
+아직 활성화되지 않았습니다. 로컬 통합 검증은 **687 passed, 2 warnings**입니다. 구조·신뢰 경계와
+활성화 전 필수 조건은 [개발계 CI/CD 보안 런북](docs/development-cd-runbook.md)을 따릅니다.
+
+2026-09-13 기획 반영: 기획 결정권자는 조정준 팀장입니다. 사용자가 전달한 기획에 따라
+자막은 기본 미사용(`off`)이며 `manual`·`any`로 명시적으로 선택할 수 있습니다.
+이번 변경은 개발 작업 브랜치 기준이며 실제 서버 설정·이미지는 변경하지 않았습니다.
+
+이전 2026-09-12 배포 준비: `fix/midpoint-hardening`의 API·Swagger 설명과
 [FE 연동 인수인계](docs/frontend-integration.md), [요청·응답·오류 API 계약](docs/api-reference.md)을 보완했습니다.
 자막 기본값을 기존 `manual`로 복원한 뒤 로컬 검증은 **329 passed, 2 warnings**입니다. 모의 모델·제공자와
 Python 네트워크 차단 fixture를 사용한 결과이며 실제 영상·외부 API·컨테이너 검증은 아닙니다.
@@ -95,11 +105,12 @@ Python 네트워크 차단 fixture를 사용한 결과이며 실제 영상·외�
 | API | `backend/app.py`, `backend/harness.py` | FastAPI + 워커 풀 |
 | 에러·로그 | `deepcheck/errors.py`, `deepcheck/logging_setup.py` | 도메인 예외, request_id 로깅 |
 
-**기본은 수동 CC 우선(`caption_policy: "manual"`)입니다.** 기존 배포 동작을 유지하며,
-사용할 CC가 없으면 STT로 전환합니다. 영상에 입힌 글자의 OCR은 아니고 자동 생성 CC는 제외합니다.
-등록 CC라는 분류만으로 사람 작성·정확성·발언 전문을 보증하지 않습니다. `off`는 항상 STT,
-`any`는 자동 CC도 허용하는 명시적 옵션입니다. 기획 본문과 리뷰의 최종 정리는 별도이며,
-이번 보안 수정에 STT 기본값 전환을 섞지 않습니다. [정책 차이와 FE 인수 조건](docs/frontend-integration.md#먼저-구분할-상태)을 확인하세요.
+**기본은 자막 미사용(`caption_policy: "off"`)이며 STT로 발언을 확보합니다.**
+`manual`을 선택하면 등록 수동 CC를 우선 사용하고 사용할 CC가 없으면 STT로 전환합니다.
+`any`는 자동 생성 CC까지 허용하는 옵션입니다. 영상에 입힌 글자의 OCR은 포함하지 않으며,
+등록 CC라는 분류만으로 사람 작성·정확성·발언 전문을 보증하지 않습니다.
+기존 서버 환경에 `manual`이 명시돼 있다면 코드 기본값 변경만으로 전환되지 않습니다.
+실제 환경 변경·배포는 별도 승인 후 진행합니다. [FE 인수 조건](docs/frontend-integration.md#먼저-구분할-상태)을 확인하세요.
 
 과거 한국어 뉴스 표본에서는 `small` 약 88초, `tiny` 약 53초와 수치·고유명사 오인식이 기록됐습니다.
 이는 당시 별도 실행 결과이지 현재 수정안의 성능이나 한국어 전반의 정확도 보증이 아닙니다.
@@ -425,7 +436,7 @@ DEEPCHECK_GOOGLE_FACTCHECK_API_KEY=...
 | `DEEPCHECK_LOG_FORMAT` | text | `json`으로 두면 한 줄 JSON 로그 (수집·검색용) |
 | `DEEPCHECK_CORS_ORIGINS` | `*` | 허용 오리진. 쉼표 구분 |
 | `DEEPCHECK_WHISPER_MODEL_SIZE` | small | STT 모델 크기 |
-| `DEEPCHECK_CAPTION_POLICY` | manual | 업로더 등록 CC 우선, 없으면 STT. `off`는 항상 STT, `any`는 자동 CC도 허용 |
+| `DEEPCHECK_CAPTION_POLICY` | off | 기본 자막 미사용·STT. `manual`은 등록 CC 우선, `any`는 자동 CC도 허용하며 사용할 CC가 없으면 STT |
 | `DEEPCHECK_MAX_FRAMES` | 8 | 샘플링 프레임 수 |
 | `DEEPCHECK_CLASSIFIER_MODEL` | dima806/... | 딥페이크 분류기 |
 | `DEEPCHECK_VLM_MODEL` | (없음) | 지정 시에만 VLM 사용 |
@@ -486,6 +497,9 @@ ollama pull qwen2.5vl:7b
 
 ## 배포 시 주의
 
+- 앱 맥미니에 범용 GitHub self-hosted runner를 설치하지 않습니다. GitHub는 build/test/sign과
+  승인된 artifact 생성까지만 맡고, 실제 교체는 [고정 helper 절차](docs/development-cd-runbook.md)를
+  별도 활성화한 뒤 수행합니다. 기존 Docker 서비스와 실제 환경 파일을 임의로 재시작·덮어쓰지 않습니다.
 - torch/torchvision은 **CPU 전용 wheel index**로 설치합니다. 기본 PyPI 휠은 GPU가 없는
   호스트에도 CUDA 런타임(~2GB)을 끌고 옵니다. Dockerfile에 반영돼 있습니다.
 - uvicorn은 **단일 워커 프로세스**로 띄웁니다. job 상태를 프로세스 메모리에 보관하므로
