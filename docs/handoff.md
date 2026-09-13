@@ -1,5 +1,10 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-13 Cloudflare OPTIONS 반영 완료 — 최신
+
+- 사용자 승인으로 Chrome에서 Conan API Dev의 OPTIONS 원본 전달을 켜고 저장·재조회했다. 기존 이메일 정책은 유지했다. 외부 curl OPTIONS가 백엔드의 400 Disallowed CORS origin을 반환하고 미인증 health는 302였다.
+- Cloudflare 변경은 완료됐으며 남은 작업은 맥미니의 Vercel CORS 환경값 적용이다. dev-server SSH 재시도도 시간 초과였다. 서버·컨테이너 변경과 FE 실연동은 미완료다. [상세 기록](frontend-integration.md)을 따른다.
+
 ## 2026-09-13 Vercel CORS·Access OPTIONS 적용 요청
 
 - 사용자는 개발 API의 CORS·Cloudflare OPTIONS 변경을 승인했다. 팀장 이메일은 Access 허용 목록에 추가했다고 사용자에게 확인했다.

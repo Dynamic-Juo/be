@@ -130,3 +130,10 @@ API hostname, Vercel Origin, Access 정책, 이미지 ID, 기동 시각, 시험 
 - [Cloudflare Access와 CORS](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/cors/)
 
 이번 점검에서는 컨테이너 전체 inspect, 환경변수 값, Tunnel token을 출력하거나 Git에 기록하지 않았다. 서비스 재시작과 전체 prune도 실행하지 않았다.
+
+
+## 2026-09-13 — Cloudflare OPTIONS 웹 설정 반영
+
+- 사용자 승인으로 Chrome Apple Events 자동화를 사용했다. Conan API Dev의 options_preflight_bypass를 false에서 true로 바꾸고 저장 후 재조회했다. 기존 CORS 입력은 비어 있었고 이메일 Allow 정책·쿠키·다른 앱·Tunnel은 그대로 유지했다.
+- 외부 curl의 Vercel Origin·POST·content-type OPTIONS는 400 Disallowed CORS origin으로 백엔드에 도달했다. credentials=true·GET/POST·content-type 허용 헤더를 확인했다. 미인증 GET /health는 302로 인증 보호가 유지된다. Python urllib 403/1010은 도구 요청 차단으로 구분했다.
+- dev-server SSH 재시도는 시간 초과다. 맥미니 CORS 환경값 적용·컨테이너 재생성·실제 분석·Vercel 브라우저 검수는 미완료다. 변경 전으로 복구할 때는 해당 앱의 OPTIONS 원본 전달만 끈다.

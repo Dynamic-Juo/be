@@ -1,5 +1,14 @@
 # Vercel 프론트 연동 인수인계
 
+## 2026-09-13 Cloudflare OPTIONS 반영 완료
+
+사용자가 Chrome 자동화를 허용한 후 Cloudflare 웹에서 Conan API Dev의 `옵션 요청을 원본으로 바이패스`를 켜고 저장했다. 설정을 다시 열어 `options_preflight_bypass=true`를 확인했다. 기존 Cloudflare CORS 입력은 비어 있었으며 이메일 Allow 정책·쿠키 설정·다른 앱·Tunnel은 변경하지 않았다.
+
+- 외부 curl의 Vercel preflight는 이제 **HTTP 400, Disallowed CORS origin**이다. Allow-Credentials=true, Allow-Methods=GET/POST, Allow-Headers=content-type이 반환되어 OPTIONS가 백엔드 CORS까지 도달함을 확인했다. Vercel Origin 허용은 아직 완료되지 않았다.
+- 쿠키 없는 GET /health는 **HTTP 302**로 계속 인증을 요구한다. 실제 분석 POST·인증 후 브라우저 연동은 실행하지 않았다.
+- Python urllib 검사는 Cloudflare 1010 차단으로 판정에 사용하지 않고 curl 응답을 기준으로 삼았다.
+- Cloudflare 로그인 후에도 dev-server SSH는 시간 초과다. 서버 환경·컨테이너는 미변경이며 아래의 CORS 환경값 반영이 남았다. 아래 초기 관리 도구 부재 기록은 Chrome 자동화로 해소됐지만 맥미니 접속 문제는 남아 있다.
+
 ## 2026-09-13 CORS·Access 적용 작업 상태
 
 사용자는 백엔드 CORS와 Cloudflare OPTIONS 설정 적용을 승인했고, 팀장 이메일을 Access에 추가했다고 확인했다. 아래의 과거 '팀원 이메일 미확인' 기록보다 이 확인을 우선한다. 실제 허용 목록은 이번에 조회하지 않았다.

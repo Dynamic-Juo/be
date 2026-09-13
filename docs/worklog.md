@@ -357,3 +357,10 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 사용자가 설정 적용을 승인했고 팀장 Access 이메일 추가를 확인했다. 외부 개발 API의 Vercel Origin·POST·content-type preflight는 403이었다. 실제 분석은 제출하지 않았다.
 - main cf550f9의 기존 CORS 코드는 명시한 Origin이면 credentials를 허용한다. Vercel Origin을 환경변수로 지정한 로컬 TestClient 검사에서 OPTIONS 200, health 200과 정확한 CORS 헤더, 미허용 Origin preflight 400을 확인했다. 전체 회귀·배포 이미지 검증은 아니다.
 - 저장된 home-server 및 dev-server SSH 연결은 시간 초과였고 Cloudflare 관리 연결 도구도 없었다. 서버 환경·컨테이너·Access는 변경하지 않았다. FE 연동 문서에 적용값·대시보드 위치·설정 영향·검수 조건을 기록했다. docs/vercel-access-cors는 로컬 문서 작업이며 원격 push는 하지 않았다.
+
+
+## 2026-09-13 — Cloudflare OPTIONS 웹 설정 반영
+
+- 사용자 승인으로 Chrome Apple Events 자동화를 사용했다. Conan API Dev의 options_preflight_bypass를 false에서 true로 바꾸고 저장 후 재조회했다. 기존 CORS 입력은 비어 있었고 이메일 Allow 정책·쿠키·다른 앱·Tunnel은 그대로 유지했다.
+- 외부 curl의 Vercel Origin·POST·content-type OPTIONS는 400 Disallowed CORS origin으로 백엔드에 도달했다. credentials=true·GET/POST·content-type 허용 헤더를 확인했다. 미인증 GET /health는 302로 인증 보호가 유지된다. Python urllib 403/1010은 도구 요청 차단으로 구분했다.
+- dev-server SSH 재시도는 시간 초과다. 맥미니 CORS 환경값 적용·컨테이너 재생성·실제 분석·Vercel 브라우저 검수는 미완료다. 변경 전으로 복구할 때는 해당 앱의 OPTIONS 원본 전달만 끈다.
