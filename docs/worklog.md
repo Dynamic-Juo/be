@@ -351,20 +351,17 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 일괄 주장 검증 helper의 예산 초과도 done이 아닌 timed_out과 일치하는 부족 사유·라벨로 남긴다. 외부 연결 오류의 원시 reason 로그를 제거했다.
 - 최종 전체 회귀 테스트 314 passed, 2 dependency deprecation warnings(6.01초), compileall·diff-check 통과. 프롬프트 평가 목록 11건/network_calls=0과 CI YAML의 권한·네트워크 정적 검사를 확인했다. 모의 테스트 시간을 실제 영상 성능으로 해석하지 않는다. 커밋·푸시·병합·이미지 게시·배포는 하지 않았다.
 
-
 ## 2026-09-13 — Vercel CORS·Cloudflare OPTIONS 적용 점검
 
 - 사용자가 설정 적용을 승인했고 팀장 Access 이메일 추가를 확인했다. 외부 개발 API의 Vercel Origin·POST·content-type preflight는 403이었다. 실제 분석은 제출하지 않았다.
 - main cf550f9의 기존 CORS 코드는 명시한 Origin이면 credentials를 허용한다. Vercel Origin을 환경변수로 지정한 로컬 TestClient 검사에서 OPTIONS 200, health 200과 정확한 CORS 헤더, 미허용 Origin preflight 400을 확인했다. 전체 회귀·배포 이미지 검증은 아니다.
 - 저장된 home-server 및 dev-server SSH 연결은 시간 초과였고 Cloudflare 관리 연결 도구도 없었다. 서버 환경·컨테이너·Access는 변경하지 않았다. FE 연동 문서에 적용값·대시보드 위치·설정 영향·검수 조건을 기록했다. docs/vercel-access-cors는 로컬 문서 작업이며 원격 push는 하지 않았다.
 
-
 ## 2026-09-13 — Cloudflare OPTIONS 웹 설정 반영
 
 - 사용자 승인으로 Chrome Apple Events 자동화를 사용했다. Conan API Dev의 options_preflight_bypass를 false에서 true로 바꾸고 저장 후 재조회했다. 기존 CORS 입력은 비어 있었고 이메일 Allow 정책·쿠키·다른 앱·Tunnel은 그대로 유지했다.
 - 외부 curl의 Vercel Origin·POST·content-type OPTIONS는 400 Disallowed CORS origin으로 백엔드에 도달했다. credentials=true·GET/POST·content-type 허용 헤더를 확인했다. 미인증 GET /health는 302로 인증 보호가 유지된다. Python urllib 403/1010은 도구 요청 차단으로 구분했다.
 - dev-server SSH 재시도는 시간 초과다. 맥미니 CORS 환경값 적용·컨테이너 재생성·실제 분석·Vercel 브라우저 검수는 미완료다. 변경 전으로 복구할 때는 해당 앱의 OPTIONS 원본 전달만 끈다.
-
 
 ## 2026-09-13 15:05 KST — 맥미니 Vercel CORS 적용 완료
 
@@ -376,16 +373,21 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - Cloudflare OPTIONS 설정과 BE 환경 반영은 완료됐다. 실제 FE의 인증 쿠키·제3자 쿠키 제한·분석 POST/GET polling·영상/외부 제공자는 이번에 검증하지 않았다. FE는 같은 브라우저에서 API Access 인증 후 credentials: include로 접수·조회한다.
 - 복구가 필요하면 보관된 환경 원본과 현재 값을 비교해 CORS 항목만 되돌리고 활성 작업·현재 배포 방식 확인 후 Conan만 반영한다. 이후 다른 변경까지 원복하지 않도록 환경 파일 전체를 무조건 덮어쓰지 않는다.
 
-
 ## 2026-09-13 — 서버 격리 가이드라인 작성
 
 - 사용자가 최종 프론트 흐름 성공을 보고했고, 개인 맥미니·기존 서비스 보호를 주요 작업으로 지정했다. ISO-01~07 작업 순서와 파일·네트워크·권한·자원·복구 검수 기준을 docs/server-isolation.md에 정리했다.
 - OrbStack 공식 문서에서 일반/isolated 머신 모두 공유 커널이며 독립 VM 경계가 아니라는 점을 확인했다. 독립 VM과 공유 폴더·내부망 제한을 공개 목표로 제안했으며 제품·자원값은 미선정이다.
 - 로컬 Compose·Dockerfile 및 이전 실제 배포 기록을 구분했다. 이번 작업에서 서버 조회·변경·격리 시험은 하지 않았다. 문서 상대 링크·Mermaid 코드 블록·git diff 공백 검사를 확인했다. 브랜치는 docs/server-isolation이고 원격 push는 하지 않았다.
 
-
 ## 2026-09-13 — 맥미니 배포환경 읽기 전용 감사
 
 - 실제 inspect·proc·config 권한·네트워크·stats·배포 코드 함수 조회를 수행했다. 결과는 deployment-isolation-audit-2026-09-13.md에 기록했다. 호스트 경로/socket 비마운트, 자원·seccomp 보호와 root·NoNewPrivs/PID 보완 필요를 구분했다.
 - 서버 코드가 여전히 http(s) 입력 검사와 전체 목록 노출 경로를 가진 472aff7임을 확인했다. Access는 별도 보호이며 최신 코드 미배포를 혼동하지 않는다. 기존 서비스 기능·내부망 공격·영상 요청·변경은 하지 않았다.
 - ISO-01은 부분 감사다. VM 이전을 필수로 단정하지 않고 현 구성 강화와 실제 통신 경계 검사를 먼저 제안한다. 문서 링크와 공백 검사를 수행했으며 코드 테스트나 부하 시험은 하지 않았다.
+
+## 2026-09-13 문서 리뷰 후속 정리
+
+- docs #7의 최신 답변과 #4·#5의 논의를 확인해 과거 평가와 최신 구현·운영 상태를 분리했다. BigKinds/네이버 혼동과 자료 시점·충돌 답변의 오해를 정정하고 미결 사항을 프로젝트 계획으로 연결했다.
+- #9·#10은 열린 PR이다. 개별 재검증 API, 전체 AI 생성 자가표기 처리와 인수 기대값을 [후속 문서](review-followup-2026-09-13.md)에 기록했다. 댓글·DM·서버 변경은 실행하지 않았다.
+- be cf550f9의 원문·출처 충분성 gate는 이미 구현됐으나 기본 검색 제공자가 검증된 원문을 만들지 못한다. 원문 공급 경로가 없으면 실경로 양성 판정에 도달하지 못하는 점을 다음 품질 작업으로 지정했다.
+- `.venv/bin/python -m pytest tests/test_claims.py tests/test_prompt_contract.py -q`: 55 passed (0.35초). 모의 계약 검사이며 실영상 품질 검수와 구분한다.
