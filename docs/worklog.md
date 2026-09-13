@@ -375,3 +375,10 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 외부 curl Vercel OPTIONS는 200 OK, Allow-Origin은 정확한 Vercel 주소, Allow-Credentials=true, Allow-Methods=GET/POST, Allow-Headers=content-type이었다. 미허용 Origin OPTIONS는 400, 미인증 GET /health는 Access 302다. 내부 health는 ok, 컨테이너 healthy, 기존 다른 7개 컨테이너도 계속 Up 상태다.
 - Cloudflare OPTIONS 설정과 BE 환경 반영은 완료됐다. 실제 FE의 인증 쿠키·제3자 쿠키 제한·분석 POST/GET polling·영상/외부 제공자는 이번에 검증하지 않았다. FE는 같은 브라우저에서 API Access 인증 후 credentials: include로 접수·조회한다.
 - 복구가 필요하면 보관된 환경 원본과 현재 값을 비교해 CORS 항목만 되돌리고 활성 작업·현재 배포 방식 확인 후 Conan만 반영한다. 이후 다른 변경까지 원복하지 않도록 환경 파일 전체를 무조건 덮어쓰지 않는다.
+
+
+## 2026-09-13 — 서버 격리 가이드라인 작성
+
+- 사용자가 최종 프론트 흐름 성공을 보고했고, 개인 맥미니·기존 서비스 보호를 주요 작업으로 지정했다. ISO-01~07 작업 순서와 파일·네트워크·권한·자원·복구 검수 기준을 docs/server-isolation.md에 정리했다.
+- OrbStack 공식 문서에서 일반/isolated 머신 모두 공유 커널이며 독립 VM 경계가 아니라는 점을 확인했다. 독립 VM과 공유 폴더·내부망 제한을 공개 목표로 제안했으며 제품·자원값은 미선정이다.
+- 로컬 Compose·Dockerfile 및 이전 실제 배포 기록을 구분했다. 이번 작업에서 서버 조회·변경·격리 시험은 하지 않았다. 문서 상대 링크·Mermaid 코드 블록·git diff 공백 검사를 확인했다. 브랜치는 docs/server-isolation이고 원격 push는 하지 않았다.
