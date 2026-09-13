@@ -350,3 +350,10 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 작업 복사본 Compose의 자막 기본값도 off로 맞추고 정적 파일 회귀 검사를 추가했다. 실제 Compose 실행·배포 환경 파일 반영은 하지 않았다. README·파이프라인 설명도 수정 코드와 과거 실측을 구분해 정정했다.
 - 일괄 주장 검증 helper의 예산 초과도 done이 아닌 timed_out과 일치하는 부족 사유·라벨로 남긴다. 외부 연결 오류의 원시 reason 로그를 제거했다.
 - 최종 전체 회귀 테스트 314 passed, 2 dependency deprecation warnings(6.01초), compileall·diff-check 통과. 프롬프트 평가 목록 11건/network_calls=0과 CI YAML의 권한·네트워크 정적 검사를 확인했다. 모의 테스트 시간을 실제 영상 성능으로 해석하지 않는다. 커밋·푸시·병합·이미지 게시·배포는 하지 않았다.
+
+
+## 2026-09-13 — Vercel CORS·Cloudflare OPTIONS 적용 점검
+
+- 사용자가 설정 적용을 승인했고 팀장 Access 이메일 추가를 확인했다. 외부 개발 API의 Vercel Origin·POST·content-type preflight는 403이었다. 실제 분석은 제출하지 않았다.
+- main cf550f9의 기존 CORS 코드는 명시한 Origin이면 credentials를 허용한다. Vercel Origin을 환경변수로 지정한 로컬 TestClient 검사에서 OPTIONS 200, health 200과 정확한 CORS 헤더, 미허용 Origin preflight 400을 확인했다. 전체 회귀·배포 이미지 검증은 아니다.
+- 저장된 home-server 및 dev-server SSH 연결은 시간 초과였고 Cloudflare 관리 연결 도구도 없었다. 서버 환경·컨테이너·Access는 변경하지 않았다. FE 연동 문서에 적용값·대시보드 위치·설정 영향·검수 조건을 기록했다. docs/vercel-access-cors는 로컬 문서 작업이며 원격 push는 하지 않았다.

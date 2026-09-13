@@ -1,5 +1,11 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-13 Vercel CORS·Access OPTIONS 적용 요청
+
+- 사용자는 개발 API의 CORS·Cloudflare OPTIONS 변경을 승인했다. 팀장 이메일은 Access 허용 목록에 추가했다고 사용자에게 확인했다.
+- 외부 OPTIONS는 403이다. main cf550f9에 Vercel Origin을 지정한 로컬 검사에서는 preflight·health CORS와 미허용 Origin 거부가 통과해 코드 변경은 필요하지 않았다.
+- home-server·dev-server SSH 연결은 모두 시간 초과였고 Cloudflare 관리 도구도 없어 실제 설정은 미변경이다. [FE 연동 문서](frontend-integration.md)의 최신 항목에 적용할 환경값·Access 설정·검수 조건을 남겼다. 다음 작업은 서버 연결과 대시보드 접근 확보 후 해당 설정 반영이다.
+
 ## 2026-09-13 main 자동 배포 전환 작업
 
 - 사용자는 백엔드 배포를 본인이 담당하며 제3자 승인 대신 main 병합 후 자동 배포를 요청했다. 이전 required-reviewer 제안은 채택하지 않는다. 기존 main `513f536`의 실제 CI `34733471394`는 ARM64 빌드·테스트·GHCR 게시·이미지/릴리스 서명까지 성공했다.

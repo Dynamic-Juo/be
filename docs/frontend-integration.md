@@ -1,5 +1,25 @@
 # Vercel 프론트 연동 인수인계
 
+## 2026-09-13 CORS·Access 적용 작업 상태
+
+사용자는 백엔드 CORS와 Cloudflare OPTIONS 설정 적용을 승인했고, 팀장 이메일을 Access에 추가했다고 확인했다. 아래의 과거 '팀원 이메일 미확인' 기록보다 이 확인을 우선한다. 실제 허용 목록은 이번에 조회하지 않았다.
+
+- 개발 API에 Vercel Origin·POST·content-type을 지정한 외부 OPTIONS 요청은 HTTP 403이었다. 분석 POST는 제출하지 않았다.
+- main `cf550f9` 코드는 명시한 Origin에 대해 인증 쿠키를 허용한다. 로컬 TestClient에서 `DEEPCHECK_CORS_ORIGINS=https://kimjeonil.vercel.app`로 OPTIONS 200, GET /health 200, 정확한 Allow-Origin·Allow-Credentials 응답과 미허용 Origin의 preflight 400을 확인했다. 서버 이미지의 동작을 검증한 것은 아니다.
+- 기존 SSH 별칭 home-server와 dev-server는 모두 시간 초과였다. 이 세션에는 Cloudflare 관리 연결 도구도 없어 서버 환경·컨테이너·Access 설정을 변경하지 못했다. 적용 완료나 Vercel 연동 성공으로 읽지 않는다.
+
+연결 가능한 맥미니 작업에서 실제 CORS 값과 배포 방식을 먼저 확인한다. 기존 허용 Origin은 보존하면서 `https://kimjeonil.vercel.app`을 추가하고 `*`는 사용하지 않는다. 마지막 확인값이 localhost:3000뿐인 경우 목표 값은 다음과 같다.
+
+```dotenv
+DEEPCHECK_CORS_ORIGINS=http://localhost:3000,https://kimjeonil.vercel.app
+```
+
+환경 파일 전체를 예제로 덮어쓰지 않는다. 환경값 적용에는 실행 컨테이너 재생성이 필요하므로 현재 작업·배포 컨트롤러 상태를 확인하고 현행 배포 절차로 반영한다. 이번 요청을 다른 이미지·자막 정책·자동 배포 설치까지 승인한 것으로 확대하지 않는다.
+
+Cloudflare는 **Zero Trust → Access controls → Applications → Conan API Dev → Configure → Advanced settings → Cross-Origin Resource Sharing (CORS) settings**에서 **Bypass OPTIONS requests to origin**을 켠다. 먼저 백엔드 CORS 적용을 확인한다. 이 설정은 해당 앱의 기존 Cloudflare CORS 설정을 제거하므로 변경 전 값을 기록하고 다른 설정이 있다면 영향 범위를 대조한다. 이메일 Allow 정책과 실제 POST·GET의 Access 인증은 유지한다. [공식 설정 설명](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/cors/#bypass-options-requests-to-origin)
+
+적용 후 외부 OPTIONS가 성공하고 정확한 Vercel Origin·credentials·POST·content-type을 허용하는지 확인한다. 미인증 GET /health는 계속 Access에 차단되어야 한다. 이후 허용 이메일로 로그인한 브라우저에서 FE의 credentials: include와 함께 접수·폴링을 별도 검수한다. 서버 설정 검사만으로 제3자 쿠키 제한이나 FE 연동까지 성공했다고 기록하지 않는다.
+
 작성 기준: 2026-09-12, `fix/midpoint-hardening` 배포 준비 수정안. 상세 필드·상태·오류는 [API 계약](api-reference.md)을 기준으로 한다. 이 문서는 연결 순서와 담당자별 인수 항목을 설명한다. 실제 PR·CI·서버 반영 상태는 [인수인계](handoff.md)를 확인한다.
 
 ## 먼저 구분할 상태
