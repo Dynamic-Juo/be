@@ -28,6 +28,7 @@ services:
       HF_TOKEN: "${HF_TOKEN:-}"
       DEEPCHECK_START_DRAINED: "${DEEPCHECK_START_DRAINED:-}"
       DEEPCHECK_DEPLOYMENT_STATE_FILE: /var/lib/deepcheck/deployment-admission.json
+      DEEPCHECK_RESULT_STATE_FILE: /var/lib/deepcheck-results/state/results.json
       OMP_NUM_THREADS: "2"
       MKL_NUM_THREADS: "2"
     cpus: ${CONAN_CPUS:-2}
@@ -43,6 +44,7 @@ services:
           - ${CONAN_NETWORK_ALIAS:-conan-api}
     volumes:
       - model-cache:/root/.cache
+      - job-results:/var/lib/deepcheck-results
     healthcheck:
       test:
         - CMD
@@ -67,3 +69,4 @@ networks:
 
 volumes:
   model-cache:
+  job-results:

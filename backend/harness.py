@@ -33,6 +33,7 @@ from deepcheck.config import (
 from deepcheck.errors import SessionBusyError, as_error_dict
 from deepcheck.logging_setup import current_job_id
 from deepcheck.pipeline import AnalysisOptions, analyze_url
+from backend.result_store import ResultStore
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +476,7 @@ class Harness:
         max_retained_jobs: int | None = None,
         start_drained: str | None = None,
         deployment_state_file: str | None = None,
+        result_state_file: str | None = None,
     ):
         self.max_workers = config.workers if max_workers is None else max_workers
         self.backlog = config.backlog if backlog is None else backlog
@@ -528,6 +530,24 @@ class Harness:
 
         self._queue: queue.Queue = queue.Queue(maxsize=self.backlog)
         self._jobs: dict[str, Job] = {}
+        self._result_store = None
+        self._result_store_failed = False
+        try:
+            if result_state_file:
+                self._result_store = ResultStore(result_state_file)
+                for record in self._result_store.read():
+                    job = Job(**record)
+                    if not job.finished or job.id in self._jobs:
+                        raise ValueError('invalid terminal job snapshot')
+                    self._jobs[job.id] = job
+                self._evict_old_jobs_locked()
+                self._result_store.write([asdict(j) for j in self._jobs.values()])
+        except BaseException:
+            if self._result_store is not None:
+                self._result_store.close()
+            if state_store is not None:
+                state_store.close()
+            raise
         self._inflight_url: dict[str, str] = {}
         self._lock = threading.Lock()
         self._closed = False
@@ -625,7 +645,7 @@ class Harness:
         if not is_valid_deployment_id(deployment_id):
             raise ValueError("deployment_id must be a canonical deployment ID")
         with self._lock:
-            if self._closed:
+            if self._closed or self._result_store_failed:
                 raise AdmissionConflictError("admission is closed")
             if self._admission_state == DRAINING:
                 if self._deployment_id != deployment_id:
@@ -658,7 +678,7 @@ class Harness:
         if not is_valid_deployment_id(deployment_id):
             raise ValueError("deployment_id must be a canonical deployment ID")
         with self._lock:
-            if self._closed:
+            if self._closed or self._result_store_failed:
                 raise AdmissionConflictError("admission is closed")
             if self._admission_state == ACCEPTING:
                 if deployment_id in self._completed_deployment_ids:
@@ -743,6 +763,7 @@ class Harness:
         finally:
             job.updated_at = time.time()
             with self._lock:
+                self._persist_results_locked()
                 if self._inflight_url.get(job.url) == job.id:
                     self._inflight_url.pop(job.url, None)
             current_job_id.reset(token)
@@ -787,6 +808,18 @@ class Harness:
             if has_analysis and job.status not in (PARTIALLY_COMPLETED,) and job.status not in _TERMINAL:
                 job.status = PARTIALLY_COMPLETED
         job.updated_at = time.time()
+
+    def _persist_results_locked(self) -> None:
+        if self._result_store is None:
+            return
+        try:
+            self._evict_old_jobs_locked()
+            self._result_store.write([asdict(j) for j in self._jobs.values() if j.finished])
+        except Exception:
+            # Do not advertise a safely deployable idle service after disk failure.
+            self._result_store_failed = True
+            self._admission_state = CLOSED
+            logger.exception('결과 저장 실패: 신규 접수와 자동 배포를 차단한다')
 
     def _evict_old_jobs_locked(self) -> None:
         """완료된 오래된 job부터 정리한다.
@@ -836,8 +869,13 @@ class Harness:
                 "admission_state": self._admission_state,
                 "admission_protocol": (
                     ADMISSION_PROTOCOL
-                    if self._admission_store is not None
+                    if self._admission_store is not None and not self._result_store_failed
                     else ADMISSION_PROTOCOL_UNAVAILABLE
+                ),
+                "result_persistence": (
+                    "durable-terminal-v1"
+                    if self._result_store is not None and not self._result_store_failed
+                    else "unavailable"
                 ),
                 "job_counts": counts,
             }
@@ -850,6 +888,7 @@ class Harness:
         })
         if self._inflight_url.get(job.url) == job.id:
             self._inflight_url.pop(job.url, None)
+        self._persist_results_locked()
 
     def shutdown(self, *, wait: bool = True) -> None:
         """Stop admission, cancel queued work, optionally wait for running work.
@@ -872,6 +911,8 @@ class Harness:
                 worker.join()
         if self._admission_store is not None:
             self._admission_store.close()
+        if wait and self._result_store is not None:
+            self._result_store.close()
 
 
 def _has_usable_result(result: dict | None) -> bool:

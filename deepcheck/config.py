@@ -234,6 +234,7 @@ class Config:
     # process restart에도 drain fence를 복원하는 container-local durable state.
     # Compose가 writable layer의 고정 절대 경로를 주입한다.
     deployment_state_file: str | None = field(default=None, repr=False)
+    result_state_file: str | None = field(default=None, repr=False)
 
     log_level: str = "INFO"
     # json으로 두면 로그가 한 줄짜리 JSON으로 나가서 나중에 수집·검색이 쉽다.
@@ -314,6 +315,7 @@ def load_config() -> Config:
         deployment_token=deployment_token,
         start_drained=start_drained,
         deployment_state_file=deployment_state_file,
+        result_state_file=os.getenv("DEEPCHECK_RESULT_STATE_FILE") or None,
         log_level=_env_str("LOG_LEVEL", Config.log_level).upper(),
         log_format=_env_str("LOG_FORMAT", Config.log_format).lower(),
         cors_origins=_env_str("CORS_ORIGINS", Config.cors_origins),
