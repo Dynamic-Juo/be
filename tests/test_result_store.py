@@ -74,3 +74,32 @@ def test_rejects_symlink_parent(tmp_path):
     (tmp_path / 'alias').symlink_to(actual, target_is_directory=True)
     with pytest.raises(OSError):
         ResultStore(str(tmp_path.resolve() / 'alias' / 'results.json'))
+
+
+def test_failed_atomic_replace_preserves_previous_snapshot(tmp_path, monkeypatch):
+    store = ResultStore(path(tmp_path))
+    try:
+        store.write([{'generation': 1}])
+        def fail(*args, **kwargs):
+            raise OSError('replace failed')
+        monkeypatch.setattr(os, 'replace', fail)
+        with pytest.raises(OSError):
+            store.write([{'generation': 2}])
+        assert store.read() == [{'generation': 1}]
+    finally:
+        store.close()
+
+
+def test_restored_jobs_obey_existing_retention_limit(tmp_path):
+    p = path(tmp_path)
+    store = ResultStore(p)
+    jobs = [Job(id=f'{i:032x}', session_id='s', url='u', params={},
+                status=COMPLETED, updated_at=float(i)) for i in range(3)]
+    store.write([asdict(j) for j in jobs])
+    store.close()
+    h = Harness(result_state_file=p, max_retained_jobs=2)
+    try:
+        assert h.get(jobs[0].id) is None
+        assert len(h.all_jobs()) == 2
+    finally:
+        h.shutdown()
