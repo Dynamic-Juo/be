@@ -1,5 +1,77 @@
 # 개발계 CI/CD 보안 런북
 
+## 2026-09-13 main CI 자동 배포 모드
+
+사용자가 백엔드 배포를 직접 담당하며 제3자 승인 없이 main merge → CI 성공 →
+맥미니 개발계 자동 배포를 명시했다. 이를 위한 새 구현은 `scripts/auto_deploy.py`,
+`deploy/auto-host-config.example.json`, `deploy/com.conan.development-pull.plist.example`이다.
+아래 기존 environment 승인 설명은 schema 4 수동 승인 모드의 이력·계약이다.
+새 모드는 schema 5, `request_authentication=github-main-push-image-and-manifest-v1`로
+분리한다. Approval 전용 workflow ID/hash와 environment ID는 `null`, reviewer는 `[]`다.
+가짜 reviewer나 승인 request를 만들지 않는다. `environment` 문자열은 로컬 target 이름이다.
+
+Watcher는 고정 GitHub CLI의 Actions/Contents 읽기 권한으로 main ref와 해당 SHA의
+최신 backend push CI run을 조회한다. 최신 run이 실패·실행 중이면 이전 성공으로
+대체하지 않는다. 성공한 run의 immutable artifact ID로 release ZIP을 받는다.
+API가 제공한 임의 download URL은 사용하지 않는다. 전체 4 MiB 상한, ZIP SHA-256과
+API size 일치, exact 3파일만 허용하고 중복·경로이동·symlink·특수파일·암호화·과대
+압축 해제 내용을 거부한다. 새 owner-only 디렉터리의 동일 snapshot에서 release/image
+attestation 두 개, repository/owner ID, event/ref/SHA/run/attempt, github-hosted signer,
+성공 CI 및 reviewed workflow bytes를 확인한다. 마지막에 current run/attempt와 main SHA를
+다시 확인한다. GitHub main은 이 조회 후에도 진행될 수 있으므로 선택 시점의 head를
+검증하는 계약이며 GitHub ref 자체를 잠그지는 않는다.
+
+인증 후 기존 `apply_deployment`의 고정 Compose 대상·global lock·drain·health·rollback·journal을
+사용한다. 내부 transaction ID는 auth namespace, repository/owner ID, target, CI run/attempt의
+deterministic UUID다. 기존 journal의 request watermark 필드는 이 모드에서 CI namespace를
+사용하므로 bootstrap의 request run/attempt를 CI run/attempt와 동일하게 설정한다.
+자동 인증 모드와 결과 저장 capability를 target fingerprint에 포함하여 수동 승인 모드의
+state/journal을 자동으로 재사용하지 않는다. 기존 state가 있으면 별도 migration이 필요하다.
+
+첫 다운로드 전에 `auto-attempt.json`에 `attempting`을 atomic+fsync로 기록한다. 검증 실패,
+네트워크 오류, helper 중단, 배포 실패, rollback 후에는 `blocked` 또는 `attempting`이 남는다.
+이 상태에서는 새 SHA가 와도 자동 배포를 멈추며 자동 `recover`도 하지 않는다. 정상 commit만
+`succeeded`로 기록하고 같은/오래된 run과 SHA는 반복하지 않는다. 후보를 선택하기 전 네트워크
+오류나 아직 끝나지 않은 CI는 다음 60초 주기에 다시 조회할 수 있다.
+
+운영자는 장애 원인을 확인하고 필요 시 고정 controller의 `recover`로 journal/state/실행 이미지를
+대조한 뒤 재개한다. `auto-attempt.json`이나 실패 journal을 단순 삭제해 같은 실패 릴리스를
+재시도하지 않는다. 이 버전에는 자동 latch 초기화 명령이 없으며 재개는 별도 검토한 상태
+조정 작업이다. `enabled=false`로 watcher를 멈추고 증거를 보존한다.
+
+### 최초 설치와 결과 저장 조건
+
+자동 모드는 현재 서비스 검사, drain 뒤 idle 확인, 새 이미지 및 복구 이미지 health에서
+`/ready.harness.result_persistence == durable-terminal-v1`을 요구한다. 결과 저장 실패나
+`unavailable`이면 교체를 차단한다. 이 capability 구현은 통합 담당의 `backend/result_store.py`
+및 별도 CD Compose 결과 볼륨 변경과 함께 통합해야 한다. 현재 472aff7 서버는 이 조건과
+durable admission을 지원하지 않으므로 먼저 사용자가 없는 유지보수 창에서 최초 migration을
+수행한다. 결과 볼륨과 `DEEPCHECK_RESULT_STATE_FILE` 경로가 새 이미지 및 rollback 이미지에서
+동일하게 보이고 쓰기·재시작 복원이 실제 동작하는지 확인한 뒤 `initialize`한다.
+
+고정 Python runtime과 helper 전체를 개발 checkout과 분리한 canonical 보호 경로에 설치한다.
+plist의 `/approved/...`는 실제 검토한 경로로 치환해야 하며 예제를 그대로 load하지 않는다.
+`ProgramArguments`는 고정 interpreter `-I`와 고정 watcher/config만 실행하며 shell을 통하지 않는다.
+`StartInterval=60`, `RunAtLoad=true`, `KeepAlive` 없음으로 한 번씩 실행한다. 같은 job의 중복
+시작은 launchd가 관리하며 다른 target과의 mutation은 기존 global lock으로 직렬화한다.
+로그 경로는 owner-only 디렉터리에 두고 운영 로그 회전 정책을 설정한다. 외부 포트와 범용 runner는 없다.
+
+같은 OrbStack 로그인 UID의 모든 프로세스는 동일 Docker 권한을 공유한다. 서비스 계정·daemon
+선택과 이 잔여 신뢰 범위 수용, 읽기 전용 자격 증명 설치, 최초 migration 및 launchd 활성화는
+통합 담당이 운영 대상에 맞춰 수행한다. 이 코드 작업에서는 서버·GitHub 설정을 변경하지 않았다.
+호스트 전용 Actions/Contents read credential은 아직 준비되지 않았다. 기존 개발용 broad
+Git credential을 복사해 read-only라고 취급하지 않는다. GHCR pull credential도 별도다.
+변경 없는 정상 상태에는 분당 main ref 조회 1회, 새 main의 CI 대기에는 대략 2회 API를
+조회하므로 authenticated rate limit과 만료·회전 정책을 확인한 뒤 활성화한다.
+
+실제 GitHub API ZIP 계약은 통합 담당이 run `34733471394`, artifact `10310158804`에서
+확인했다: 13,615 bytes 및 SHA-256 `53a0b27c0762acc7d33452daccaf60b69006d4da334470660555e5fee6e29acc`,
+exact 3파일, repository/head_repository IDs와 main SHA가 일치했다. 이 증거는 watcher의 실제
+`gh run_bytes`·Sigstore 검증·맥미니 배포 성공을 뜻하지 않는다.
+
+참고: [GitHub artifact REST 계약](https://docs.github.com/en/rest/actions/artifacts),
+[GitHub CLI api](https://cli.github.com/manual/gh_api).
+
 기준일: 2026-09-13
 상태: 코드 구현 및 로컬 모의 검증 완료, GitHub·맥미니 활성화 미실행
 
