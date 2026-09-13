@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.conan.development-pull</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/approved/fixed/runtime/python3</string>
+    <string>-I</string>
+    <string>/approved/fixed/helper/scripts/auto_deploy.py</string>
+    <string>--config</string>
+    <string>/approved/private/config/automatic-development.json</string>
+  </array>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>Umask</key><integer>63</integer>
+  <key>WorkingDirectory</key><string>/approved/private/state</string>
+  <key>StandardOutPath</key><string>/approved/private/logs/automatic-deployment.log</string>
+  <key>StandardErrorPath</key><string>/approved/private/logs/automatic-deployment-error.log</string>
+</dict>
+</plist>

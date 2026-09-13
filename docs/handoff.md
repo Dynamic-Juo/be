@@ -1,5 +1,15 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-13 main 자동 배포 전환 작업
+
+- 사용자는 백엔드 배포를 본인이 담당하며 제3자 승인 대신 main 병합 후 자동 배포를 요청했다. 이전 required-reviewer 제안은 채택하지 않는다. 기존 main `513f536`의 실제 CI `34733471394`는 ARM64 빌드·테스트·GHCR 게시·이미지/릴리스 서명까지 성공했다.
+- `feat/automatic-dev-deployment`의 `b04e619`에 완료 결과 영속 저장을 추가했다. `DEEPCHECK_RESULT_STATE_FILE`이 설정되면 terminal job을 원자 snapshot으로 저장하고 다음 프로세스에서 복원한다. CD Compose는 전용 `job-results` 볼륨을 사용한다. 기존 보관 개수 상한은 유지하며 영상·오디오 파일은 저장하지 않는다.
+- `/ready.harness.result_persistence=durable-terminal-v1`은 결과 저장이 구성되고 실패하지 않았을 때만 반환한다. 저장 실패 시 신규 접수와 drain/resume을 차단하고 durability capability를 unavailable로 내려 자동 교체를 막는다. 진행 중 작업의 비정상 호스트 장애 복구 기능은 아니며 계획된 배포는 drain 완료 뒤 수행해야 한다.
+- 전체 모의 회귀 696 passed, 2 warnings를 확인했다. 이후 저장 실패 시 resume 거부 보완 후 관련 5개 테스트도 통과했다. 새 컨테이너의 실제 복원·자동 교체 검증은 아직 하지 않았다.
+- CI/CD 자동 모드는 `0ff843c`로 통합했다. [BE PR #4](https://github.com/Dynamic-Juo/be/pull/4)에서 검토하며 호스트 고정 코드·서명·정확한 main/CI 확인·동시 배포 방지·실패 복구를 유지한다. 60초 launchd pull 예제가 있으나 아직 설치·활성화하지 않았다. 서버에 임의 shell을 실행하는 범용 runner는 사용하지 않는다.
+- 통합 후 전체 모의 회귀는 722 passed, 2 warnings (14.76초)다. 실제 기존 main artifact ZIP의 size·digest·정확한 3파일 계약도 확인했다. 새 PR의 실제 Actions 결과와 호스트에서의 서명 검증·교체·복원은 별도다. 전용 Actions/Contents read 인증정보는 준비되지 않았으며 개발용 쓰기 권한 인증을 복사하지 않는다.
+- 맥미니 Conan 전용 helper·60초 launchd 작업·전용 읽기 인증·최초 컨테이너 교체의 구체적 설치 승인을 요청했다. 이 작업의 서버 설치는 아직 실행하지 않았다. 기존 키·모델 볼륨·Tunnel·다른 서비스를 보존한다.
+
 ## 2026-09-13 통합 인수: 맥북에서 이어갈 때
 
 - 현재 공유 경로는 `release/dev-integration`, [BE PR #3](https://github.com/Dynamic-Juo/be/pull/3)이다. CI/CD `43eae84`, 자막 `1b58097`, 소스 감사·파이프라인 `6c795ab`을 통합했다. 아래 개별 세션의 미병합 기록은 당시 이력이며 이 통합 기록을 우선한다.

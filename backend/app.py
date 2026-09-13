@@ -70,6 +70,7 @@ async def lifespan(_: FastAPI):
     running_harness = Harness(
         start_drained=config.start_drained,
         deployment_state_file=config.deployment_state_file,
+        result_state_file=config.result_state_file,
     )
     harness = running_harness
     logger.info("API 시작")
