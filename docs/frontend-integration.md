@@ -2,7 +2,7 @@
 
 ## 현재 전달할 주소와 프론트 담당 작업
 
-**2026-09-15 최신 상태: 아직 공개 연결을 켜지 않는다.** 특정 Service Token의 Cloudflare Service Auth는 적용했고 정상 토큰 health 200, 미인증·변조 토큰 302를 확인했다. 하지만 운영 백엔드는 계속 472aff7이다. 새 이미지의 서명·상태 복원 시험은 성공했고 캐시 이관은 실패한 상태다. 운영 격리·Turnstile·새 이미지 전환·실영상 검수가 끝나기 전에는 `PUBLIC_GATEWAY_ENABLED=false`를 유지한다. 아래 초기 기록의 “Service Auth 미적용”은 이 최신 상태로 대체한다.
+**2026-09-15 최신 상태: 아직 공개 연결을 켜지 않는다.** 특정 Service Token의 Cloudflare Service Auth는 적용했고 정상 토큰 health 200, 미인증·변조 토큰 302를 확인했다. 하지만 운영 백엔드는 계속 472aff7이다. 새 이미지의 서명·상태 복원 시험, 캐시 이관과 얼굴·Whisper·ViT 오프라인 로드는 성공했다. 운영 격리·Turnstile·새 이미지 전환·실영상 검수가 끝나기 전에는 `PUBLIC_GATEWAY_ENABLED=false`를 유지한다. 아래 초기 기록의 “Service Auth 미적용”은 이 최신 상태로 대체한다.
 
 팀장님이 먼저 준비할 것은 `deploy/public-gateway`의 Function/라우팅 예제 적용, 같은 출처 `/api` 호출, Turnstile `action=analyze`, 접수 응답의 작업별 토큰 보관 및 조회 시 Bearer 전달이다. 서버 원본은 아래 주소로 정하고 비밀값은 별도 안전한 전달 후 Vercel 서버 환경변수에만 설정한다. Turnstile site key·공개 활성화 확인은 아직 전달 가능한 상태가 아니다. 프론트 저장소나 Vercel 설정은 이번 작업에서 변경하지 않았다.
 

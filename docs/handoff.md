@@ -1,5 +1,11 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 캐시 이관 승인 후 완료
+
+- 사용자가 원본 보존·새 캐시 이관·실패 복사본 두 개 정리를 승인했다. 서명 검증한 a26264e 이미지로 원본을 read-only 마운트하고 깊은 경로부터 소유권을 변경했다. 새 볼륨은 `chamsae-ai-cache-ready-20260915`이며 루트 포함 61개 경로 이관, UID 10001 컨테이너에서 하위 60개 경로 소유권 검수가 통과했다.
+- `chamsae-ai-cache-migration-20260915`, `chamsae-ai-cache-migration-v2-20260915` 두 실패 복사본은 라벨과 컨테이너 참조 없음 확인 후 삭제했다. 원본 `conan-staging_model-cache`는 보존했다. 아래 이전 실패·승인 차단 기록은 이 완료 기록으로 갱신한다.
+- 새 이미지와 이관 캐시로 네트워크 없는 컨테이너에서 얼굴 검출기, Whisper small CPU/int8, `dima806/deepfake_vs_real_image_detection` ViT 분류기 로드가 모두 성공했다. 실영상 분석과 운영 컨테이너 교체는 아직 하지 않았다.
+
 ## 2026-09-15 야간 작업 결과 — Service Auth 적용, 공개 배포 미완료
 
 - 사용자 실행 시점 확인 후 `Chamsae AI Gateway Service` 정책 `b3f0808d-3723-4421-a8a2-d766da42caf5`를 생성하고 참새 AI API 앱에 저장했다. Include는 `Chamsae AI Vercel Gateway` 한 개, Action은 Service Auth다. 기존 이메일 정책·두 API 호스트·Monitoring/SSH 앱을 보존했다.
