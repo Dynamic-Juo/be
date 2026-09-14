@@ -1,5 +1,9 @@
 # Vercel 프론트 연동 인수인계
 
+## 2026-09-14 새 프론트 주소와 공개 접근 준비
+
+현재 프론트는 `https://chamsae-ai.vercel.app`이다. 아래 `kimjeonil.vercel.app` 기록은 당시 적용 이력이다. 새 Origin의 실제 서버 CORS 반영은 미완료이며, 공개 전환은 [Vercel 서버 전달 방식](public-access.md)으로 준비 중이다. Function 예제와 BE 공개 보호는 작업 브랜치에 있고 FE 설치·Cloudflare Service Auth·Turnstile·서버 배포는 아직 하지 않았다. 기존 이메일 Access 정책을 유지한다.
+
 ## 2026-09-13 15:05 KST — 맥미니 Vercel CORS 적용 완료
 
 - 사용자가 기존 맥북 ed25519 공개키를 등록한 뒤 `ssh dotseven@100.105.223.60`으로 접속했다. Tailscale 경로는 연결되며 이전 home-server 내부망·dev-server Tunnel SSH 시간 초과와 구분한다. 서버 Docker는 `/usr/local/bin/docker`다.
