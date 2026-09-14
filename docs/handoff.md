@@ -1,5 +1,16 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 현재 우선 상태 — 최종 API 주소 연결
+
+- 사용자가 최종 이름 `참새 AI API`, 주소 `https://chamsae-ai-api.dotseven.cloud`를 확정했다. `dev` 없는 주소다. 코드 API 제목과 README·공개 계약·FE 인수 문서를 반영했다. 운영 이미지의 표시명 변경은 새 이미지 배포 때 적용된다.
+- Cloudflare 앱 `9d3fc410-551b-46dc-be20-518dd9f41f98` 이름은 `참새 AI API`다. 보호 대상은 `conan-api-dev.dotseven.cloud`, `chamsae-ai-api.dotseven.cloud` 두 개다. 잠시 추가했던 `chamsae-api-dev`는 최종 주소로 수정했고 해당 임시 이름의 Tunnel/DNS는 만들지 않았다.
+- 이메일 정책 `7185f119-9529-462e-b802-33fcb922b0aa` 이름을 `Chamsae AI Team Only`로 바꾸고 기존 두 이메일·Allow·세션 설정을 유지했다. Everyone/Bypass 공개·Service Auth 추가는 하지 않았다.
+- 공유 `dotseven-server` Tunnel에 새 호스트 → `http://conan-staging-deepcheck-api-1:8000`을 추가했다. UI에서 DNS 생성·Tunnel 저장 성공과 기존 네 경로 보존을 확인했다. 새 호스트 미인증 `/health` HTTP 302, 새 FE Origin OPTIONS는 백엔드 `400 Disallowed CORS origin`이다. 후자는 원본 연결 증거이며 CORS 완료가 아니다.
+- 서버 `conan-be:472aff7`은 Up 33 hours healthy이고 다른 7개 컨테이너도 계속 Up이다. 컨테이너 교체·네트워크 격리 운영 반영·새 CORS 반영은 아직 하지 않았다. 기존 네트워크 위험은 아래 9월 14일 검사와 동일하게 미해결로 취급한다.
+- 공개 계약은 브라우저 → Vercel Function → Service Token으로 Cloudflare → 전달 키로 백엔드다. 앞서 “프론트 API base만 바꾸면 연결”이라고 전달한 안내는 공개 구조에 불충분해 FE 인수 문서에서 정정했다. CORS는 서버 인증이 아니다. FE/Vercel은 계속 팀장 담당이다.
+- `Chamsae AI Vercel Gateway` Service Token 생성 화면을 준비했다. UI의 최소 선택 기간은 1년이며 생성은 미실행이다. 브라우저 도구의 실행 시점 확인 후 발급·참새 앱 전용 정책 연결이 필요하다. Turnstile, 호스트 전용 GitHub Actions/Contents 읽기 인증과 GHCR pull 인증, 새 이미지·상태 볼륨·격리망 전환도 남는다. 백엔드 전체 완료나 공개 가능 상태로 보고하지 않는다.
+- API·OpenAPI·공개 보호 관련 테스트는 `python -m pytest`로 70 passed, 2 warnings다. 처음 pytest 실행 파일로 실행했을 때 모듈 경로 누락으로 collection 오류가 있었고 모듈 실행으로 바로잡았다. 실영상·실제 Vercel·Service Auth 검수가 아니다.
+
 ## 2026-09-14 현재 우선 상태
 
 - **프론트·Vercel은 팀장 담당이며 변경하지 않는다.** 이번에 범위를 넘어 작성했던 로컬 FE 수정은 사용자 지적 후 전부 회수했다. FE는 main cf97357의 clean 상태이며 FE 커밋·push·PR·배포는 하지 않았다. Vercel은 로그인된 사용자 계정의 목록까지만 조회했고 참새 프로젝트는 없었다. 설정·팀 권한·환경변수는 변경하지 않았다. BE의 API 계약·전달 문서까지만 진행한다.

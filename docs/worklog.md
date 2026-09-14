@@ -1,5 +1,11 @@
 # 작업 로그
 
+## 2026-09-15 참새 AI 주소 연결과 공개 계약 정정
+
+- 최종 원본 `chamsae-ai-api.dotseven.cloud`와 Cloudflare 앱 `참새 AI API`를 반영했다. 기존 주소와 두 이메일의 인증 보호를 유지하고 같은 backend 원본으로 DNS/Tunnel 경로를 추가했다. 공유 Tunnel과 다른 서비스 경로는 유지했다.
+- 새 주소 미인증 health 302, OPTIONS는 원본의 400 CORS 거부를 확인했다. 새 CORS·공개 보호 코드·격리 구성은 운영 미배포다. Service Token 생성은 실행 시점 확인 전이며 생성하지 않았다.
+- 공개 구조의 원본 주소는 Vercel 서버 환경변수에 쓰고, 브라우저는 같은 출처 Function을 호출하도록 계약을 명확히 했다. FE/Vercel 변경은 하지 않았다. 관련 API·OpenAPI·공개 보호 테스트 70개 통과(2 warnings); 실제 공개 연동 검증은 아니다.
+
 ## 2026-09-14 네트워크 실제 검수와 작업 범위 정정
 
 - 운영 백엔드에서 Laravel 80·Redis 6379·맥미니 Tailscale SSH 22로 TCP 연결이 가능했다. 데이터·로그인은 시도하지 않았다. 별도 internal 네트워크에서는 세 대상과 공용 HTTPS 직접 연결이 차단됐다.

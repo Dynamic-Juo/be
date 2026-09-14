@@ -1,5 +1,13 @@
 # Vercel 프론트 연동 인수인계
 
+## 현재 전달할 주소와 프론트 담당 작업
+
+최종 API 원본은 `https://chamsae-ai-api.dotseven.cloud`다. 2026-09-15 Cloudflare DNS·Tunnel 연결과 기존 두 이메일의 Access 보호를 적용했다. 기존 `conan-api-dev.dotseven.cloud`도 같은 앱에서 보호한다. 미인증 `/health`는 302, 새 프론트 Origin OPTIONS는 백엔드의 `400 Disallowed CORS origin`이다. 서버 이미지는 여전히 `472aff7`이며 공개 보호·새 CORS는 미배포다.
+
+공개 전환에서 팀장님께 전달할 설정은 **Vercel 서버의 `PRIVATE_API_ORIGIN=https://chamsae-ai-api.dotseven.cloud`**다. 사용자 브라우저는 Vercel의 같은 출처 API를 호출한다. 기존 브라우저용 API base만 새 도메인으로 교체하면 일반 사용자 공개까지 완료되는 것이 아니다. Service Token·전달 키는 `VITE_*`와 브라우저 코드에 절대 넣지 않는다. Function 설치, Turnstile, 작업별 조회 토큰 처리는 [공개 계약](public-access.md#설정-인수인계)을 따른다. FE 코드·Vercel 설정은 팀장 담당이며 이번에 수정하지 않았다.
+
+아래 직접 호출·인증 쿠키 예시는 이메일 보호를 사용하는 기존 개발 연동 방식이다. 새 원본 주소에서도 이메일 인증 상태의 개발 검수에만 해당하며, 공개 Function 계약과 구분한다. 현재 Cloudflare 앱 이름은 `참새 AI API`, 기존 이메일 정책 이름은 `Chamsae AI Team Only`다.
+
 ## 2026-09-14 새 프론트 주소와 공개 접근 준비
 
 현재 프론트는 `https://chamsae-ai.vercel.app`이다. 아래 `kimjeonil.vercel.app` 기록은 당시 적용 이력이다. 새 Origin의 실제 서버 CORS 반영은 미완료이며, 공개 전환은 [Vercel 서버 전달 방식](public-access.md)으로 준비 중이다. Function 예제와 BE 공개 보호는 작업 브랜치에 있고 FE 설치·Cloudflare Service Auth·Turnstile·서버 배포는 아직 하지 않았다. 기존 이메일 Access 정책을 유지한다.
@@ -39,7 +47,7 @@ DEEPCHECK_CORS_ORIGINS=http://localhost:3000,https://kimjeonil.vercel.app
 
 환경 파일 전체를 예제로 덮어쓰지 않는다. 환경값 적용에는 실행 컨테이너 재생성이 필요하므로 현재 작업·배포 컨트롤러 상태를 확인하고 현행 배포 절차로 반영한다. 이번 요청을 다른 이미지·자막 정책·자동 배포 설치까지 승인한 것으로 확대하지 않는다.
 
-Cloudflare는 **Zero Trust → Access controls → Applications → Conan API Dev → Configure → Advanced settings → Cross-Origin Resource Sharing (CORS) settings**에서 **Bypass OPTIONS requests to origin**을 켠다. 먼저 백엔드 CORS 적용을 확인한다. 이 설정은 해당 앱의 기존 Cloudflare CORS 설정을 제거하므로 변경 전 값을 기록하고 다른 설정이 있다면 영향 범위를 대조한다. 이메일 Allow 정책과 실제 POST·GET의 Access 인증은 유지한다. [공식 설정 설명](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/cors/#bypass-options-requests-to-origin)
+Cloudflare는 **Zero Trust → Access controls → Applications → 참새 AI API → Configure → Advanced settings → Cross-Origin Resource Sharing (CORS) settings**에서 **Bypass OPTIONS requests to origin**을 켠다. 먼저 백엔드 CORS 적용을 확인한다. 이 설정은 해당 앱의 기존 Cloudflare CORS 설정을 제거하므로 변경 전 값을 기록하고 다른 설정이 있다면 영향 범위를 대조한다. 이메일 Allow 정책과 실제 POST·GET의 Access 인증은 유지한다. [공식 설정 설명](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/cors/#bypass-options-requests-to-origin)
 
 적용 후 외부 OPTIONS가 성공하고 정확한 Vercel Origin·credentials·POST·content-type을 허용하는지 확인한다. 미인증 GET /health는 계속 Access에 차단되어야 한다. 이후 허용 이메일로 로그인한 브라우저에서 FE의 credentials: include와 함께 접수·폴링을 별도 검수한다. 서버 설정 검사만으로 제3자 쿠키 제한이나 FE 연동까지 성공했다고 기록하지 않는다.
 

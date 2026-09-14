@@ -1,6 +1,8 @@
-# 참새 — 백엔드 (be)
+# 참새 AI — 백엔드 (be)
 
-현재 프론트 주소는 [chamsae-ai.vercel.app](https://chamsae-ai.vercel.app/)입니다. 일반 사용자용 [공개 접근 보호·FE 전달 계약](docs/public-access.md)을 준비했으며 아직 배포하지 않았습니다. 기존 이메일 Access 보호는 유지합니다. 팀장님의 FE #13에서 확인한 서비스명 **참새**를 제목에 반영했습니다. 프론트·Vercel 변경은 팀장 담당입니다.
+최종 API 원본은 `https://chamsae-ai-api.dotseven.cloud`입니다. DNS·Tunnel과 이메일 Access 보호는 적용됐고, 일반 사용자 공개와 새 백엔드 이미지 배포는 아직입니다. 공개 시 이 주소는 Vercel 서버의 원본 설정에 사용합니다.
+
+현재 프론트 주소는 [chamsae-ai.vercel.app](https://chamsae-ai.vercel.app/)입니다. 일반 사용자용 [공개 접근 보호·FE 전달 계약](docs/public-access.md)을 준비했으며 아직 배포하지 않았습니다. 기존 이메일 Access 보호는 유지합니다. 팀장님의 FE #13에서 확인한 서비스명은 사용자 요청에 따라 **참새 AI**로 표기합니다. 프론트·Vercel 변경은 팀장 담당입니다.
 
 영상 URL을 받아 **미디어 조작 가능성**과 **주장 사실성**을 분석하는 백엔드 서비스입니다.
 

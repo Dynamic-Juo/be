@@ -15,7 +15,9 @@ flowchart LR
     A --> R[작업별 토큰으로 결과 조회]
 ```
 
-프론트 주소는 `https://chamsae-ai.vercel.app`로 변경됐다. API 원본 주소는 현재 `https://conan-api-dev.dotseven.cloud`를 유지한다. 프론트 도메인 변경만으로 API 도메인·Docker 프로젝트·볼륨 이름을 바꾸지 않는다. 서비스명은 팀장님의 [FE #13](https://github.com/Dynamic-Juo/fe/pull/13)에 따라 참새로 표기한다. 내부 DeepCheck 모듈·운영 자원 이름은 유지한다.
+프론트 주소는 `https://chamsae-ai.vercel.app`, 최종 API 원본 주소는 `https://chamsae-ai-api.dotseven.cloud`다. 사용자 확정에 따라 `ai`를 포함하고 `dev`를 제외한다. 기존 `https://conan-api-dev.dotseven.cloud`는 전환 기간 호환 주소이며 인증 보호를 유지한다. 새 주소의 실제 연결 완료 여부는 [현재 인수 상태](handoff.md)를 확인한다. API 표시명은 `참새 AI API`다. 내부 DeepCheck 모듈·Docker 프로젝트·볼륨과 공유 Tunnel 식별자는 데이터·다른 서비스 영향을 피하기 위해 별도 마이그레이션 없이 바꾸지 않는다.
+
+**이 주소는 Vercel 서버의 원본 주소다.** 공개 모드에서 사용자 브라우저는 Vercel의 같은 출처 API를 호출한다. CORS나 `Origin` 헤더는 서버 인증을 대신하지 않는다. “Vercel만 허용”은 Vercel 전체 IP나 도메인을 신뢰한다는 뜻이 아니라, 우리 프로젝트 서버에만 보관한 Cloudflare Service Token과 백엔드 전달 키를 함께 검증한다는 뜻이다. 비밀값을 가진 다른 클라이언트도 접근할 수 있으므로 유출 시 폐기·교체해야 한다.
 
 일반 사용자는 이메일 Access 로그인이 필요하지 않다. Vercel 서버가 Service Auth로 접근한다. 관리자용 이메일 정책은 유지하고 **Everyone Allow/Bypass로 앱 전체를 공개하지 않는다**. Service Token은 서버 간 인증이며 개별 사용자를 인증하지 않는다. 사용자 입력과 접근 빈도는 별도로 제한한다. [Cloudflare Service Token 문서](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
 
@@ -52,7 +54,7 @@ SQLite 트랜잭션으로 동시 요청을 합산하고 재시작에도 유지�
 
 | 위치 | 설정 |
 | --- | --- |
-| Vercel 서버 | `PUBLIC_GATEWAY_ENABLED=false`로 먼저 설치, `PUBLIC_FRONTEND_ORIGIN=https://chamsae-ai.vercel.app`, `PRIVATE_API_ORIGIN=https://conan-api-dev.dotseven.cloud` |
+| Vercel 서버 | `PUBLIC_GATEWAY_ENABLED=false`로 먼저 설치, `PUBLIC_FRONTEND_ORIGIN=https://chamsae-ai.vercel.app`, `PRIVATE_API_ORIGIN=https://chamsae-ai-api.dotseven.cloud` |
 | Vercel 비밀 환경변수 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `PUBLIC_GATEWAY_KEY` |
 | 맥미니 비밀 환경변수 | `DEEPCHECK_PUBLIC_GATEWAY_KEY`는 Vercel 키와 동일한 무작위 32바이트 이상의 hex 문자열, `DEEPCHECK_TURNSTILE_SECRET` |
 | 맥미니 일반 설정 | `DEEPCHECK_PUBLIC_MODE=gateway`, `DEEPCHECK_TURNSTILE_HOSTNAME=chamsae-ai.vercel.app`, `DEEPCHECK_PUBLIC_STATE_FILE=/var/lib/deepcheck-results/public/quota.sqlite3` |

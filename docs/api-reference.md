@@ -10,7 +10,7 @@
 
 ## 주소와 엔드포인트
 
-개발 기본 주소 기록은 `https://conan-api-dev.dotseven.cloud`다. 예상 문서 경로는 `/docs`(Swagger), `/openapi.json`(OpenAPI), `/redoc`(읽기용)이며 이번에 외부 응답을 재검증하지 않았다. URL에 내부 Docker 포트 `:8000`을 붙이지 않는다.
+최종 API 원본 주소는 `https://chamsae-ai-api.dotseven.cloud`다. 기존 `https://conan-api-dev.dotseven.cloud`도 전환 기간 유지한다. 새 주소의 DNS·Tunnel·이메일 보호는 적용됐으나 공개 모드 서버 배포는 아직이다. 예상 문서 경로는 `/docs`(Swagger), `/openapi.json`(OpenAPI), `/redoc`(읽기용)이며 이번에 외부 응답을 재검증하지 않았다. URL에 내부 Docker 포트 `:8000`을 붙이지 않는다.
 
 루트 `/`는 등록하지 않아 로그인 후에도 `{"detail":"Not Found"}`가 나올 수 있다. 접속 확인은 `/health`, 문서 확인은 `/docs`를 사용한다. 2026-09-12 미인증 `/health`의 Access 로그인 이동은 브라우저에서 확인했지만 로그인 후 health·Swagger와 영상 분석 성공을 검증한 것은 아니다.
 
@@ -285,7 +285,7 @@ coverage_pct와 같은 값인 media.stt_coverage_pct는 호환 필드다. basis�
 아래는 **개발계 Access 보호 + 승인된 CORS 설정을 전제로 한 예시**다. 복사만으로 Vercel의 제3자 쿠키 제한이나 인증을 해결하지 않는다. 자동 재시도·사용자 안내는 위 상태 규칙과 인수 테스트에 맞춘다.
 
 ```javascript
-const apiBase = "https://conan-api-dev.dotseven.cloud";
+const apiBase = "https://chamsae-ai-api.dotseven.cloud";
 const terminal = new Set([
   "completed", "completed_with_limitations", "timed_out", "failed",
 ]);
