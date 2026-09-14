@@ -2,10 +2,12 @@
 
 ## 2026-09-14 현재 우선 상태
 
-- docs #9·#10은 병합됐다. #7은 main 충돌을 해결해 `f109806`까지 push했고 GitHub에서 MERGEABLE/CLEAN을 확인했다. PR #11의 업로더 표기 전환은 별도 열린 변경으로 검토했으며 임의 병합하지 않았다. 약속 반영·PR 시간순 기록·문서 정리 스킬을 docs에 추가했다. 아래 9/13 열린 PR 표기는 과거 이력이다.
-- BE 작업 브랜치는 `feat/public-api-protection`이며 공개 코드 c693f7c·계약 문서 76615b3을 원격에 push하고 [초안 PR #5](https://github.com/Dynamic-Juo/be/pull/5)를 만들었다. main 병합·운영 배포는 하지 않았다. [공개 접근 준비](public-access.md)에 새 프론트 주소, 서버/FE 계약, 설정 인수인계와 미완료 공개 조건을 정리했다. 정확한 서비스명 표기와 Vercel 설정 담당자는 사용자 확인을 기다린다.
-- 공개 보호는 기본 off이며 운영에 적용하지 않았다. 현행 서버는 `conan-be:472aff7`이다. Cloudflare 이메일 보호 해제·새 Service Token 발급·Turnstile 생성·FE 수정·맥미니 재배포는 하지 않았다. 원본 수집·모델 정확도와 홈서버 격리 미흡을 이번 코드로 해결했다고 간주하지 않는다.
-- 로컬 전체 Python 검증 731 passed, 2 skipped, 2 warnings, Node gateway 6 passed. 로컬에 yt-dlp가 없어 관련 보안 검사 2건은 건너뛰었고 실제 이미지 CI에서 검증해야 한다. 외부 API·실영상·Vercel 런타임 검증이 아니다.
+- **프론트·Vercel은 팀장 담당이며 변경하지 않는다.** 이번에 범위를 넘어 작성했던 로컬 FE 수정은 사용자 지적 후 전부 회수했다. FE는 main cf97357의 clean 상태이며 FE 커밋·push·PR·배포는 하지 않았다. Vercel은 로그인된 사용자 계정의 목록까지만 조회했고 참새 프로젝트는 없었다. 설정·팀 권한·환경변수는 변경하지 않았다. BE의 API 계약·전달 문서까지만 진행한다.
+- docs #9·#10은 병합됐고 #7은 f109806에서 main 충돌 없이 push됐다. #11은 별도 열린 변경이다. 서비스명 참새는 팀장 FE #13에서 확인했고 BE README·API 제목에 반영한다. 프론트 브랜치는 수정하지 않는다.
+- BE는 `feat/public-api-protection`, [초안 PR #5](https://github.com/Dynamic-Juo/be/pull/5)다. ddbfa55의 실제 ARM64 CI가 성공했다. 731 passed, 2 skipped, gateway 6 passed와 비특권 실행·실제 번들 얼굴 모델 초기화·쓰기 경로 검사를 확인했다.
+- 운영은 여전히 conan-be:472aff7이다. [9월 14일 네트워크 검사](deployment-isolation-audit-2026-09-14.md)에서 Laravel·Redis·맥미니 SSH 접근이 가능했다. 별도 internal 네트워크에서는 직접 연결이 차단됐고 전용 출구 시험에서 허용 API 연결과 사설 IP·미허용 도메인·허용 이름의 사설 IP 해석 거부를 확인했다. 운영 네트워크·컨테이너·볼륨은 변경하지 않았다.
+- [출구 구성](../deploy/egress/README.md)은 검증용이며 운영 서명 이미지가 아니다. 검증 컨테이너·네트워크는 정리했고 서버의 격리 시험 디렉터리·이미지만 남겼다. 새 캐시 경로와 UID 10001 전환, 결과 복원, 전용 Tunnel, 하드 타임아웃과 실제 영상 검수 후 운영 반영한다.
+- Cloudflare 이메일 보호·정책은 유지했다. Service Token 발급·Turnstile 생성·공개 활성화·최초 controller 전환은 아직 하지 않았다. 프론트 준비와 운영 보호가 끝나기 전에 공개 모드를 켜지 않는다. 자동 배포용 제한된 GitHub 읽기 인증 준비도 남아 있다.
 
 ## 2026-09-13 docs #7 리뷰 반영과 다음 실행
 

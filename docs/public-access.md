@@ -15,7 +15,7 @@ flowchart LR
     A --> R[작업별 토큰으로 결과 조회]
 ```
 
-프론트 주소는 `https://chamsae-ai.vercel.app`로 변경됐다. API 원본 주소는 현재 `https://conan-api-dev.dotseven.cloud`를 유지한다. 프론트 도메인 변경만으로 API 도메인·Docker 프로젝트·볼륨 이름을 바꾸지 않는다. 확정된 한글·영문 서비스명의 정확한 표기는 사용자 확인을 기다리고 있다.
+프론트 주소는 `https://chamsae-ai.vercel.app`로 변경됐다. API 원본 주소는 현재 `https://conan-api-dev.dotseven.cloud`를 유지한다. 프론트 도메인 변경만으로 API 도메인·Docker 프로젝트·볼륨 이름을 바꾸지 않는다. 서비스명은 팀장님의 [FE #13](https://github.com/Dynamic-Juo/fe/pull/13)에 따라 참새로 표기한다. 내부 DeepCheck 모듈·운영 자원 이름은 유지한다.
 
 일반 사용자는 이메일 Access 로그인이 필요하지 않다. Vercel 서버가 Service Auth로 접근한다. 관리자용 이메일 정책은 유지하고 **Everyone Allow/Bypass로 앱 전체를 공개하지 않는다**. Service Token은 서버 간 인증이며 개별 사용자를 인증하지 않는다. 사용자 입력과 접근 빈도는 별도로 제한한다. [Cloudflare Service Token 문서](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
 
@@ -60,11 +60,11 @@ SQLite 트랜잭션으로 동시 요청을 합산하고 재시작에도 유지�
 
 상태 파일은 **지속되는 전용 볼륨 내부**여야 한다. 경로가 절대 경로인지 코드가 확인하지만 볼륨 마운트까지 보장하지 않는다. 현행 CD Compose의 `job-results`가 해당 경로의 상위에 마운트된다. 서버는 구형 Compose이므로 새 런북에 따라 실제 마운트와 쓰기 권한을 확인해야 한다. 기존 `.env` 전체를 출력하거나 교체하지 않는다.
 
-FE 담당자는 Function 설치 외에 요청에 Turnstile 토큰 추가, 응답 토큰 보관, 결과 조회 Authorization, 403 재확인·429 대기·404 종료 안내를 구현해야 한다. 기존 `credentials: include`만으로 새 공개 계약이 구현되지 않는다. Vercel 설정 권한이 누구에게 있는지는 사용자 답변을 기다린다.
+FE 담당자는 Function 설치 외에 요청에 Turnstile 토큰 추가, 응답 토큰 보관, 결과 조회 Authorization, 403 재확인·429 대기·404 종료 안내를 구현해야 한다. 기존 `credentials: include`만으로 새 공개 계약이 구현되지 않는다. 프론트 코드·Vercel 설정은 조정준 팀장 담당이다. BE 담당은 해당 저장소·관리 설정을 수정하지 않고 이 문서의 계약과 검수 조건을 전달한다.
 
 ## 공개 활성화 순서와 미완료 조건
 
-1. [서버 격리 점검](server-isolation.md)을 완료한다. 현재 root·PID/임시 디스크 상한·공유 Tunnel의 내부망 경계와 강제 실행 제한은 미완료다. API 입구를 보호한 것만으로 ISO 항목을 통과시키지 않는다.
+1. [서버 격리 점검](server-isolation.md)을 완료한다. 운영본의 root·PID/임시 디스크 상한·내부 접근은 아직 그대로다. [9월 14일 검사](deployment-isolation-audit-2026-09-14.md)에서 내부망 차단과 제한된 출구를 별도 시험했으며 비특권 이미지 CI도 통과했다. 운영 적용·전용 Tunnel·강제 실행 제한은 미완료다. API 입구를 보호한 것만으로 ISO 항목을 통과시키지 않는다.
 2. [서명 기반 배포 런북](development-cd-runbook.md)으로 새 이미지와 지속 상태를 반영한다. 현재 구형 이미지에는 공개 보호 코드가 없다. 운영 키·볼륨·다른 서비스는 보존한다.
 3. Cloudflare에 이 API 전용 Service Token과 **Service Auth 정책**을 추가한다. 기존 이메일 정책을 유지하고 최소 대상 앱에만 허용한다. Turnstile 호스트도 고정한다.
 4. Vercel Function·FE 계약과 서버 환경변수를 연결한다. Preview 배포에는 운영 비밀값을 무조건 공유하지 않는다. 공개 모드·Function 활성화 시점은 함께 조정한다.
