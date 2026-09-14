@@ -2,7 +2,7 @@
 
 ## 2026-09-14 공개 모드 추가 계약 — 미배포
 
-새 프론트 주소는 `https://chamsae-ai.vercel.app`이다. 공개 모드는 접수에 `turnstile_token`, 응답에 `job_access_token`, 조회에 Bearer 토큰을 추가한다. 공개 gateway는 분석 접수·개별 결과 조회만 전달하며 모델 등 고급 옵션을 거절한다. [전체 공개 계약과 오류·FE 작업](public-access.md)을 우선 읽는다. 아래 기존 예시는 공개 모드 off의 개발 API 계약이며 공개 모드의 완성된 예시가 아니다. 기존 API 원본 주소는 유지하고 실제 서버는 아직 이전 이미지다.
+새 프론트 주소는 `https://chamsae-ai.vercel.app`이다. 공개 모드는 접수에 `turnstile_token`, 응답에 `job_access_token`, 조회에 Bearer 토큰을 추가한다. 공개 gateway는 분석 접수·개별 결과 조회만 전달하며 모델 등 고급 옵션을 거절한다. [전체 공개 계약과 오류·FE 작업](public-access.md)을 우선 읽는다. 아래 기존 예시는 공개 모드 off의 개발 API 계약이며 공개 모드의 완성된 예시가 아니다. 실제 서버는 공개 보호 이미지로 전환했다. 배포 신원은 [현재 운영 구성](mac-mini-runtime.md)을 확인한다. 탭 종료 후 복원은 [재방문 계약](frontend-resume.md)을 따른다.
 
 기준일: 2026-09-14. `feat/public-api-protection`의 코드 계약이다. 현재 서버 이미지 `472aff7`과 다르며 공개 모드는 미배포다. PR·CI·실제 서버 반영 상태는 [인수인계](handoff.md)를 따른다. 이번에 실제 영상·외부 제공자를 재검증하지 않았다.
 

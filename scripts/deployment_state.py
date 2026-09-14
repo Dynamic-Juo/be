@@ -252,7 +252,7 @@ def validate_state(
         "active": _validate_active(state["active"]),
         "highest_request": _validate_identity(state["highest_request"], "state.highest_request"),
         "highest_ci": _validate_identity(state["highest_ci"], "state.highest_ci"),
-        "last_outcome": cast(str | None, outcome),
+        "last_outcome": cast("str | None", outcome),
         "updated_at": updated_at,
     }
 
@@ -372,7 +372,7 @@ def validate_journal(
         ),
         "started_at": started_at,
         "updated_at": updated_at,
-        "error": cast(str | None, error),
+        "error": cast("str | None", error),
     }
 
 

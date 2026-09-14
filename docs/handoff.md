@@ -1,5 +1,89 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 프론트 재방문 복원 인수 보완
+
+- 탭 종료 후 같은 브라우저 재방문 요구에 맞게 마지막 job ID·조회 토큰의 지속 보관, 이전 분석 보기, GET 재개와 만료/404 처리를 frontend-resume.md에 정리했다. sessionStorage만으로 충분하다는 기존 안내를 수정했다.
+- 24시간 토큰 유효기간과 결과 보관 보장을 구분했다. FE/Vercel은 수정하지 않았고 실제 재방문 E2E도 아직이다.
+- 최신 main과 인수 브랜치의 worklog 충돌은 양쪽 기록을 보존해 해결했다. 공개 계약 상단의 구형 이미지/미배포 안내도 실제 상태로 갱신했다.
+
+## 2026-09-15 사용자 승인 후 자동 배포 활성화
+
+- 60초 주기 자동 배포에 대한 사용자 후속 승인으로 `enabled=true`와 `com.chamsae.ai-deployment-pull` LaunchAgent를 적용했다. 고정 시스템 Python/helper만 실행하며 새 패키지·GitHub runner는 설치하지 않았다.
+- 수동 1회와 launchd 타이머 실행 2회는 모두 `unchanged`, exit 0이고 오류 로그는 비어 있었다. 현재 main과 운영 이미지가 같아 재생성하지 않았으며 API healthy와 다른 7개 서비스 Up을 확인했다.
+- GUI 로그인 세션의 LaunchAgent이므로 재부팅 후 dotseven 로그인·OrbStack 기동이 필요하다. 조회/중지/로그 수동 회전과 남은 검수는 [현재 운영 구성](mac-mini-runtime.md)을 따른다. 아래 승인 대기·미설치 기록은 이 완료 기록으로 갱신한다.
+
+## 2026-09-15 실제 이미지 교체·결과 이관 완료
+
+- 운영 API를 서명 검증한 main `a26264e` digest로 교체했다. 기존 완료 결과 11건을 백업·복원했고 healthy/ready 및 외부 정상 토큰 200·미인증/변조 302를 확인했다.
+- internal 망, 전용 HTTPS 프록시, UID 10001·read-only·PID 제한을 적용했다. 기존 공유 터널은 재시작 없이 새 망을 연결했으며 다른 7개 서비스는 Up을 유지했다. 공유 VM/터널/UID까지 완전히 격리한 것은 아니다.
+- 실제 영상 다운로드·프레임·STT와 별도 DeepSeek/NAVER 호출을 검증했다. 영상은 주장 없음·전체 생성 모델 미선정으로 partial, 가상 문장 판정은 원문 미검증으로 근거 부족이다.
+- 시스템 Python 3.9의 runtime cast 오류를 `b7abf03`으로 수정(관련 221 tests pass)했고 controller initialize는 성공했다. 상시 자동 배포는 자동 승인 검토 거부로 비활성 상태이며 사용자에게 별도 승인을 요청했다. 새 패키지/runner는 설치하지 않았다.
+- 현재 서버 경로·백업·네트워크·검수·남은 공개 조건은 [현재 운영 구성](mac-mini-runtime.md)을 따른다. 아래 미배포 기록은 당시 이력이다. FE/Vercel은 미변경이며 공개 Function E2E와 작업 강제 시간 제한을 마치기 전에는 공개 게이트를 켜지 않는다.
+
+## 2026-09-15 Turnstile 인수·격리 경로 검수
+
+- Turnstile 비밀 파일 owner·0600·Site Key 일치를 확인했다. 공식 Siteverify는 잘못된 시험 응답에 HTTP 200, `success=false`, `invalid-input-response`를 반환했다. 정상 브라우저 토큰 성공 검수는 아니며 사용자에게 같은 키를 다시 입력하도록 요청하지 않는다.
+- 새 a26264e 이미지의 별도 internal 네트워크·read-only 컨테이너에서 전용 시험 프록시를 통한 실제 Turnstile 요청 거절(`challenge_failed`)과 전달 키 누락 거절을 확인했다. 맥미니 SSH·Laravel·Redis·직접 공용 IP 연결은 모두 차단됐다. 시험 컨테이너·네트워크는 정리했고 실제 운영망은 변경하지 않았다.
+- [배포 문제 원인과 재발 방지](deployment-troubleshooting.md)에 코드 오류, 권한 이관 오류, 자동 승인 거부, 키 안내 혼동, SSH 정상 종료, 과거/현재 문서 혼재를 구분해 기록했다. 초기 안내·사전 검수 부족도 원인에 포함했다.
+- controller 준비: OrbStack Docker와 Compose는 같은 `docker-tools` 멀티콜 실행 파일로 연결돼 있다. `ops-staging/controller-bin/docker`, `docker-compose`에 동일 해시의 일반 파일 복사본을 만들었고 각각 Docker 29.4.0, Compose v5.1.2 실행과 실제 `secure_paths` 검사가 통과했다. Docker socket 검사도 통과했다. 기존 Homebrew gh 경로는 상위 group/world writable로 거절돼 Homebrew 권한을 건드리지 않고 동일 해시 gh를 위 디렉터리에 복사했다. 새 패키지/runner 설치가 아니라 고정 배포 도구 준비이며 controller 실행·활성화는 아직이다.
+- 운영은 계속 472aff7 healthy, 다른 7개 컨테이너도 Up이다. 남은 것은 운영 격리·controller의 고정 runtime/설정 및 최초 전환, 실제 영상/제공자 검수다. 비밀키 저장 완료와 공개 배포 완료를 구분한다.
+
+## 2026-09-15 Turnstile 위젯 생성·Secret 인수 대기
+
+- Cloudflare 계정의 Turnstile 목록에서 `Chamsae AI` 생성 성공을 확인했다. 공개 Site Key는 `0x4AAAAAAE0lGIUVFkIN-Rsz`, 설정은 호스트 `chamsae-ai.vercel.app` 한 개·관리형·사전 승인 없음이다. Site Key는 브라우저 공개용이며 비밀 인증정보가 아니다.
+- 생성 결과 화면은 보존하고 Secret Key는 읽거나 출력하지 않았다. 서버 `ops-tools/store-turnstile-credentials.py`는 공개 Site Key를 고정하고 Secret Key 한 개만 getpass로 받으며 `ops-secrets/turnstile.json`에 mode 600·덮어쓰기 금지로 저장한다. 아직 Secret 저장·Siteverify 검수·운영 public mode 활성화는 하지 않았다.
+- 캐시 이관과 세 모델 로드는 아래 기록대로 완료다. 다음에는 Turnstile Secret 인수, 운영 격리·고정 controller 구성 및 최초 전환, 실제 외부 제공자/실영상 검수를 이어간다. 프론트·Vercel은 계속 팀장 담당이다.
+
+## 2026-09-15 캐시 이관 승인 후 완료
+
+- 사용자가 원본 보존·새 캐시 이관·실패 복사본 두 개 정리를 승인했다. 서명 검증한 a26264e 이미지로 원본을 read-only 마운트하고 깊은 경로부터 소유권을 변경했다. 새 볼륨은 `chamsae-ai-cache-ready-20260915`이며 루트 포함 61개 경로 이관, UID 10001 컨테이너에서 하위 60개 경로 소유권 검수가 통과했다.
+- `chamsae-ai-cache-migration-20260915`, `chamsae-ai-cache-migration-v2-20260915` 두 실패 복사본은 라벨과 컨테이너 참조 없음 확인 후 삭제했다. 원본 `conan-staging_model-cache`는 보존했다. 아래 이전 실패·승인 차단 기록은 이 완료 기록으로 갱신한다.
+- 새 이미지와 이관 캐시로 네트워크 없는 컨테이너에서 얼굴 검출기, Whisper small CPU/int8, `dima806/deepfake_vs_real_image_detection` ViT 분류기 로드가 모두 성공했다. 실영상 분석과 운영 컨테이너 교체는 아직 하지 않았다.
+
+## 2026-09-15 야간 작업 결과 — Service Auth 적용, 공개 배포 미완료
+
+- 사용자 실행 시점 확인 후 `Chamsae AI Gateway Service` 정책 `b3f0808d-3723-4421-a8a2-d766da42caf5`를 생성하고 참새 AI API 앱에 저장했다. Include는 `Chamsae AI Vercel Gateway` 한 개, Action은 Service Auth다. 기존 이메일 정책·두 API 호스트·Monitoring/SSH 앱을 보존했다.
+- 맥미니에서 리다이렉트 추적 없이 같은 `User-Agent: chamsae-deployment-check`로 새 API `/health`를 검사했다. 정상 토큰 200, 미인증 302, 변조 토큰 302였다. Python 기본 User-Agent에서는 세 경우 모두 403이었다. 처음에는 전파 지연을 추정했으나 동일 User-Agent 비교로 구분했으며, 정확한 Cloudflare 차단 규칙 원인은 미확인이다. 실제 Vercel Function 런타임 검수는 아니다.
+- BE PR #7 merge는 `a26264e128ba80485192d7edab42b26414110e09`, main CI `34867911039` 성공이다. 새 이미지 `ghcr.io/dynamic-juo/be@sha256:6789f47a51d5fa879d7cf3e39e0b0711b49a9c9bee651262252b7c9166ca9a15`의 release·OCI 서명과 인증서 정책을 맥미니에서 검증하고 pull했다. 자료는 서버 `ops-staging/a26264e`에 있다.
+- 새 이미지의 네트워크 없는 별도 두 컨테이너에서 terminal fixture 저장 후 재시작 복원 및 `durable-terminal-v1`을 확인했다. 시험 결과 볼륨은 삭제했다. 실제 운영 결과 이관이나 실영상 시험은 아니다.
+- 캐시 이관은 **실패**했다. UID 10001 복사는 원본의 root 전용 파일을 읽지 못했다. 서명 이미지 확인 후 root+CHOWN, 원본 read-only, 새 v2 볼륨만 쓰는 재시도는 상위 mode 700 폴더 소유권을 먼저 바꿔 하위 경로 접근에 실패했다. 수정안은 깊은 경로부터 소유권을 변경하는 것이다. 원본 캐시 권한은 변경하지 않았다.
+- 잔여물: `chamsae-ai-cache-migration-20260915`, `chamsae-ai-cache-migration-v2-20260915`는 이번 작업의 **실패한 부분 복사본**이다. 운영에 연결하지 않는다. 수정 복사 및 두 실패 볼륨 정리는 자동 승인 검토에서 정확한 변경·삭제 승인 부족으로 거부돼 미실행이다. `chamsae-ai-cache-ready-20260915` 생성도 해당 거부 명령에 포함돼 실행하지 않았다. 정리 때 라벨·미사용 여부를 재확인하고 원본 `conan-staging_model-cache`를 절대 삭제하지 않는다.
+- 실제 API는 계속 `conan-be:472aff7`이다. 새 CORS·공개 보호 이미지 전환, 운영 내부망/출구·전용 Tunnel, 하드 실행 시간 제한, Turnstile 생성/Secret 인수, controller 초기화·활성화, 실제 영상 검수가 남는다. **팀장님이 FE를 연결하면 바로 공개 가능한 상태가 아니다.** FE 준비 계약은 [인수 문서](frontend-integration.md)를 따른다.
+
+## 2026-09-15 Cloudflare 인증정보 인수·정책 저장 대기
+
+- 서버 `ops-secrets/cloudflare-gateway.json`의 존재·일반 파일·소유자·mode 600 및 Client ID/Secret 형식을 확인했다. 비밀값은 출력하지 않았다. 실제 Access 인증 성공은 아직 검증하지 않았다.
+- BE PR #7은 정확한 a66c795 head의 ARM64 test-build 성공을 확인하고 병합했다. 후속 main 이미지 게시와 운영 전환은 별도다.
+- Cloudflare의 참새 AI API 앱에서 `Chamsae AI Gateway Service` 정책 초안을 준비했다. Action은 Service Auth, Include는 특정 Service Token `Chamsae AI Vercel Gateway` 하나다. 기존 이메일 정책은 그대로이며 정책 저장·앱 저장은 아직 실행하지 않았다.
+- 브라우저 도구가 새 보안 접근 권한 부여에 실행 시점 확인을 요구해 저장 직전 화면을 인수 상태로 보존했다. 사용자 확인 후 정책 저장과 앱 연결 저장, 정상 토큰/미인증/변조 토큰의 health 응답을 검수한다. 두 API 호스트에 적용되며 Monitoring/SSH 앱에는 연결하지 않는다.
+
+## 2026-09-15 GitHub 인증 검수·서명 이미지 다운로드 완료
+
+- 사용자 입력 GitHub API/GHCR 토큰 파일의 owner·mode 600을 확인했고 main/artifact 조회와 private GHCR manifest 읽기가 성공했다. `ops-secrets/registry-staging/config.json`은 GHCR 전용 임시 배포 인증 설정이며 mode 600이다. 인증정보를 출력하거나 Git에 넣지 않는다.
+- gh 2.98.0이 `--cert-identity`와 `--signer-workflow` 동시 사용을 거부하는 실제 오류를 발견했다. 중복 옵션 제거 및 회귀 검증은 `fix/attestation-cli-options` a66c795, [BE PR #7](https://github.com/Dynamic-Juo/be/pull/7)에 올렸다. 배포·서명 관련 180개 테스트가 통과했다. 이 수정은 아직 main 병합 완료로 취급하지 않는다.
+- 맥미니 `ops-staging/eef15c8/attestation.py`에 수정 helper를 두고 release·OCI bundle 검증 및 전체 인증서 정책 대조를 통과했다. 앞서 기록한 정확한 eef15c8 이미지 digest 다운로드도 완료했다. 서명 확인 기준을 완화하지 않았다.
+- 네트워크 없는 일회용 컨테이너에서 UID 10001·`참새 AI API` 제목·캐시 및 상태 경로 쓰기가 통과했다. 시험 컨테이너는 자동 삭제됐다. 실제 API는 여전히 `conan-be:472aff7` healthy이고 기존 다른 7개 컨테이너도 계속 Up이다. 운영 교체·격리망 적용·controller 활성화·공개 전환은 아직이다.
+- `ops-tools/store-cloudflare-credentials.py`를 준비했다. 사용자가 Apple Passwords에 보관한 Service Token Client ID/Secret을 숨김 입력하면 `ops-secrets/cloudflare-gateway.json`에 mode 600·덮어쓰기 금지로 저장한다. 아직 저장·Service Auth 실검수를 완료한 것으로 취급하지 않는다. CF 토큰 결과 페이지 읽기 거부를 우회하지 않는다.
+- 다음 순서: PR #7 CI 확인 및 수정 반영, CF 인증정보 인수와 Service Auth·Turnstile 설정, 격리·볼륨/결과 이관·실영상 검수 후 운영 전환이다. FE/Vercel은 수정하지 않는다.
+
+## 2026-09-15 설치 범위·인증정보 인수 확인
+
+- 사용자가 Cloudflare Client ID/Secret을 직접 보관했다고 확인했다. 비밀값은 채팅·저장소로 받지 않았다. Service Auth 연결과 실제 인증 검수는 아직이다.
+- Homebrew 영수증에서 gh 설치는 2026-09-15 00:32 KST다. Python 3.14는 3월 23일 UTC, 호스트 cloudflared는 1월 3일 UTC, Node는 7월 12일 UTC, Node 22는 5월 10일 UTC 설치 기록이다. 이번 명령으로 직접 추가한 호스트 패키지는 gh 2.98.0 하나다.
+- GitHub Actions는 GitHub-hosted ubuntu-24.04-arm에서 Docker 빌드·테스트·게시·서명을 한다. 맥미니에는 self-hosted Actions runner를 설치하지 않았다. 사용자 LaunchAgents에서 conan/chamsae/deepcheck/github 이름의 plist는 0개다. 배포 helper의 launchd 활성화도 아직이다.
+- 격리 시험 잔여물은 `chamsae-egress:review-20260914` 이미지와 isolation-lab의 Dockerfile·squid.conf·verify_egress.py다. 시험 컨테이너는 남아 있지 않다. 기존 Hermes/Wowtalk 중지 컨테이너와 기존 다른 서비스는 삭제하지 않았다.
+- 운영 이미지의 GHCR 익명 pull 확인은 401이었다. GitHub 메타데이터용 fine-grained Actions/Contents read 토큰과 이미지 pull용 classic read:packages 토큰을 구분해 준비한다. 현재 개발용 gh 인증도 packages 조회 scope가 없어 403이었으며 권한을 임의로 넓히지 않았다.
+
+## 2026-09-15 배포 진행 — PR 병합과 호스트 도구 설치
+
+- 사용자가 프론트 연결을 제외한 백엔드 배포 완료를 요청했다. 프론트·Vercel은 다음 날 팀장이 연결하며, 해당 저장소와 관리 설정은 수정하지 않는다.
+- BE PR #5는 `b716552`의 ARM64 CI 성공 후 main에 병합됐다. merge SHA는 `eef15c86d26abad2ac11be9458533f29df6e6f36`이다. main [CI 34862555149](https://github.com/Dynamic-Juo/be/actions/runs/34862555149)의 test-build·publish·attest-release가 모두 성공했다. 배포 후보는 `ghcr.io/dynamic-juo/be@sha256:bc7c3199cda29ed4468d371e464a03344dae4df6eda73e4b46eff241f5bd3083`이다. 릴리스 artifact ID는 `10356242194`다. 개발 기기에서 `gh attestation verify`로 release JSON의 저장소·signer workflow·main ref·정확한 source SHA·GitHub hosted runner 조건을 검증해 exit 0을 확인했다. OCI 이미지와 호스트 controller의 전체 검증 완료를 의미하지 않는다. PR CI의 publish skipped를 게시 성공으로 오해하지 않는다.
+- 맥미니에 Homebrew로 GitHub CLI 2.98.0을 설치했다. 자동 Homebrew 갱신은 끄고 gh만 설치했다. `/opt/homebrew/bin/gh auth status`는 미인증이다. 전용 Actions/Contents read 인증과 GHCR pull 인증이 준비되기 전 자동 배포 controller를 켜지 않는다.
+- 기존 유일한 모델 볼륨은 `conan-staging_model-cache` → `/root/.cache`이며 소유권 `0:0`, mode `755`다. 새 UID 10001 이미지에 붙이기 전 별도 복사·권한 이관 검증이 필요하다. 결과 볼륨은 현재 운영 컨테이너에 없다.
+- 실제 앱은 여전히 root·writable rootfs·PID 상한 없음, ingress `internal=false`다. 새 main 코드와 실제 운영 격리 완료를 구분한다. 운영 컨테이너 재생성·이미지 교체·공개 활성화는 아직 하지 않았다.
+- 사용자 진행 지시 후 `Chamsae AI Vercel Gateway` 토큰 생성 버튼을 눌렀다. 이후 결과 화면 읽기·출력은 비밀값 노출 위험으로 자동 승인 검토가 거부했다. 재시도해 비밀값을 읽거나 우회 추출하지 않았다. 브라우저 결과 화면을 보존했고 사용자가 직접 발급 결과 확인·비밀 보관을 해야 한다. 토큰 생성 상태를 확인하기 전 중복 발급하지 않는다. 앱의 Service Auth 정책 연결은 아직 하지 않았다.
+- 다음 실행에는 사용자 보관 CF 인증정보, Turnstile 설정, 호스트 전용 GitHub 읽기 인증이 필요하다. 인증정보와 함께 새 상태 볼륨·UID/cache 전환, 전용 Tunnel/출구·내부망 차단, 실제 제공자·실영상·강제 시간 제한 검수를 완료해야 한다. 프론트가 준비됐다는 이유만으로 이 항목들을 생략하지 않는다.
+
 ## 2026-09-15 현재 우선 상태 — 최종 API 주소 연결
 
 - 사용자가 최종 이름 `참새 AI API`, 주소 `https://chamsae-ai-api.dotseven.cloud`를 확정했다. `dev` 없는 주소다. 코드 API 제목과 README·공개 계약·FE 인수 문서를 반영했다. 운영 이미지의 표시명 변경은 새 이미지 배포 때 적용된다.
