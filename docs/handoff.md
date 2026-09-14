@@ -1,5 +1,15 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 야간 작업 결과 — Service Auth 적용, 공개 배포 미완료
+
+- 사용자 실행 시점 확인 후 `Chamsae AI Gateway Service` 정책 `b3f0808d-3723-4421-a8a2-d766da42caf5`를 생성하고 참새 AI API 앱에 저장했다. Include는 `Chamsae AI Vercel Gateway` 한 개, Action은 Service Auth다. 기존 이메일 정책·두 API 호스트·Monitoring/SSH 앱을 보존했다.
+- 맥미니에서 리다이렉트 추적 없이 같은 `User-Agent: chamsae-deployment-check`로 새 API `/health`를 검사했다. 정상 토큰 200, 미인증 302, 변조 토큰 302였다. Python 기본 User-Agent에서는 세 경우 모두 403이었다. 처음에는 전파 지연을 추정했으나 동일 User-Agent 비교로 구분했으며, 정확한 Cloudflare 차단 규칙 원인은 미확인이다. 실제 Vercel Function 런타임 검수는 아니다.
+- BE PR #7 merge는 `a26264e128ba80485192d7edab42b26414110e09`, main CI `34867911039` 성공이다. 새 이미지 `ghcr.io/dynamic-juo/be@sha256:6789f47a51d5fa879d7cf3e39e0b0711b49a9c9bee651262252b7c9166ca9a15`의 release·OCI 서명과 인증서 정책을 맥미니에서 검증하고 pull했다. 자료는 서버 `ops-staging/a26264e`에 있다.
+- 새 이미지의 네트워크 없는 별도 두 컨테이너에서 terminal fixture 저장 후 재시작 복원 및 `durable-terminal-v1`을 확인했다. 시험 결과 볼륨은 삭제했다. 실제 운영 결과 이관이나 실영상 시험은 아니다.
+- 캐시 이관은 **실패**했다. UID 10001 복사는 원본의 root 전용 파일을 읽지 못했다. 서명 이미지 확인 후 root+CHOWN, 원본 read-only, 새 v2 볼륨만 쓰는 재시도는 상위 mode 700 폴더 소유권을 먼저 바꿔 하위 경로 접근에 실패했다. 수정안은 깊은 경로부터 소유권을 변경하는 것이다. 원본 캐시 권한은 변경하지 않았다.
+- 잔여물: `chamsae-ai-cache-migration-20260915`, `chamsae-ai-cache-migration-v2-20260915`는 이번 작업의 **실패한 부분 복사본**이다. 운영에 연결하지 않는다. 수정 복사 및 두 실패 볼륨 정리는 자동 승인 검토에서 정확한 변경·삭제 승인 부족으로 거부돼 미실행이다. `chamsae-ai-cache-ready-20260915` 생성도 해당 거부 명령에 포함돼 실행하지 않았다. 정리 때 라벨·미사용 여부를 재확인하고 원본 `conan-staging_model-cache`를 절대 삭제하지 않는다.
+- 실제 API는 계속 `conan-be:472aff7`이다. 새 CORS·공개 보호 이미지 전환, 운영 내부망/출구·전용 Tunnel, 하드 실행 시간 제한, Turnstile 생성/Secret 인수, controller 초기화·활성화, 실제 영상 검수가 남는다. **팀장님이 FE를 연결하면 바로 공개 가능한 상태가 아니다.** FE 준비 계약은 [인수 문서](frontend-integration.md)를 따른다.
+
 ## 2026-09-15 Cloudflare 인증정보 인수·정책 저장 대기
 
 - 서버 `ops-secrets/cloudflare-gateway.json`의 존재·일반 파일·소유자·mode 600 및 Client ID/Secret 형식을 확인했다. 비밀값은 출력하지 않았다. 실제 Access 인증 성공은 아직 검증하지 않았다.

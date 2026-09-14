@@ -1,5 +1,7 @@
 # 일반 사용자 공개 전환
 
+2026-09-15 최신 운영 상태: 공개 보호 코드는 main에 병합됐지만 실제 운영은 472aff7이다. 특정 서비스 토큰의 Service Auth 연결과 정상/미인증/변조 인증 비교는 완료했다. 새 main 이미지의 서명 확인·다운로드·별도 컨테이너 결과 복원은 완료했으며 캐시 이관은 실패했다. Turnstile·운영 격리·새 이미지 교체·실영상 검수 전에는 공개 모드를 활성화하지 않는다. [최신 인수 상태](handoff.md)를 우선한다.
+
 기준일: 2026-09-14. `feat/public-api-protection`의 **구현·로컬 검증 단계이며 미배포**다. 사용자 요구는 일반 사용자의 접근을 허용하면서 맥미니 홈서버 보호를 우선하는 것이다. 현재 이메일 Access를 없애는 변경은 실행하지 않았다. 제품의 현재 미결 사항은 [docs의 기존 추적표](https://github.com/Dynamic-Juo/docs/blob/docs/implementation-audit/project/project-plan.md)에서 관리한다.
 
 ## 연결 구조
