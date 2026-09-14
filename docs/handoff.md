@@ -1,5 +1,12 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 Cloudflare 인증정보 인수·정책 저장 대기
+
+- 서버 `ops-secrets/cloudflare-gateway.json`의 존재·일반 파일·소유자·mode 600 및 Client ID/Secret 형식을 확인했다. 비밀값은 출력하지 않았다. 실제 Access 인증 성공은 아직 검증하지 않았다.
+- BE PR #7은 정확한 a66c795 head의 ARM64 test-build 성공을 확인하고 병합했다. 후속 main 이미지 게시와 운영 전환은 별도다.
+- Cloudflare의 참새 AI API 앱에서 `Chamsae AI Gateway Service` 정책 초안을 준비했다. Action은 Service Auth, Include는 특정 Service Token `Chamsae AI Vercel Gateway` 하나다. 기존 이메일 정책은 그대로이며 정책 저장·앱 저장은 아직 실행하지 않았다.
+- 브라우저 도구가 새 보안 접근 권한 부여에 실행 시점 확인을 요구해 저장 직전 화면을 인수 상태로 보존했다. 사용자 확인 후 정책 저장과 앱 연결 저장, 정상 토큰/미인증/변조 토큰의 health 응답을 검수한다. 두 API 호스트에 적용되며 Monitoring/SSH 앱에는 연결하지 않는다.
+
 ## 2026-09-15 GitHub 인증 검수·서명 이미지 다운로드 완료
 
 - 사용자 입력 GitHub API/GHCR 토큰 파일의 owner·mode 600을 확인했고 main/artifact 조회와 private GHCR manifest 읽기가 성공했다. `ops-secrets/registry-staging/config.json`은 GHCR 전용 임시 배포 인증 설정이며 mode 600이다. 인증정보를 출력하거나 Git에 넣지 않는다.
