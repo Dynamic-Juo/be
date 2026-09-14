@@ -1,5 +1,14 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 GitHub 인증 검수·서명 이미지 다운로드 완료
+
+- 사용자 입력 GitHub API/GHCR 토큰 파일의 owner·mode 600을 확인했고 main/artifact 조회와 private GHCR manifest 읽기가 성공했다. `ops-secrets/registry-staging/config.json`은 GHCR 전용 임시 배포 인증 설정이며 mode 600이다. 인증정보를 출력하거나 Git에 넣지 않는다.
+- gh 2.98.0이 `--cert-identity`와 `--signer-workflow` 동시 사용을 거부하는 실제 오류를 발견했다. 중복 옵션 제거 및 회귀 검증은 `fix/attestation-cli-options` a66c795, [BE PR #7](https://github.com/Dynamic-Juo/be/pull/7)에 올렸다. 배포·서명 관련 180개 테스트가 통과했다. 이 수정은 아직 main 병합 완료로 취급하지 않는다.
+- 맥미니 `ops-staging/eef15c8/attestation.py`에 수정 helper를 두고 release·OCI bundle 검증 및 전체 인증서 정책 대조를 통과했다. 앞서 기록한 정확한 eef15c8 이미지 digest 다운로드도 완료했다. 서명 확인 기준을 완화하지 않았다.
+- 네트워크 없는 일회용 컨테이너에서 UID 10001·`참새 AI API` 제목·캐시 및 상태 경로 쓰기가 통과했다. 시험 컨테이너는 자동 삭제됐다. 실제 API는 여전히 `conan-be:472aff7` healthy이고 기존 다른 7개 컨테이너도 계속 Up이다. 운영 교체·격리망 적용·controller 활성화·공개 전환은 아직이다.
+- `ops-tools/store-cloudflare-credentials.py`를 준비했다. 사용자가 Apple Passwords에 보관한 Service Token Client ID/Secret을 숨김 입력하면 `ops-secrets/cloudflare-gateway.json`에 mode 600·덮어쓰기 금지로 저장한다. 아직 저장·Service Auth 실검수를 완료한 것으로 취급하지 않는다. CF 토큰 결과 페이지 읽기 거부를 우회하지 않는다.
+- 다음 순서: PR #7 CI 확인 및 수정 반영, CF 인증정보 인수와 Service Auth·Turnstile 설정, 격리·볼륨/결과 이관·실영상 검수 후 운영 전환이다. FE/Vercel은 수정하지 않는다.
+
 ## 2026-09-15 설치 범위·인증정보 인수 확인
 
 - 사용자가 Cloudflare Client ID/Secret을 직접 보관했다고 확인했다. 비밀값은 채팅·저장소로 받지 않았다. Service Auth 연결과 실제 인증 검수는 아직이다.

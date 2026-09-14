@@ -1,5 +1,10 @@
 # 작업 로그
 
+## 2026-09-15 맥미니 자격 증명 검수와 이미지 준비
+
+- GitHub API/GHCR 읽기 인증 및 비밀 파일 권한을 확인했다. gh 상호 배타 옵션 충돌을 발견해 BE PR #7로 수정했고 테스트 180개가 통과했다. 수정 helper로 실제 release·image bundle 및 인증서 정책 검증이 성공했다.
+- 정확한 eef15c8 digest 이미지를 다운로드하고 네트워크 없는 임시 컨테이너에서 UID 10001·API 표시명·쓰기 경로를 확인했다. 기존 8개 운영 컨테이너는 교체하지 않았다. Cloudflare 인증정보용 숨김 입력 helper만 추가 준비했으며 입력 완료와 공개 전환은 미완료다.
+
 ## 2026-09-15 호스트 설치 범위 확인
 
 - 사용자 요청으로 brew 설치 영수증·Docker 목록·프로젝트 LaunchAgents를 조회했다. 이번 직접 설치는 gh 하나이며 Python/Node/cloudflared는 이전 기록이다. GitHub self-hosted runner와 프로젝트 자동실행 plist는 설치하지 않았다. 격리 시험 이미지 1개·설정 3개가 남는다.
