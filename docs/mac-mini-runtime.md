@@ -59,6 +59,9 @@ flowchart LR
 | --- | --- |
 | 외부 `/health` | 정상 Service Token 200, 미인증·변조 토큰 302 (redirect 미추적, 동일 UA) |
 | 실행 컨테이너 | healthy, `/ready` ready, 완료 결과 11건 복원 |
+| 복원 결과 접근 | 서버에서 만든 올바른 조회 토큰 200 completed, 변조 토큰 404 |
+| 실제 Turnstile | 운영 프록시를 통해 잘못된 응답 `challenge_failed` 403 확인 |
+| 프록시 재검수 | API HUB 추가 후에도 맥미니/Tailscale·내부 gateway·비허용 example.com 차단 |
 | 실영상 `cYRkZmBuDqI` | 자막 off, 17.3초; 다운로드·8프레임·얼굴/분류기·STT·정리 성공 |
 | 실영상 판정 | `partial`: 검증 주장 0건, 전체 AI 생성 모델 미선정으로 unavailable |
 | 실제 DeepSeek·NAVER | 고정 가상 문장으로 주장 1건 추출, NAVER 뉴스/백과 각 2건 검색, 판정 경로 완료 |
