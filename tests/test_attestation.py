@@ -89,6 +89,8 @@ def test_gh_명령은_검증정책을_모두_고정한다(tmp_path):
     joined = " ".join(args)
     assert "--repo Dynamic-Juo/be" in joined
     assert "--signer-workflow Dynamic-Juo/be/.github/workflows/dev-deployment.yml" in joined
+    # GitHub CLI treats these identity selectors as mutually exclusive.
+    assert not {"--cert-identity", "--cert-identity-regex", "--signer-repo"}.intersection(args)
     assert "--source-ref refs/heads/main" in joined
     assert f"--source-digest {'a' * 40}" in joined
     assert "--deny-self-hosted-runners" in args

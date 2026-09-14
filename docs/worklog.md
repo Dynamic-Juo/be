@@ -1,5 +1,11 @@
 # 작업 로그
 
+## 2026-09-15 맥미니 서명 검증 옵션 충돌 수정
+
+- 실제 gh 2.98.0에서 `--cert-identity`와 `--signer-workflow`를 함께 넘기면 상호 배타 옵션 오류로 배포 검증이 중단됐다. 중복 `--cert-identity`를 제거했다. 정확한 signer URI·repository/owner ID·main SHA·GitHub-hosted runner·run/attempt는 기존 인증서 필드 대조로 계속 검증한다.
+- 관련 배포·서명 테스트 180개가 통과했다. 맥미니에서 eef15c8 릴리스와 OCI 이미지 bundle의 암호 검증 및 인증서 정책 대조가 모두 통과했고 정확한 digest 이미지를 내려받았다. 운영 컨테이너 교체와 자동 배포 활성화는 하지 않았다.
+- 사용자 입력 GitHub API/GHCR 토큰은 서버 전용 파일 mode 600으로 확인했다. main/artifact 읽기 및 private 이미지 읽기가 성공했다. 비밀값은 로그·저장소에 남기지 않았다.
+
 ## 2026-09-15 참새 AI 주소 연결과 공개 계약 정정
 
 - 최종 원본 `chamsae-ai-api.dotseven.cloud`와 Cloudflare 앱 `참새 AI API`를 반영했다. 기존 주소와 두 이메일의 인증 보호를 유지하고 같은 backend 원본으로 DNS/Tunnel 경로를 추가했다. 공유 Tunnel과 다른 서비스 경로는 유지했다.

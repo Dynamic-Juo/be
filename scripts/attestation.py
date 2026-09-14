@@ -59,7 +59,6 @@ def command(
         str(gh_binary), "attestation", "verify", subject,
         "--repo", policy.repository,
         "--signer-workflow", policy.signer_workflow,
-        "--cert-identity", policy.signer_uri,
         "--signer-digest", policy.source_sha,
         "--source-ref", "refs/heads/main",
         "--source-digest", policy.source_sha,
