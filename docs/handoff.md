@@ -1,5 +1,11 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 Turnstile 위젯 생성·Secret 인수 대기
+
+- Cloudflare 계정의 Turnstile 목록에서 `Chamsae AI` 생성 성공을 확인했다. 공개 Site Key는 `0x4AAAAAAE0lGIUVFkIN-Rsz`, 설정은 호스트 `chamsae-ai.vercel.app` 한 개·관리형·사전 승인 없음이다. Site Key는 브라우저 공개용이며 비밀 인증정보가 아니다.
+- 생성 결과 화면은 보존하고 Secret Key는 읽거나 출력하지 않았다. 서버 `ops-tools/store-turnstile-credentials.py`는 공개 Site Key를 고정하고 Secret Key 한 개만 getpass로 받으며 `ops-secrets/turnstile.json`에 mode 600·덮어쓰기 금지로 저장한다. 아직 Secret 저장·Siteverify 검수·운영 public mode 활성화는 하지 않았다.
+- 캐시 이관과 세 모델 로드는 아래 기록대로 완료다. 다음에는 Turnstile Secret 인수, 운영 격리·고정 controller 구성 및 최초 전환, 실제 외부 제공자/실영상 검수를 이어간다. 프론트·Vercel은 계속 팀장 담당이다.
+
 ## 2026-09-15 캐시 이관 승인 후 완료
 
 - 사용자가 원본 보존·새 캐시 이관·실패 복사본 두 개 정리를 승인했다. 서명 검증한 a26264e 이미지로 원본을 read-only 마운트하고 깊은 경로부터 소유권을 변경했다. 새 볼륨은 `chamsae-ai-cache-ready-20260915`이며 루트 포함 61개 경로 이관, UID 10001 컨테이너에서 하위 60개 경로 소유권 검수가 통과했다.
