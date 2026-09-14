@@ -27,8 +27,8 @@ class PublicAccess:
     turnstile_secret: str = field(repr=False)
     hostname: str
     database: str
-    daily_limit: int = 30
-    hourly_client_limit: int = 3
+    daily_limit: int = 300
+    hourly_client_limit: int = 60
     result_ttl: int = 86400
 
     @classmethod

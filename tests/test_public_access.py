@@ -40,7 +40,7 @@ def test_quota_survives_restart_and_is_atomic(policy):
             assert 0 < exc.retry_after <= 3600
             return False
     with ThreadPoolExecutor(max_workers=8) as pool:
-        assert sum(pool.map(submit, range(12))) == 3
+        assert sum(pool.map(submit, range(72))) == 60
     policy.charge('client', analysis=True, now=1800003600)
 
 
@@ -154,3 +154,12 @@ def test_public_submit_and_result_flow_with_fake_harness(policy, monkeypatch):
     assert client.post('/api/analyze', headers=headers, json=body).status_code == 403
     with policy.connect() as db:
         assert db.execute("SELECT n FROM quota WHERE kind='daily'").fetchone()[0] == 1
+
+
+def test_default_global_limit_allows_300_and_rejects_301(policy):
+    for index in range(300):
+        policy.charge(f'client-{index}', analysis=True, now=1800000000)
+    with pytest.raises(PublicAccessError) as raised:
+        policy.charge('one-more', analysis=True, now=1800000000)
+    assert raised.value.status == 429
+    policy.charge('next-day', analysis=True, now=1800086400)
