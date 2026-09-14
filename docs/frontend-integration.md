@@ -2,7 +2,7 @@
 
 ## 현재 전달할 주소와 프론트 담당 작업
 
-Turnstile 공개 Site Key: `0x4AAAAAAE0lGIUVFkIN-Rsz`. Cloudflare에서 `Chamsae AI` 위젯 생성과 관리형·호스트 `chamsae-ai.vercel.app` 한 개·사전 승인 없음을 확인했다. FE는 `action=analyze`로 사용한다. Secret Key는 백엔드 서버 전용이며 인수 대기 중이다. Site Key만으로 공개 활성화가 완료되지는 않는다.
+Turnstile 공개 Site Key: `0x4AAAAAAE0lGIUVFkIN-Rsz`. Cloudflare에서 `Chamsae AI` 위젯 생성과 관리형·호스트 `chamsae-ai.vercel.app` 한 개·사전 승인 없음을 확인했다. FE는 `action=analyze`로 사용한다. Secret Key는 백엔드 서버에 안전하게 인수했고 실제 Siteverify 부정 시험을 확인했다. 정상 브라우저 토큰과 실제 Vercel 전체 경로는 별도 검수가 필요하다. Site Key만으로 공개 활성화가 완료되지는 않는다.
 
 **2026-09-15 최신 상태: 아직 공개 연결을 켜지 않는다.** 특정 Service Token의 Cloudflare Service Auth는 적용했고 정상 토큰 health 200, 미인증·변조 토큰 302를 확인했다. 하지만 운영 백엔드는 계속 472aff7이다. 새 이미지의 서명·상태 복원 시험, 캐시 이관과 얼굴·Whisper·ViT 오프라인 로드는 성공했다. 운영 격리·Turnstile·새 이미지 전환·실영상 검수가 끝나기 전에는 `PUBLIC_GATEWAY_ENABLED=false`를 유지한다. 아래 초기 기록의 “Service Auth 미적용”은 이 최신 상태로 대체한다.
 

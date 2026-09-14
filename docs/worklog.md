@@ -1,5 +1,11 @@
 # 작업 로그
 
+## 2026-09-15 Turnstile 검수와 배포 문제 원인 정리
+
+- 저장 파일 권한 확인과 실제 Siteverify 부정 시험을 완료했다. 새 이미지의 별도 격리망에서도 프록시를 통한 Turnstile 검증 호출·잘못된 토큰 거절·전달 키 누락 거절이 성공했고 SSH/Laravel/Redis/직접 인터넷 연결은 차단됐다. 실제 운영 전환은 아니다.
+- 문제 원인/해결/재발 방지를 deployment-troubleshooting에 정리했다. 키의 역할을 순차적으로만 안내해 혼동을 키운 점과 실제 gh 호환성·캐시 소유권 변경 순서 사전 검수 부족을 명시했다.
+- controller 바이너리 감사에서 OrbStack의 멀티콜 symlink 구조와 Homebrew 상위 쓰기 권한 문제를 확인했다. 기존 Docker·Compose·gh의 동일 해시 일반 파일을 staging 보호 경로에 준비했다. 기존 설치 경로 권한은 바꾸지 않았으며 launchd·실제 controller는 활성화하지 않았다.
+
 ## 2026-09-15 Turnstile 위젯 준비
 
 - `Chamsae AI` 관리형 위젯을 `chamsae-ai.vercel.app` 한 곳에 생성하고 별도 목록에서 존재·모드·사전 승인 없음 확인. Secret은 출력하지 않고 생성 화면을 사용자 인수용으로 보존했다. 서버 숨김 입력 helper는 Secret 한 개만 받도록 준비했다. 실제 Siteverify와 FE 적용은 아직이다.

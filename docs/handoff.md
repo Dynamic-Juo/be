@@ -1,5 +1,13 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 Turnstile 인수·격리 경로 검수
+
+- Turnstile 비밀 파일 owner·0600·Site Key 일치를 확인했다. 공식 Siteverify는 잘못된 시험 응답에 HTTP 200, `success=false`, `invalid-input-response`를 반환했다. 정상 브라우저 토큰 성공 검수는 아니며 사용자에게 같은 키를 다시 입력하도록 요청하지 않는다.
+- 새 a26264e 이미지의 별도 internal 네트워크·read-only 컨테이너에서 전용 시험 프록시를 통한 실제 Turnstile 요청 거절(`challenge_failed`)과 전달 키 누락 거절을 확인했다. 맥미니 SSH·Laravel·Redis·직접 공용 IP 연결은 모두 차단됐다. 시험 컨테이너·네트워크는 정리했고 실제 운영망은 변경하지 않았다.
+- [배포 문제 원인과 재발 방지](deployment-troubleshooting.md)에 코드 오류, 권한 이관 오류, 자동 승인 거부, 키 안내 혼동, SSH 정상 종료, 과거/현재 문서 혼재를 구분해 기록했다. 초기 안내·사전 검수 부족도 원인에 포함했다.
+- controller 준비: OrbStack Docker와 Compose는 같은 `docker-tools` 멀티콜 실행 파일로 연결돼 있다. `ops-staging/controller-bin/docker`, `docker-compose`에 동일 해시의 일반 파일 복사본을 만들었고 각각 Docker 29.4.0, Compose v5.1.2 실행과 실제 `secure_paths` 검사가 통과했다. Docker socket 검사도 통과했다. 기존 Homebrew gh 경로는 상위 group/world writable로 거절돼 Homebrew 권한을 건드리지 않고 동일 해시 gh를 위 디렉터리에 복사했다. 새 패키지/runner 설치가 아니라 고정 배포 도구 준비이며 controller 실행·활성화는 아직이다.
+- 운영은 계속 472aff7 healthy, 다른 7개 컨테이너도 Up이다. 남은 것은 운영 격리·controller의 고정 runtime/설정 및 최초 전환, 실제 영상/제공자 검수다. 비밀키 저장 완료와 공개 배포 완료를 구분한다.
+
 ## 2026-09-15 Turnstile 위젯 생성·Secret 인수 대기
 
 - Cloudflare 계정의 Turnstile 목록에서 `Chamsae AI` 생성 성공을 확인했다. 공개 Site Key는 `0x4AAAAAAE0lGIUVFkIN-Rsz`, 설정은 호스트 `chamsae-ai.vercel.app` 한 개·관리형·사전 승인 없음이다. Site Key는 브라우저 공개용이며 비밀 인증정보가 아니다.
