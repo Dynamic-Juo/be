@@ -8,7 +8,9 @@ Turnstile 공개 Site Key: `0x4AAAAAAE0lGIUVFkIN-Rsz`. Cloudflare에서 `Chamsae
 
 팀장님이 먼저 준비할 것은 `deploy/public-gateway`의 Function/라우팅 예제 적용, 같은 출처 `/api` 호출, Turnstile `action=analyze`, 접수 응답의 작업별 토큰 보관 및 조회 시 Bearer 전달이다. 서버 원본은 아래 주소로 정하고 비밀값은 별도 안전한 전달 후 Vercel 서버 환경변수에만 설정한다. 공개 Site Key는 위에 제공했지만 공개 활성화 확인은 아직이다. 프론트 저장소나 Vercel 설정은 이번 작업에서 변경하지 않았다.
 
-최종 API 원본은 `https://chamsae-ai-api.dotseven.cloud`다. 2026-09-15 Cloudflare DNS·Tunnel 연결과 기존 두 이메일의 Access 보호를 적용했다. 기존 `conan-api-dev.dotseven.cloud`도 같은 앱에서 보호한다. 미인증 `/health`는 302, 새 프론트 Origin OPTIONS는 백엔드의 `400 Disallowed CORS origin`이다. 서버 이미지는 여전히 `472aff7`이며 공개 보호·새 CORS는 미배포다.
+최종 API 원본은 `https://chamsae-ai-api.dotseven.cloud`다. Cloudflare Service Auth·이메일 정책과 새 이미지 배포를 확인했다. 프론트는 아래 현재 공개 계약을 따르고, 뒤의 날짜별 직접 쿠키 호출 기록은 과거 이력으로 읽는다.
+
+**재방문 복원 구현은 [화면 이탈 후 이전 분석 다시 보기](frontend-resume.md)를 따른다.** job ID와 조회 토큰을 함께 지속 보관하고, 홈에서 이전 분석을 GET으로 재개한다. 아래 역사적 체크리스트의 job/session ID 보관만으로 공개 모드 복원이 완성되는 것은 아니다.
 
 공개 전환에서 팀장님께 전달할 설정은 **Vercel 서버의 `PRIVATE_API_ORIGIN=https://chamsae-ai-api.dotseven.cloud`**다. 사용자 브라우저는 Vercel의 같은 출처 API를 호출한다. 기존 브라우저용 API base만 새 도메인으로 교체하면 일반 사용자 공개까지 완료되는 것이 아니다. Service Token·전달 키는 `VITE_*`와 브라우저 코드에 절대 넣지 않는다. Function 설치, Turnstile, 작업별 조회 토큰 처리는 [공개 계약](public-access.md#설정-인수인계)을 따른다. FE 코드·Vercel 설정은 팀장 담당이며 이번에 수정하지 않았다.
 

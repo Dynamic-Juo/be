@@ -38,7 +38,7 @@ flowchart LR
 | GET `/api/jobs/{job_id}` | `Authorization: Bearer <job_access_token>` 필요. 다른 작업·만료·변조 토큰은 404 |
 | 관리·문서·전체 목록 | 공개 Function에서 전달하지 않음. `/internal/*`도 전달하지 않음 |
 
-조회 토큰은 24시간 유효하다. 작업 ID와 서명으로 묶이며 키 교체 시 기존 토큰도 폐기된다. 토큰 소유자는 결과를 조회할 수 있으므로 URL·로그·분석 도구에 넣지 않는다. FE는 작업별로 `sessionStorage` 등에 보관하고 새로고침 복구와 404 종료 안내를 구현한다. 세션 ID는 인증 수단이 아니다. 기존 실행 중 동일 영상 재사용은 유지하므로 사용자별 소유권 계정 시스템은 아니다. 원문 영상 정보 외 개인정보를 요청에 추가하지 않는다.
+조회 토큰은 24시간 유효하다. 작업 ID와 서명으로 묶이며 키 교체 시 기존 토큰도 폐기된다. 토큰 소유자는 결과를 조회할 수 있으므로 URL·로그·분석 도구에 넣지 않는다. FE는 마지막 작업 ID·조회 토큰을 `localStorage`에 함께 보관해 탭 종료 후에도 재방문할 수 있게 한다. [재방문 복원 계약](frontend-resume.md)의 저장 실패·만료·404 처리를 따른다. 24시간은 토큰 유효기간이며 결과 보존 보장은 아니다. 세션 ID는 인증 수단이 아니다. 기존 실행 중 동일 영상 재사용은 유지하므로 사용자별 소유권 계정 시스템은 아니다. 원문 영상 정보 외 개인정보를 요청에 추가하지 않는다.
 
 Turnstile은 `action=analyze`, 호스트 `chamsae-ai.vercel.app`로 사용한다. 서버가 success·hostname·action을 검사한다. 토큰은 단일 사용·5분 만료이므로 실패 후 재접수 때 새 토큰을 얻는다. 자동으로 같은 분석 POST를 재시도하지 않는다. [Siteverify 공식 계약](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/)
 
@@ -62,17 +62,16 @@ SQLite 트랜잭션으로 동시 요청을 합산하고 재시작에도 유지�
 | 맥미니 일반 설정 | `DEEPCHECK_PUBLIC_MODE=gateway`, `DEEPCHECK_TURNSTILE_HOSTNAME=chamsae-ai.vercel.app`, `DEEPCHECK_PUBLIC_STATE_FILE=/var/lib/deepcheck-results/public/quota.sqlite3` |
 | 프론트 번들 | Turnstile의 공개 site key만 포함. API base URL은 같은 출처 `/api` 계약에 맞게 설정 |
 
-상태 파일은 **지속되는 전용 볼륨 내부**여야 한다. 경로가 절대 경로인지 코드가 확인하지만 볼륨 마운트까지 보장하지 않는다. 현행 CD Compose의 `job-results`가 해당 경로의 상위에 마운트된다. 서버는 구형 Compose이므로 새 런북에 따라 실제 마운트와 쓰기 권한을 확인해야 한다. 기존 `.env` 전체를 출력하거나 교체하지 않는다.
+상태 파일은 **지속되는 전용 볼륨 내부**여야 한다. 경로가 절대 경로인지 코드가 확인하지만 볼륨 마운트까지 보장하지 않는다. 현행 CD Compose의 `job-results`가 해당 경로의 상위에 마운트된다. 현재 운영은 새 Compose와 전용 결과 볼륨으로 전환했고 결과 11건 복원과 쓰기 권한을 검수했다. 다음 배포에서도 런북에 따라 마운트를 보존한다. 기존 `.env` 전체를 출력하거나 교체하지 않는다.
 
 FE 담당자는 Function 설치 외에 요청에 Turnstile 토큰 추가, 응답 토큰 보관, 결과 조회 Authorization, 403 재확인·429 대기·404 종료 안내를 구현해야 한다. 기존 `credentials: include`만으로 새 공개 계약이 구현되지 않는다. 프론트 코드·Vercel 설정은 조정준 팀장 담당이다. BE 담당은 해당 저장소·관리 설정을 수정하지 않고 이 문서의 계약과 검수 조건을 전달한다.
 
 ## 공개 활성화 순서와 미완료 조건
 
-1. [서버 격리 점검](server-isolation.md)을 완료한다. 운영본의 root·PID/임시 디스크 상한·내부 접근은 아직 그대로다. [9월 14일 검사](deployment-isolation-audit-2026-09-14.md)에서 내부망 차단과 제한된 출구를 별도 시험했으며 비특권 이미지 CI도 통과했다. 운영 적용·전용 Tunnel·강제 실행 제한은 미완료다. API 입구를 보호한 것만으로 ISO 항목을 통과시키지 않는다.
-2. [서명 기반 배포 런북](development-cd-runbook.md)으로 새 이미지와 지속 상태를 반영한다. 현재 구형 이미지에는 공개 보호 코드가 없다. 운영 키·볼륨·다른 서비스는 보존한다.
-3. Cloudflare에 이 API 전용 Service Token과 **Service Auth 정책**을 추가한다. 기존 이메일 정책을 유지하고 최소 대상 앱에만 허용한다. Turnstile 호스트도 고정한다.
-4. Vercel Function·FE 계약과 서버 환경변수를 연결한다. Preview 배포에는 운영 비밀값을 무조건 공유하지 않는다. 공개 모드·Function 활성화 시점은 함께 조정한다.
-5. 실제 Vercel에서 정상 접수/조회, 봇 토큰 실패·재사용, 위조 헤더, 만료·다른 작업 토큰, 원본 직접 접근 차단, 재시작 후 한도 유지, 동시 요청·부하·내부망 차단을 검수한 뒤 공개한다.
+1. **적용 완료:** 새 서명 이미지, 영속 결과/한도 볼륨, UID·read-only·PID 제한, 내부망과 지정 호스트 HTTPS 프록시. 공유 VM/UID·공유 Tunnel의 잔여 경계와 강제 실행 제한은 [현재 운영 구성](mac-mini-runtime.md)을 따른다.
+2. **적용 완료:** 특정 Service Token의 Service Auth와 기존 이메일 정책 유지, Turnstile 호스트 고정 및 잘못된 토큰 거절 검수.
+3. **프론트 담당:** Vercel Function·FE 계약·서버 환경변수와 [재방문 복원](frontend-resume.md)을 연결한다. Preview에 운영 비밀값을 무조건 공유하지 않는다.
+4. **공개 전 검수:** 강제 실행 제한 등 남은 운영 조건을 해결하고 실제 Vercel에서 접수/조회·탭 종료 후 재방문·봇 토큰 실패/재사용·위조 헤더·만료/다른 작업 토큰·원본 직접 접근 차단·부하를 확인한 뒤 공개한다. 검수 전 `PUBLIC_GATEWAY_ENABLED=false`를 유지한다.
 
 긴급 중지는 우선 Vercel의 `PUBLIC_GATEWAY_ENABLED=false`와 전용 Service Token 폐기로 공개 입구를 닫는다. 진행 중 분석은 별도 drain 절차로 관리한다. **백엔드 공개 모드만 off로 바꾸어 접근 제한을 없애는 것을 긴급 중지로 사용하지 않는다.**
 
