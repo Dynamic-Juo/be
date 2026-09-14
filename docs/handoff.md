@@ -1,5 +1,14 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 배포 진행 — PR 병합과 호스트 도구 설치
+
+- 사용자가 프론트 연결을 제외한 백엔드 배포 완료를 요청했다. 프론트·Vercel은 다음 날 팀장이 연결하며, 해당 저장소와 관리 설정은 수정하지 않는다.
+- BE PR #5는 `b716552`의 ARM64 CI 성공 후 main에 병합됐다. merge SHA는 `eef15c86d26abad2ac11be9458533f29df6e6f36`이다. main 이미지 게시·서명 run은 [34862555149](https://github.com/Dynamic-Juo/be/actions/runs/34862555149)이며 완료 여부는 해당 run을 확인한다. PR CI의 publish skipped를 게시 성공으로 오해하지 않는다.
+- 맥미니에 Homebrew로 GitHub CLI 2.98.0을 설치했다. 자동 Homebrew 갱신은 끄고 gh만 설치했다. `/opt/homebrew/bin/gh auth status`는 미인증이다. 전용 Actions/Contents read 인증과 GHCR pull 인증이 준비되기 전 자동 배포 controller를 켜지 않는다.
+- 실제 앱은 여전히 root·writable rootfs·PID 상한 없음, ingress `internal=false`다. 새 main 코드와 실제 운영 격리 완료를 구분한다. 운영 컨테이너 재생성·이미지 교체·공개 활성화는 아직 하지 않았다.
+- 사용자 진행 지시 후 `Chamsae AI Vercel Gateway` 토큰 생성 버튼을 눌렀다. 이후 결과 화면 읽기·출력은 비밀값 노출 위험으로 자동 승인 검토가 거부했다. 재시도해 비밀값을 읽거나 우회 추출하지 않았다. 브라우저 결과 화면을 보존했고 사용자가 직접 발급 결과 확인·비밀 보관을 해야 한다. 토큰 생성 상태를 확인하기 전 중복 발급하지 않는다. 앱의 Service Auth 정책 연결은 아직 하지 않았다.
+- 다음 실행에는 사용자 보관 CF 인증정보, Turnstile 설정, 호스트 전용 GitHub 읽기 인증이 필요하다. 인증정보와 함께 새 상태 볼륨·UID/cache 전환, 전용 Tunnel/출구·내부망 차단, 실제 제공자·실영상·강제 시간 제한 검수를 완료해야 한다. 프론트가 준비됐다는 이유만으로 이 항목들을 생략하지 않는다.
+
 ## 2026-09-15 현재 우선 상태 — 최종 API 주소 연결
 
 - 사용자가 최종 이름 `참새 AI API`, 주소 `https://chamsae-ai-api.dotseven.cloud`를 확정했다. `dev` 없는 주소다. 코드 API 제목과 README·공개 계약·FE 인수 문서를 반영했다. 운영 이미지의 표시명 변경은 새 이미지 배포 때 적용된다.
