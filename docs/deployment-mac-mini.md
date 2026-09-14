@@ -1,5 +1,7 @@
 # M4 맥미니 배포 인수인계
 
+일반 공개 전 홈서버 보호 작업은 [서버 격리 가이드라인](server-isolation.md)의 ISO-01~07을 따른다. 연결·기동 성공과 격리 검증을 구분한다. 이 가이드는 설계 제안이며 아직 서버에 적용하지 않았다.
+
 최신 준비 기록: 2026-09-13 보안 CI/CD 코드는 구현·로컬 검증됐지만 GitHub와 맥미니에는 아직 활성화하지 않았다. **정기 배포와 안전한 최초 migration의 현재 기준은 [개발계 CI/CD 보안 런북](development-cd-runbook.md)이다. 아래 로컬 build/tag/up 절차는 과거 기록 또는 별도 승인한 break-glass 참고일 뿐, 보안 컨트롤러 migration에 사용하지 않는다.** 수동 `build`, tag 기반 `up`, `.env.home`의 image 변경으로 우회하면 서명·replay 방지·durable recovery 상태가 어긋난다. [인수인계](handoff.md), [API 계약](api-reference.md)·[FE 연동 문서](frontend-integration.md)를 함께 확인한다.
 
 최신 자막 기준: 2026-09-13 사용자 지시에 따라 기본은 `off`(미사용·STT), `manual`·`any`는 선택 옵션이다. 코드와 신규 환경 예제를 맞췄고 실제 서버 환경·이미지는 변경하지 않았다. 기존 env가 `manual`이면 코드 기본값만 바꿔도 전환되지 않으므로, 승인된 배포에서 해당 항목을 확인하고 `off`로 반영해야 한다. 이전 manual 기본 유지 기록은 이번 지시로 대체한다. [인수인계](handoff.md), [API 계약](api-reference.md)·[FE 연동 문서](frontend-integration.md)를 함께 확인한다. docs 새 PR과 PR #7 답글은 게시하지 않는다.

@@ -25,6 +25,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Test public gateway contract
+        run: node --test deploy/public-gateway/gateway.test.mjs
       - name: Build CPU ARM64 image
         run: |
           docker build --platform linux/arm64 \
@@ -35,6 +37,12 @@ jobs:
         run: |
           docker build --file Dockerfile.test --build-arg APP_IMAGE=conan-ci:test -t conan-ci:tests .
           docker run --rm --network none --cpus 2 --memory 3g conan-ci:tests
+      - name: Verify restricted runtime and bundled face model
+        run: |
+          docker run --rm --network none --cpus 2 --memory 3g \
+            --pids-limit 128 --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=768m,mode=1777 \
+            conan-ci:test python -c 'import os; from pathlib import Path; from deepcheck.face import _get_detector; assert os.getuid() == 10001; assert _get_detector() is not None; [p.touch() for p in [Path("/home/app/.cache/write-check"), Path("/var/lib/deepcheck/write-check"), Path("/var/lib/deepcheck-results/write-check")]]; print("non-root runtime and bundled detector ready")'
       - name: Export tested main image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |

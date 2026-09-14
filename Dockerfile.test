@@ -1,6 +1,7 @@
 # Test-only layer; never publish this image as the application image.
 ARG APP_IMAGE=conan-ci:test
 FROM ${APP_IMAGE}
+USER root
 COPY requirements-dev.txt /tmp/requirements-dev.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
 COPY tests /app/tests
@@ -8,4 +9,6 @@ COPY scripts /app/scripts
 COPY deploy /app/deploy
 COPY .github/workflows /app/.github/workflows
 COPY docker-compose.yml /app/docker-compose.yml
+USER 10001:10001
+ENV PYTEST_ADDOPTS="-o cache_dir=/tmp/pytest-cache"
 CMD ["python", "-m", "pytest", "-q", "/app/tests"]

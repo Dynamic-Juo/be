@@ -65,6 +65,7 @@ class ReadyResponse(APIModel):
 
 
 class AnalyzeResponse(APIModel):
+    job_access_token: str | None = Field(default=None, description="공개 gateway 모드의 결과 조회 토큰. URL·로그에 넣지 않고 Authorization: Bearer로 전달한다.")
     job_id: str = Field(description="결과 조회에 사용할 불투명한 작업 ID", examples=["a1b2c3d4000000000000000000000000"])
     status: JobStatus
     session_id: str = Field(description="다음 분석 요청에 재사용할 세션 묶음 ID. 인증 토큰이 아니다.")

@@ -45,6 +45,7 @@ from deepcheck.errors import (
 from deepcheck.logging_setup import current_request_id, setup_logging
 from deepcheck.url_policy import normalize_youtube_url
 
+from .public_access import PublicAccess, PublicAccessError
 from .harness import AdmissionConflictError, AdmissionStateError, Harness
 from .schemas import (
     AnalyzeResponse, ErrorResponse, HealthResponse, JOB_EXAMPLES, JobResponse, ReadyResponse,
@@ -54,6 +55,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 harness: Harness | None = None
+public_access: PublicAccess | None = None
 
 _DEPLOYMENT_CONTROL_PATHS = frozenset({
     "/internal/deployment/drain",
@@ -64,7 +66,8 @@ _FORWARDED_CLIENT_HEADERS = frozenset({"forwarded", "x-forwarded-for", "x-real-i
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global harness
+    global harness, public_access
+    public_access = PublicAccess.from_env()
     # Construct the deployment fence before publishing the Harness or yielding
     # startup, so no request can observe an accepting target first.
     running_harness = Harness(
@@ -89,7 +92,7 @@ def _active_harness() -> Harness:
 
 
 app = FastAPI(
-    title="Conan AI / DeepCheck API", version="0.2.0", lifespan=lifespan,
+    title="참새 AI API", version="0.2.0", lifespan=lifespan,
     description=(
         "YouTube 영상 분석을 접수하고 작업 ID로 누적 결과를 조회하는 비동기 API입니다. "
         "POST /api/analyze의 HTTP 200은 분석 완료가 아니라 접수/재사용 성공입니다. "
@@ -212,9 +215,19 @@ async def handle_unexpected_error(_: Request, exc: Exception) -> JSONResponse:
     return _error_response(500, "internal_error", "서버 내부 오류가 발생했습니다.")
 
 
+@app.exception_handler(PublicAccessError)
+async def handle_public_error(_: Request, exc: PublicAccessError) -> JSONResponse:
+    response = _error_response(exc.status, exc.code, exc.message, exc.status in (429, 503))
+    if exc.status == 429:
+        response.headers["Retry-After"] = str(exc.retry_after)
+    return response
+
+
 class AnalyzeRequest(BaseModel):
     """분석 요청. 기본값은 deepcheck.pipeline.AnalysisOptions와 같은 출처(config)를 쓴다."""
 
+    turnstile_token: str | None = Field(default=None, max_length=2048, exclude=True, repr=False,
+                                       description="공개 gateway 모드에서만 필요한 일회용 요청 확인 토큰")
     url: str = Field(min_length=1, max_length=2048,
                      description="YouTube watch/shorts/youtu.be 영상 주소. 서버가 정규화하며 임의 외부/내부 URL은 거절합니다.",
                      examples=["https://www.youtube.com/watch?v=cYRkZmBuDqI"])
@@ -383,10 +396,23 @@ async def resume_deployment_admission(request: Request) -> dict | JSONResponse:
                         "error": {"code": "unsupported_url", "message": "YouTube 영상 주소를 입력해주세요.",
                                   "retryable": False, "stage": "input"}, "request_id": "example-request",
                     }}}},
+              403: {"model": ErrorResponse, "description": "공개 모드의 요청 확인 필요 또는 실패"},
+              404: {"model": ErrorResponse, "description": "공개 gateway 인증 실패"},
+              503: {"model": ErrorResponse, "description": "공개 확인 서비스 또는 영속 한도 저장소 이용 불가"},
               429: _BUSY_ERROR, 500: _SERVER_ERROR,
           })
-def analyze(req: AnalyzeRequest) -> dict:
+def analyze(req: AnalyzeRequest, request: Request) -> dict:
+    if public_access:
+        client_id = public_access.authenticate(request.headers)
+        if req.model_fields_set - {"url", "session_id", "turnstile_token"}:
+            raise PublicAccessError("public_options_forbidden", 422, "공개 분석에서는 서버 기본 옵션을 사용합니다.")
     url = normalize_youtube_url(req.url)
+    if public_access:
+        if not req.turnstile_token:
+            raise PublicAccessError("challenge_required", 403, "요청 확인을 다시 진행해주세요.")
+        public_access.charge(client_id, analysis=False, challenge=True)
+        public_access.verify_challenge(req.turnstile_token)
+        public_access.charge(client_id, analysis=True)
     session = req.session_id or uuid.uuid4().hex
     params = req.model_dump(exclude={"session_id"})
     params["url"] = url
@@ -396,8 +422,11 @@ def analyze(req: AnalyzeRequest) -> dict:
         # 대기열 포화만 429다. 다른 예외까지 429로 뭉뚱그리면 서버 버그가
         # "서버가 바쁩니다"로 표시돼 원인을 못 찾는다.
         raise ServerBusyError("요청이 많아 대기열이 가득 찼습니다. 잠시 후 다시 시도해주세요.") from e
-    return {"job_id": job.id, "status": job.status, "session_id": session,
-            "deduplicated": reused}
+    payload = {"job_id": job.id, "status": job.status, "session_id": session,
+               "deduplicated": reused}
+    if public_access:
+        payload["job_access_token"] = public_access.issue_result_token(job.id)
+    return payload
 
 
 @app.get("/api/jobs/{job_id}", tags=["분석"], operation_id="getAnalysisJob", summary="작업 상태와 누적 결과 조회",
@@ -413,9 +442,14 @@ def analyze(req: AnalyzeRequest) -> dict:
              302: _EDGE_LOGIN,
              404: {"model": ErrorResponse, "description": "작업이 없거나 만료/서버 재시작으로 사라짐", "headers": _REQUEST_ID_HEADER},
              422: {"model": ErrorResponse, "description": "요청 검증 오류", "headers": _REQUEST_ID_HEADER},
+             503: {"model": ErrorResponse, "description": "공개 한도 저장소 이용 불가"},
              429: _BUSY_ERROR, 500: _SERVER_ERROR,
          })
-def job_status(job_id: str = Path(description="접수 응답의 job_id. display_id(CN-...)가 아닙니다.")) -> dict:
+def job_status(request: Request, job_id: str = Path(description="접수 응답의 job_id. display_id(CN-...)가 아닙니다.")) -> dict:
+    if public_access:
+        client_id = public_access.authenticate(request.headers)
+        public_access.verify_result_token(job_id, request.headers.get("authorization", ""))
+        public_access.charge(client_id, analysis=False)
     job = _active_harness().get(job_id)
     if job is None:
         raise JobNotFoundError("해당 job을 찾을 수 없습니다. 만료되었을 수 있습니다.")
@@ -430,7 +464,7 @@ def job_status(job_id: str = Path(description="접수 응답의 job_id. display_
 @app.get("/api/jobs", include_in_schema=False)
 def list_jobs() -> dict:
     """세션을 추적하지 않는 클라이언트를 위한 전체 조회(디버그용)."""
-    if not config.enable_debug_endpoints:
+    if public_access or not config.enable_debug_endpoints:
         raise JobNotFoundError("해당 경로를 사용할 수 없습니다.")
     return {"jobs": [j.to_dict() for j in _active_harness().all_jobs()]}
 
@@ -438,7 +472,7 @@ def list_jobs() -> dict:
 @app.get("/api/sessions/{session_id}", include_in_schema=False)
 def session_jobs(session_id: str) -> dict:
     # Caller-provided session IDs are grouping labels, not authentication.
-    if not config.enable_debug_endpoints:
+    if public_access or not config.enable_debug_endpoints:
         raise JobNotFoundError("해당 경로를 사용할 수 없습니다.")
     jobs = _active_harness().session_jobs(session_id)
     return {"session_id": session_id, "count": len(jobs), "jobs": [j.to_dict() for j in jobs]}

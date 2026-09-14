@@ -1,5 +1,65 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 현재 우선 상태 — 최종 API 주소 연결
+
+- 사용자가 최종 이름 `참새 AI API`, 주소 `https://chamsae-ai-api.dotseven.cloud`를 확정했다. `dev` 없는 주소다. 코드 API 제목과 README·공개 계약·FE 인수 문서를 반영했다. 운영 이미지의 표시명 변경은 새 이미지 배포 때 적용된다.
+- Cloudflare 앱 `9d3fc410-551b-46dc-be20-518dd9f41f98` 이름은 `참새 AI API`다. 보호 대상은 `conan-api-dev.dotseven.cloud`, `chamsae-ai-api.dotseven.cloud` 두 개다. 잠시 추가했던 `chamsae-api-dev`는 최종 주소로 수정했고 해당 임시 이름의 Tunnel/DNS는 만들지 않았다.
+- 이메일 정책 `7185f119-9529-462e-b802-33fcb922b0aa` 이름을 `Chamsae AI Team Only`로 바꾸고 기존 두 이메일·Allow·세션 설정을 유지했다. Everyone/Bypass 공개·Service Auth 추가는 하지 않았다.
+- 공유 `dotseven-server` Tunnel에 새 호스트 → `http://conan-staging-deepcheck-api-1:8000`을 추가했다. UI에서 DNS 생성·Tunnel 저장 성공과 기존 네 경로 보존을 확인했다. 새 호스트 미인증 `/health` HTTP 302, 새 FE Origin OPTIONS는 백엔드 `400 Disallowed CORS origin`이다. 후자는 원본 연결 증거이며 CORS 완료가 아니다.
+- 서버 `conan-be:472aff7`은 Up 33 hours healthy이고 다른 7개 컨테이너도 계속 Up이다. 컨테이너 교체·네트워크 격리 운영 반영·새 CORS 반영은 아직 하지 않았다. 기존 네트워크 위험은 아래 9월 14일 검사와 동일하게 미해결로 취급한다.
+- 공개 계약은 브라우저 → Vercel Function → Service Token으로 Cloudflare → 전달 키로 백엔드다. 앞서 “프론트 API base만 바꾸면 연결”이라고 전달한 안내는 공개 구조에 불충분해 FE 인수 문서에서 정정했다. CORS는 서버 인증이 아니다. FE/Vercel은 계속 팀장 담당이다.
+- `Chamsae AI Vercel Gateway` Service Token 생성 화면을 준비했다. UI의 최소 선택 기간은 1년이며 생성은 미실행이다. 브라우저 도구의 실행 시점 확인 후 발급·참새 앱 전용 정책 연결이 필요하다. Turnstile, 호스트 전용 GitHub Actions/Contents 읽기 인증과 GHCR pull 인증, 새 이미지·상태 볼륨·격리망 전환도 남는다. 백엔드 전체 완료나 공개 가능 상태로 보고하지 않는다.
+- API·OpenAPI·공개 보호 관련 테스트는 `python -m pytest`로 70 passed, 2 warnings다. 처음 pytest 실행 파일로 실행했을 때 모듈 경로 누락으로 collection 오류가 있었고 모듈 실행으로 바로잡았다. 실영상·실제 Vercel·Service Auth 검수가 아니다.
+
+## 2026-09-14 현재 우선 상태
+
+- **프론트·Vercel은 팀장 담당이며 변경하지 않는다.** 이번에 범위를 넘어 작성했던 로컬 FE 수정은 사용자 지적 후 전부 회수했다. FE는 main cf97357의 clean 상태이며 FE 커밋·push·PR·배포는 하지 않았다. Vercel은 로그인된 사용자 계정의 목록까지만 조회했고 참새 프로젝트는 없었다. 설정·팀 권한·환경변수는 변경하지 않았다. BE의 API 계약·전달 문서까지만 진행한다.
+- docs #9·#10은 병합됐고 #7은 f109806에서 main 충돌 없이 push됐다. #11은 별도 열린 변경이다. 서비스명 참새는 팀장 FE #13에서 확인했고 BE README·API 제목에 반영한다. 프론트 브랜치는 수정하지 않는다.
+- BE는 `feat/public-api-protection`, [초안 PR #5](https://github.com/Dynamic-Juo/be/pull/5)다. ddbfa55의 실제 ARM64 CI가 성공했다. 731 passed, 2 skipped, gateway 6 passed와 비특권 실행·실제 번들 얼굴 모델 초기화·쓰기 경로 검사를 확인했다.
+- 운영은 여전히 conan-be:472aff7이다. [9월 14일 네트워크 검사](deployment-isolation-audit-2026-09-14.md)에서 Laravel·Redis·맥미니 SSH 접근이 가능했다. 별도 internal 네트워크에서는 직접 연결이 차단됐고 전용 출구 시험에서 허용 API 연결과 사설 IP·미허용 도메인·허용 이름의 사설 IP 해석 거부를 확인했다. 운영 네트워크·컨테이너·볼륨은 변경하지 않았다.
+- [출구 구성](../deploy/egress/README.md)은 검증용이며 운영 서명 이미지가 아니다. 검증 컨테이너·네트워크는 정리했고 서버의 격리 시험 디렉터리·이미지만 남겼다. 새 캐시 경로와 UID 10001 전환, 결과 복원, 전용 Tunnel, 하드 타임아웃과 실제 영상 검수 후 운영 반영한다.
+- Cloudflare 이메일 보호·정책은 유지했다. Service Token 발급·Turnstile 생성·공개 활성화·최초 controller 전환은 아직 하지 않았다. 프론트 준비와 운영 보호가 끝나기 전에 공개 모드를 켜지 않는다. 자동 배포용 제한된 GitHub 읽기 인증 준비도 남아 있다.
+
+## 2026-09-13 docs #7 리뷰 반영과 다음 실행
+
+- [리뷰 후속·실행 순서](review-followup-2026-09-13.md)에 #7 정정 답글과 팀장 공유 초안을 남겼다. 외부 댓글·DM은 전송하지 않았다.
+- docs `docs/implementation-audit`에 최신 main을 반영하고 과거 평가와 be cf550f9·운영 472aff7을 구분했다. #9·#10은 열린 PR이며 병합 완료로 간주하지 않는다.
+- 현재 prompt 버전은 2026-09-11.1이다. 원문·출처·독립 계보 검증 조건은 이미 구현됐지만 실제 검색 제공자는 이를 채우지 못한다. 새 배포 후 근거 부족이 늘 수 있어 원문 확보와 기대값 검수가 우선이다.
+- 기존 주장·프롬프트 계약 테스트 55개가 통과했다. 실제 영상·유료 API·서버 변경은 실행하지 않았다. 다음 작업은 서명 이미지 전환 준비, 원문 공급 경로, #10 인수 검수, #9 개별 주장 재검증 API 순서다.
+
+## 2026-09-13 실제 배포환경 읽기 전용 점검
+
+- [1차 점검 보고서](deployment-isolation-audit-2026-09-13.md)를 우선 확인한다. 호스트 포트·개인 파일·Docker socket 마운트 없음, CPU/RAM·기본 seccomp·환경 파일 권한을 확인했다.
+- root 실행, NoNewPrivs=0, CapDrop/PID 상한 미설정과 구형 배포 코드가 확인됐다. 공유 cloudflared는 세 네트워크에 연결돼 있지만 실제 내부망 접근 가능 여부는 미검증이다.
+- 서버는 수정하지 않았다. 기존 Docker 권한·보호 코드 배포 보완 후 네트워크 경계를 검사하고 VM 필요성을 결정한다. ISO-01 전체나 완전 격리 통과를 선언하지 않는다.
+
+## 2026-09-13 서버 격리 가이드라인 — 다음 주요 작업
+
+- 사용자 보고로 Vercel에서 최종 분석 결과까지 실제 연동됐음을 확인했다. 에이전트의 독립 실영상 품질 검수와 구분한다. 이전 미검증 기록 중 사용자 화면 연동은 이 보고로 갱신한다.
+- [서버 격리 가이드라인](server-isolation.md)을 작성했다. 홈서버 보호를 위해 독립 커널 VM을 공개 목표로 제안하며, 일반 OrbStack 머신 추가와 구분한다. 설계 제안이고 VM 설치·방화벽·서버 변경은 하지 않았다.
+- 다음 우선 작업은 ISO-01 현재 실행 구성 감사다. 파일·관리 socket·내부망·자원·관리 권한 경계의 검증 증거를 확보한 뒤 격리 구현과 공개 전환을 결정한다.
+
+## 2026-09-13 15:05 KST — 맥미니 Vercel CORS 적용 완료
+
+- 사용자가 기존 맥북 ed25519 공개키를 등록한 뒤 `ssh dotseven@100.105.223.60`으로 접속했다. Tailscale 경로는 연결되며 이전 home-server 내부망·dev-server Tunnel SSH 시간 초과와 구분한다. 서버 Docker는 `/usr/local/bin/docker`다.
+- 실제 배포 `/Users/dotseven/srv/ConanAi/be/.env.home`과 실행 컨테이너의 CORS는 localhost:3000뿐이었다. 사용자 승인 범위에서 `DEEPCHECK_CORS_ORIGINS=http://localhost:3000,https://kimjeonil.vercel.app`로 변경했다. 렌더링된 Compose를 전후 비교해 CORS 항목만 달라짐을 검증했다.
+- 진행 작업 0건을 확인했다. 기존 환경 파일과 완료 결과 1건을 서버 `/Users/dotseven/srv/ConanAi/ops-backups/cors-20260913-150512`에 디렉터리 700·파일 600으로 보관했다. 결과 백업은 JSON 보관이며 API에 자동 복원되지 않는다. 구형 API 재생성으로 이전 메모리 job 조회는 사라진다.
+- 기존 `conan-staging` 프로젝트의 `deepcheck-api`만 `up -d --no-build --pull never --no-deps`로 재생성했다. 현행 서버는 자동 배포 컨트롤러 전환 전 구형 Compose임을 확인했고 이번에는 이미지 교체·helper 설치·서버 git pull을 하지 않았다. 이미지 `conan-be:472aff7`, ID `sha256:4ecdd77473ce42a9dd0799e46aafb263358dcc34a22d3d88e04c3f44c5d6aed9`를 유지했다.
+- 외부 curl Vercel OPTIONS는 200 OK, Allow-Origin은 정확한 Vercel 주소, Allow-Credentials=true, Allow-Methods=GET/POST, Allow-Headers=content-type이었다. 미허용 Origin OPTIONS는 400, 미인증 GET /health는 Access 302다. 내부 health는 ok, 컨테이너 healthy, 기존 다른 7개 컨테이너도 계속 Up 상태다.
+- Cloudflare OPTIONS 설정과 BE 환경 반영은 완료됐다. 실제 FE의 인증 쿠키·제3자 쿠키 제한·분석 POST/GET polling·영상/외부 제공자는 이번에 검증하지 않았다. FE는 같은 브라우저에서 API Access 인증 후 credentials: include로 접수·조회한다.
+- 복구가 필요하면 보관된 환경 원본과 현재 값을 비교해 CORS 항목만 되돌리고 활성 작업·현재 배포 방식 확인 후 Conan만 반영한다. 이후 다른 변경까지 원복하지 않도록 환경 파일 전체를 무조건 덮어쓰지 않는다.
+
+## 2026-09-13 Cloudflare OPTIONS 반영 완료 — 최신
+
+- 사용자 승인으로 Chrome에서 Conan API Dev의 OPTIONS 원본 전달을 켜고 저장·재조회했다. 기존 이메일 정책은 유지했다. 외부 curl OPTIONS가 백엔드의 400 Disallowed CORS origin을 반환하고 미인증 health는 302였다.
+- Cloudflare 변경은 완료됐으며 남은 작업은 맥미니의 Vercel CORS 환경값 적용이다. dev-server SSH 재시도도 시간 초과였다. 서버·컨테이너 변경과 FE 실연동은 미완료다. [상세 기록](frontend-integration.md)을 따른다.
+
+## 2026-09-13 Vercel CORS·Access OPTIONS 적용 요청
+
+- 사용자는 개발 API의 CORS·Cloudflare OPTIONS 변경을 승인했다. 팀장 이메일은 Access 허용 목록에 추가했다고 사용자에게 확인했다.
+- 외부 OPTIONS는 403이다. main cf550f9에 Vercel Origin을 지정한 로컬 검사에서는 preflight·health CORS와 미허용 Origin 거부가 통과해 코드 변경은 필요하지 않았다.
+- home-server·dev-server SSH 연결은 모두 시간 초과였고 Cloudflare 관리 도구도 없어 실제 설정은 미변경이다. [FE 연동 문서](frontend-integration.md)의 최신 항목에 적용할 환경값·Access 설정·검수 조건을 남겼다. 다음 작업은 서버 연결과 대시보드 접근 확보 후 해당 설정 반영이다.
+
 ## 2026-09-13 main 자동 배포 전환 작업
 
 - 사용자는 백엔드 배포를 본인이 담당하며 제3자 승인 대신 main 병합 후 자동 배포를 요청했다. 이전 required-reviewer 제안은 채택하지 않는다. 기존 main `513f536`의 실제 CI `34733471394`는 ARM64 빌드·테스트·GHCR 게시·이미지/릴리스 서명까지 성공했다.

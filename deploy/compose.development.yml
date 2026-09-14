@@ -33,6 +33,10 @@ services:
       MKL_NUM_THREADS: "2"
     cpus: ${CONAN_CPUS:-2}
     mem_limit: ${CONAN_MEMORY:-3g}
+    pids_limit: 128
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=768m,mode=1777
     init: true
     cap_drop:
       - ALL
@@ -43,7 +47,7 @@ services:
         aliases:
           - ${CONAN_NETWORK_ALIAS:-conan-api}
     volumes:
-      - model-cache:/root/.cache
+      - model-cache:/home/app/.cache
       - job-results:/var/lib/deepcheck-results
     healthcheck:
       test:

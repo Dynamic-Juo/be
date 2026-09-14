@@ -1,4 +1,8 @@
-# Conan AI — 백엔드 (be)
+# 참새 AI — 백엔드 (be)
+
+최종 API 원본은 `https://chamsae-ai-api.dotseven.cloud`입니다. DNS·Tunnel과 이메일 Access 보호는 적용됐고, 일반 사용자 공개와 새 백엔드 이미지 배포는 아직입니다. 공개 시 이 주소는 Vercel 서버의 원본 설정에 사용합니다.
+
+현재 프론트 주소는 [chamsae-ai.vercel.app](https://chamsae-ai.vercel.app/)입니다. 일반 사용자용 [공개 접근 보호·FE 전달 계약](docs/public-access.md)을 준비했으며 아직 배포하지 않았습니다. 기존 이메일 Access 보호는 유지합니다. 팀장님의 FE #13에서 확인한 서비스명은 사용자 요청에 따라 **참새 AI**로 표기합니다. 프론트·Vercel 변경은 팀장 담당입니다.
 
 영상 URL을 받아 **미디어 조작 가능성**과 **주장 사실성**을 분석하는 백엔드 서비스입니다.
 
@@ -8,26 +12,7 @@
 새 기기에서 이어서 작업할 때는 [현재 상태와 읽는 순서](docs/handoff.md)부터 확인하세요.
 [프롬프트·평가 결과](docs/prompt-evaluation.md)와 [M4 맥미니·OrbStack 배포 절차](docs/deployment-mac-mini.md)를 별도로 관리합니다.
 
-2026-09-13 보안 CI/CD 준비: GitHub-hosted ARM64 CI가 테스트한 image를 digest로 게시·서명하고,
-보호된 environment 승인 뒤 맥미니의 대상 고정 helper가 한 서비스만 교체하는 코드를 구현했습니다.
-범용 self-hosted runner는 설치하지 않으며, 현재 설정은 `enabled=false`라 GitHub와 맥미니에는
-아직 활성화되지 않았습니다. 로컬 통합 검증은 **687 passed, 2 warnings**입니다. 구조·신뢰 경계와
-활성화 전 필수 조건은 [개발계 CI/CD 보안 런북](docs/development-cd-runbook.md)을 따릅니다.
-
-2026-09-13 기획 반영: 기획 결정권자는 조정준 팀장입니다. 사용자가 전달한 기획에 따라
-자막은 기본 미사용(`off`)이며 `manual`·`any`로 명시적으로 선택할 수 있습니다.
-이번 변경은 개발 작업 브랜치 기준이며 실제 서버 설정·이미지는 변경하지 않았습니다.
-
-이전 2026-09-12 배포 준비: `fix/midpoint-hardening`의 API·Swagger 설명과
-[FE 연동 인수인계](docs/frontend-integration.md), [요청·응답·오류 API 계약](docs/api-reference.md)을 보완했습니다.
-자막 기본값을 기존 `manual`로 복원한 뒤 로컬 검증은 **329 passed, 2 warnings**입니다. 모의 모델·제공자와
-Python 네트워크 차단 fixture를 사용한 결과이며 실제 영상·외부 API·컨테이너 검증은 아닙니다.
-백엔드 PR·CI와 기존 개발계 배포를 준비하며, 서버 명령은 각각 승인받고 실행합니다.
-문서 저장소의 새 PR과 PR #7 댓글은 이번 작업에서 게시하지 않습니다. 최신 진행 상태는 인수인계를 확인하세요.
-
-이전 2026-09-11 중간 점검: 아래 동작 설명은 작업 복사본의 `fix/midpoint-hardening` 수정안 기준입니다.
-배포 서버에는 반영하지 않았고, 이번 검증은 외부 연결과 실제 모델을 사용하지 않는 모의 테스트입니다.
-실제 영상 정확도·DeepSeek/NAVER 연동 성공이나 공개 운영 준비 완료를 뜻하지 않습니다.
+현재 개발 코드와 운영 이미지는 다릅니다. 공개 입구 보호는 기본 비활성 상태이며 맥미니에는 아직 `conan-be:472aff7`이 운영 중입니다. 이미지 전환은 [서명 기반 CI/CD 런북](docs/development-cd-runbook.md), 홈서버 공개 조건은 [격리 가이드라인](docs/server-isolation.md)을 따릅니다. 과거 실행·테스트 이력은 [작업 기록](docs/worklog.md)에 보존합니다.
 
 > **[파이프라인 해부도](docs/pipeline.md)** — 단계별 흐름도, 각 단계의 라이브러리와 실패 처리,
 > 모델·라이브러리를 갈아끼울 때 건드릴 곳, 구간별 실측 성능. 검증하거나 무언가를 교체할 때 여기부터 보세요.

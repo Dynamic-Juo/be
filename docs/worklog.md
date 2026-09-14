@@ -1,5 +1,24 @@
 # 작업 로그
 
+## 2026-09-15 참새 AI 주소 연결과 공개 계약 정정
+
+- 최종 원본 `chamsae-ai-api.dotseven.cloud`와 Cloudflare 앱 `참새 AI API`를 반영했다. 기존 주소와 두 이메일의 인증 보호를 유지하고 같은 backend 원본으로 DNS/Tunnel 경로를 추가했다. 공유 Tunnel과 다른 서비스 경로는 유지했다.
+- 새 주소 미인증 health 302, OPTIONS는 원본의 400 CORS 거부를 확인했다. 새 CORS·공개 보호 코드·격리 구성은 운영 미배포다. Service Token 생성은 실행 시점 확인 전이며 생성하지 않았다.
+- 공개 구조의 원본 주소는 Vercel 서버 환경변수에 쓰고, 브라우저는 같은 출처 Function을 호출하도록 계약을 명확히 했다. FE/Vercel 변경은 하지 않았다. 관련 API·OpenAPI·공개 보호 테스트 70개 통과(2 warnings); 실제 공개 연동 검증은 아니다.
+
+## 2026-09-14 네트워크 실제 검수와 작업 범위 정정
+
+- 운영 백엔드에서 Laravel 80·Redis 6379·맥미니 Tailscale SSH 22로 TCP 연결이 가능했다. 데이터·로그인은 시도하지 않았다. 별도 internal 네트워크에서는 세 대상과 공용 HTTPS 직접 연결이 차단됐다.
+- 검증용 Squid 출구는 최종 시험에서 허용 NAVER API HTTP 400(키 없음)과 미허용 도메인·사설 IP·허용 도메인의 사설 주소 해석 403을 확인했다. 초기 리다이렉트/DNS 오류와 최종 결과를 분리해 [감사 문서](deployment-isolation-audit-2026-09-14.md)에 남겼다. 운영 적용은 하지 않았다.
+- ddbfa55에서 UID/GID 10001, 캐시 경로 변경, PID 128·tmpfs 768 MiB를 반영했다. 실제 ARM64 CI 34857498782가 성공했고 번들 얼굴 모델 초기화도 성공했다. 모델 전체·실영상·운영 볼륨 권한은 별도 검증이다.
+- 사용자 위임을 과도하게 해석해 로컬 FE 브랜치를 수정하고 Vercel 계정 목록을 조회했다. 사용자 지적 후 작성 변경만 회수하고 FE main clean을 확인했다. 원격 FE 커밋·push·배포와 Vercel 설정 변경은 없었다. 이 작업은 FE 구현 성과로 집계하지 않는다. 앞으로 FE/Vercel은 팀장 담당이며 BE 계약 문서까지만 진행하도록 AGENTS에 기록했다.
+
+## 2026-09-14 문서 리뷰 정리·공개 입구 보호 준비
+
+- 사용자 요청에 따라 docs #7 약속을 기존 추적표에 통합하고 main 충돌을 해결했다. #9·#10 병합과 #11 열린 변경을 구분했다. PR·댓글·커밋 시간순 기록 및 재사용 스킬을 docs에 추가·push했다.
+- 새 프론트 주소는 chamsae-ai.vercel.app이다. 공개 운영 요구에 따라 기본 비활성 gateway 모드, Turnstile 서버 확인, SQLite 한도, 작업별 조회 토큰, Vercel Function 전달 예제를 구현했다. 기획 UI 변경을 확정한 것이 아니며 FE 계약 조정과 검수가 남는다.
+- 모의 Python 731 passed, 2 skipped, 2 warnings와 Node 6 passed. 재시작·동시 요청 한도, 변조·만료 토큰, 위조 전달 정보, 고비용 옵션 거부를 확인했다. 서버 격리·공개 배포·외부 E2E 검증은 미완료다. [공개 전환 인수인계](public-access.md)에 남겼다.
+
 ## 2026-09-13 완료 결과 영속 저장 준비
 
 - 자동 watcher `0ff843c`를 PR #4 브랜치에 통합했다. 통합 모의 722개 통과(14.76초). GitHub main `513f536`의 실제 release ZIP은 API와 다운로드 크기·digest 및 3파일 계약이 일치했다. 새 이미지 서버 실행은 아직이다.
@@ -350,3 +369,44 @@ crop 없이는 탐지 자체가 안 된다. **그런데 오탐도 crop에서 난
 - 작업 복사본 Compose의 자막 기본값도 off로 맞추고 정적 파일 회귀 검사를 추가했다. 실제 Compose 실행·배포 환경 파일 반영은 하지 않았다. README·파이프라인 설명도 수정 코드와 과거 실측을 구분해 정정했다.
 - 일괄 주장 검증 helper의 예산 초과도 done이 아닌 timed_out과 일치하는 부족 사유·라벨로 남긴다. 외부 연결 오류의 원시 reason 로그를 제거했다.
 - 최종 전체 회귀 테스트 314 passed, 2 dependency deprecation warnings(6.01초), compileall·diff-check 통과. 프롬프트 평가 목록 11건/network_calls=0과 CI YAML의 권한·네트워크 정적 검사를 확인했다. 모의 테스트 시간을 실제 영상 성능으로 해석하지 않는다. 커밋·푸시·병합·이미지 게시·배포는 하지 않았다.
+
+## 2026-09-13 — Vercel CORS·Cloudflare OPTIONS 적용 점검
+
+- 사용자가 설정 적용을 승인했고 팀장 Access 이메일 추가를 확인했다. 외부 개발 API의 Vercel Origin·POST·content-type preflight는 403이었다. 실제 분석은 제출하지 않았다.
+- main cf550f9의 기존 CORS 코드는 명시한 Origin이면 credentials를 허용한다. Vercel Origin을 환경변수로 지정한 로컬 TestClient 검사에서 OPTIONS 200, health 200과 정확한 CORS 헤더, 미허용 Origin preflight 400을 확인했다. 전체 회귀·배포 이미지 검증은 아니다.
+- 저장된 home-server 및 dev-server SSH 연결은 시간 초과였고 Cloudflare 관리 연결 도구도 없었다. 서버 환경·컨테이너·Access는 변경하지 않았다. FE 연동 문서에 적용값·대시보드 위치·설정 영향·검수 조건을 기록했다. docs/vercel-access-cors는 로컬 문서 작업이며 원격 push는 하지 않았다.
+
+## 2026-09-13 — Cloudflare OPTIONS 웹 설정 반영
+
+- 사용자 승인으로 Chrome Apple Events 자동화를 사용했다. Conan API Dev의 options_preflight_bypass를 false에서 true로 바꾸고 저장 후 재조회했다. 기존 CORS 입력은 비어 있었고 이메일 Allow 정책·쿠키·다른 앱·Tunnel은 그대로 유지했다.
+- 외부 curl의 Vercel Origin·POST·content-type OPTIONS는 400 Disallowed CORS origin으로 백엔드에 도달했다. credentials=true·GET/POST·content-type 허용 헤더를 확인했다. 미인증 GET /health는 302로 인증 보호가 유지된다. Python urllib 403/1010은 도구 요청 차단으로 구분했다.
+- dev-server SSH 재시도는 시간 초과다. 맥미니 CORS 환경값 적용·컨테이너 재생성·실제 분석·Vercel 브라우저 검수는 미완료다. 변경 전으로 복구할 때는 해당 앱의 OPTIONS 원본 전달만 끈다.
+
+## 2026-09-13 15:05 KST — 맥미니 Vercel CORS 적용 완료
+
+- 사용자가 기존 맥북 ed25519 공개키를 등록한 뒤 `ssh dotseven@100.105.223.60`으로 접속했다. Tailscale 경로는 연결되며 이전 home-server 내부망·dev-server Tunnel SSH 시간 초과와 구분한다. 서버 Docker는 `/usr/local/bin/docker`다.
+- 실제 배포 `/Users/dotseven/srv/ConanAi/be/.env.home`과 실행 컨테이너의 CORS는 localhost:3000뿐이었다. 사용자 승인 범위에서 `DEEPCHECK_CORS_ORIGINS=http://localhost:3000,https://kimjeonil.vercel.app`로 변경했다. 렌더링된 Compose를 전후 비교해 CORS 항목만 달라짐을 검증했다.
+- 진행 작업 0건을 확인했다. 기존 환경 파일과 완료 결과 1건을 서버 `/Users/dotseven/srv/ConanAi/ops-backups/cors-20260913-150512`에 디렉터리 700·파일 600으로 보관했다. 결과 백업은 JSON 보관이며 API에 자동 복원되지 않는다. 구형 API 재생성으로 이전 메모리 job 조회는 사라진다.
+- 기존 `conan-staging` 프로젝트의 `deepcheck-api`만 `up -d --no-build --pull never --no-deps`로 재생성했다. 현행 서버는 자동 배포 컨트롤러 전환 전 구형 Compose임을 확인했고 이번에는 이미지 교체·helper 설치·서버 git pull을 하지 않았다. 이미지 `conan-be:472aff7`, ID `sha256:4ecdd77473ce42a9dd0799e46aafb263358dcc34a22d3d88e04c3f44c5d6aed9`를 유지했다.
+- 외부 curl Vercel OPTIONS는 200 OK, Allow-Origin은 정확한 Vercel 주소, Allow-Credentials=true, Allow-Methods=GET/POST, Allow-Headers=content-type이었다. 미허용 Origin OPTIONS는 400, 미인증 GET /health는 Access 302다. 내부 health는 ok, 컨테이너 healthy, 기존 다른 7개 컨테이너도 계속 Up 상태다.
+- Cloudflare OPTIONS 설정과 BE 환경 반영은 완료됐다. 실제 FE의 인증 쿠키·제3자 쿠키 제한·분석 POST/GET polling·영상/외부 제공자는 이번에 검증하지 않았다. FE는 같은 브라우저에서 API Access 인증 후 credentials: include로 접수·조회한다.
+- 복구가 필요하면 보관된 환경 원본과 현재 값을 비교해 CORS 항목만 되돌리고 활성 작업·현재 배포 방식 확인 후 Conan만 반영한다. 이후 다른 변경까지 원복하지 않도록 환경 파일 전체를 무조건 덮어쓰지 않는다.
+
+## 2026-09-13 — 서버 격리 가이드라인 작성
+
+- 사용자가 최종 프론트 흐름 성공을 보고했고, 개인 맥미니·기존 서비스 보호를 주요 작업으로 지정했다. ISO-01~07 작업 순서와 파일·네트워크·권한·자원·복구 검수 기준을 docs/server-isolation.md에 정리했다.
+- OrbStack 공식 문서에서 일반/isolated 머신 모두 공유 커널이며 독립 VM 경계가 아니라는 점을 확인했다. 독립 VM과 공유 폴더·내부망 제한을 공개 목표로 제안했으며 제품·자원값은 미선정이다.
+- 로컬 Compose·Dockerfile 및 이전 실제 배포 기록을 구분했다. 이번 작업에서 서버 조회·변경·격리 시험은 하지 않았다. 문서 상대 링크·Mermaid 코드 블록·git diff 공백 검사를 확인했다. 브랜치는 docs/server-isolation이고 원격 push는 하지 않았다.
+
+## 2026-09-13 — 맥미니 배포환경 읽기 전용 감사
+
+- 실제 inspect·proc·config 권한·네트워크·stats·배포 코드 함수 조회를 수행했다. 결과는 deployment-isolation-audit-2026-09-13.md에 기록했다. 호스트 경로/socket 비마운트, 자원·seccomp 보호와 root·NoNewPrivs/PID 보완 필요를 구분했다.
+- 서버 코드가 여전히 http(s) 입력 검사와 전체 목록 노출 경로를 가진 472aff7임을 확인했다. Access는 별도 보호이며 최신 코드 미배포를 혼동하지 않는다. 기존 서비스 기능·내부망 공격·영상 요청·변경은 하지 않았다.
+- ISO-01은 부분 감사다. VM 이전을 필수로 단정하지 않고 현 구성 강화와 실제 통신 경계 검사를 먼저 제안한다. 문서 링크와 공백 검사를 수행했으며 코드 테스트나 부하 시험은 하지 않았다.
+
+## 2026-09-13 문서 리뷰 후속 정리
+
+- docs #7의 최신 답변과 #4·#5의 논의를 확인해 과거 평가와 최신 구현·운영 상태를 분리했다. BigKinds/네이버 혼동과 자료 시점·충돌 답변의 오해를 정정하고 미결 사항을 프로젝트 계획으로 연결했다.
+- #9·#10은 열린 PR이다. 개별 재검증 API, 전체 AI 생성 자가표기 처리와 인수 기대값을 [후속 문서](review-followup-2026-09-13.md)에 기록했다. 댓글·DM·서버 변경은 실행하지 않았다.
+- be cf550f9의 원문·출처 충분성 gate는 이미 구현됐으나 기본 검색 제공자가 검증된 원문을 만들지 못한다. 원문 공급 경로가 없으면 실경로 양성 판정에 도달하지 못하는 점을 다음 품질 작업으로 지정했다.
+- `.venv/bin/python -m pytest tests/test_claims.py tests/test_prompt_contract.py -q`: 55 passed (0.35초). 모의 계약 검사이며 실영상 품질 검수와 구분한다.
