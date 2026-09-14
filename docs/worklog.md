@@ -1,5 +1,11 @@
 # 작업 로그
 
+## 2026-09-15 사용자 승인 후 자동 배포 활성화
+
+- 60초 주기 자동 배포에 대한 사용자 후속 승인으로 `enabled=true`와 `com.chamsae.ai-deployment-pull` LaunchAgent를 적용했다. 고정 시스템 Python/helper만 실행하며 새 패키지·GitHub runner는 설치하지 않았다.
+- 수동 1회와 launchd 타이머 실행 2회는 모두 `unchanged`, exit 0이고 오류 로그는 비어 있었다. 현재 main과 운영 이미지가 같아 재생성하지 않았으며 API healthy와 다른 7개 서비스 Up을 확인했다.
+- GUI 로그인 세션의 LaunchAgent이므로 재부팅 후 dotseven 로그인·OrbStack 기동이 필요하다. 조회/중지/로그 수동 회전과 남은 검수는 [현재 운영 구성](mac-mini-runtime.md)을 따른다. 아래 승인 대기·미설치 기록은 이 완료 기록으로 갱신한다.
+
 ## 2026-09-15 실제 이미지 교체·결과 이관 완료
 
 - 운영 API를 서명 검증한 main `a26264e` digest로 교체했다. 기존 완료 결과 11건을 백업·복원했고 healthy/ready 및 외부 정상 토큰 200·미인증/변조 302를 확인했다.

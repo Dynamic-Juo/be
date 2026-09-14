@@ -49,7 +49,13 @@ flowchart LR
 
 고정 helper는 a26264e의 scripts를 사용하며 `b7abf03`의 Python 3.9 호환 수정 두 줄을 적용했다. `helper-patch.json`에 base/patch/hash를 남겼다. 시스템 `/usr/bin/python3`를 유지했고 새 Python·Node·runner 패키지는 설치하지 않았다. 기존 Docker/Compose/gh 실행 파일의 보호 경로 복사본을 사용한다. 앞선 작업의 Homebrew gh 설치와 이번 파일 복사를 구분한다.
 
-컨트롤러 `initialize`는 성공했다. **상시 자동 배포는 꺼져 있다(`enabled=false`), launchd도 설치하지 않았다.** 자동 승인 검토가 향후 원격 릴리스를 지속적으로 적용할 명시적 승인이 없다는 이유로 활성화를 거부해 사용자 승인을 요청했다. 거부된 명령은 실행되지 않았다. 승인 전 설정을 켜거나 우회 실행하지 않는다.
+컨트롤러 `initialize`는 성공했다. **사용자의 후속 승인으로 상시 자동 배포를 활성화했다(`enabled=true`).** `~/Library/LaunchAgents/com.chamsae.ai-deployment-pull.plist`가 시스템 `/usr/bin/python3 -I`와 고정 helper/config만 실행한다. 주기는 60초, RunAtLoad=true이며 타이머 실행 2회 모두 `unchanged`, exit 0이었다. 기존 이미지와 main이 같아 서비스 재생성은 없었다. 이전 자동 승인 거부는 사용자 승인 후 해소됐다.
+
+LaunchAgent는 `dotseven`의 GUI 로그인 세션에 등록했다. 재부팅 후 이 계정의 GUI 로그인과 OrbStack 기동이 필요하며, 로그인 전부터 동작하는 시스템 daemon으로 설치한 것은 아니다. 매번 main의 성공한 CI·서명·대상 신원을 검증하고, 검증/배포 중 실패하면 자동 재시도 대신 상태를 남겨 운영자 확인을 요구한다. 새 릴리스 자동 교체 전체 경로는 이번 활성화에서 시험하지 않았다.
+
+운영 조회는 `launchctl print gui/501/com.chamsae.ai-deployment-pull`로 실행 횟수·마지막 종료 코드를 확인한다. 주기 사이 `state = not running`은 정상이다. 중지는 `launchctl bootout gui/501/com.chamsae.ai-deployment-pull`이며 진행 중 배포가 있다면 먼저 state/journal을 확인한다. 비활성화 시 config의 enabled도 false로 원자 변경하고, 재개 전 고정 경로·실행 이미지·journal을 검증한다.
+
+로그는 `B/ops-state/chamsae-ai/logs/automatic-deployment.log`와 `automatic-deployment-error.log`에 0600으로 저장한다. 로그 회전은 매월 또는 파일당 10MiB 도달 시 운영자가 watcher 중지·진행 transaction 확인 후 보관/새 파일 생성(0600)·재등록하는 수동 정책이다. 자동 로그 회전은 설치하지 않았다. 비밀 토큰을 로그에 출력하지 않는다.
 
 최초 전환이 끝났으므로 다음 교체는 [보안 런북](development-cd-runbook.md)의 controller 경로로 한다. 임의 `compose up`, state 삭제·재초기화, 오래된 `.env.home` 덮어쓰기로 되돌리지 않는다. 장애 시 현재 state/journal과 `recover`를 먼저 확인한다. 원본 env/Compose/결과/이미지 신원은 백업돼 있지만 초기화 후 구버전으로 수동 롤백하면 controller 상태와 불일치하므로 별도 사고 복구 검토가 필요하다.
 

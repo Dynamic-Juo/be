@@ -54,3 +54,5 @@
 - 최초 교체 호출의 `validate_runtime` 인자를 누락해 Docker 변경 전 TypeError가 났다. 선언을 확인하고 두 인자를 전달해 재실행했다. CLI 시험의 최초 `python -m deepcheck` 역시 entrypoint가 없어 실패했고 실제 `deepcheck.cli`로 수정했다. 이 둘은 앱 장애가 아닌 실행 명령 작성 오류다.
 - NAVER 프록시 목록에는 `openapi.naver.com`만 넣었지만 실제 설정은 `naverapihub.apigw.ntruss.com`이었다. CONNECT 403을 확인하고 정확한 API HUB 호스트 한 개를 추가했다. 재검사에서 뉴스/백과 각 2건 조회와 판정 경로가 완료됐다. 키 재발급이나 전체 도메인 개방은 하지 않았다.
 - 상시 launchd 자동 배포 활성화는 자동 승인 검토가 지속적 배포 권한의 명시적 승인 부족으로 거절했다. 명령은 실행되지 않았고 `enabled=false`를 확인했다. 사용자에게 별도 승인 질문을 남겼다. 이미지 교체 완료와 자동 배포 활성화를 구분한다.
+
+- 후속 승인으로 60초 주기 LaunchAgent를 활성화했다. 이전 거부는 해소됐고 최초 실행 unchanged/exit 0을 확인했다. GUI 로그인 세션 의존성과 수동 로그 회전 정책을 운영 문서에 명시했다.
