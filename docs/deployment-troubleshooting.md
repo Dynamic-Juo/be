@@ -46,3 +46,11 @@
 - 같은 컨테이너에서 맥미니 SSH, Laravel 80, Redis 6379, 공용 IP 443 직접 연결이 모두 실패했다. 시험 컨테이너·네트워크는 정리했다. 이 증거는 실제 운영망 적용·독립 커널 격리를 뜻하지 않는다.
 
 다음 완료 조건은 운영 격리와 배포 controller 구성, 새 이미지 최초 전환, 실제 영상/외부 제공자 검수다. 정상 Turnstile·Vercel 전체 경로는 FE 담당의 통합 검수와 함께 마무리한다.
+
+## 2026-09-15 실제 전환에서 추가 확인한 원인
+
+- 시스템 Python의 `--help`와 import 성공을 전체 호환으로 오판했다. `typing.cast(str | None, ...)`의 인자는 3.9에서도 실행 시 평가돼 initialize에서 TypeError가 발생했다. 타입 전용 인자를 문자열로 바꾸는 두 줄 수정 후 관련 221개 검사와 실제 initialize가 성공했다. 다음에는 상태 기록·journal 검증까지 런타임별로 실행한다.
+- 초기화 이전 사전검사에서 global lock의 상위 디렉터리가 private 조건을 만족하지 않았다. lock을 전용 0700 상태 디렉터리로 옮겼다. 전용 Docker 인증 디렉터리에는 기존 context가 없어 실제 OrbStack socket을 가리키는 전용 `chamsae-ai` context도 구성했다. 보안 검사를 완화하지 않았다.
+- 최초 교체 호출의 `validate_runtime` 인자를 누락해 Docker 변경 전 TypeError가 났다. 선언을 확인하고 두 인자를 전달해 재실행했다. CLI 시험의 최초 `python -m deepcheck` 역시 entrypoint가 없어 실패했고 실제 `deepcheck.cli`로 수정했다. 이 둘은 앱 장애가 아닌 실행 명령 작성 오류다.
+- NAVER 프록시 목록에는 `openapi.naver.com`만 넣었지만 실제 설정은 `naverapihub.apigw.ntruss.com`이었다. CONNECT 403을 확인하고 정확한 API HUB 호스트 한 개를 추가했다. 재검사에서 뉴스/백과 각 2건 조회와 판정 경로가 완료됐다. 키 재발급이나 전체 도메인 개방은 하지 않았다.
+- 상시 launchd 자동 배포 활성화는 자동 승인 검토가 지속적 배포 권한의 명시적 승인 부족으로 거절했다. 명령은 실행되지 않았고 `enabled=false`를 확인했다. 사용자에게 별도 승인 질문을 남겼다. 이미지 교체 완료와 자동 배포 활성화를 구분한다.

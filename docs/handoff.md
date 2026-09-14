@@ -1,5 +1,13 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 실제 이미지 교체·결과 이관 완료
+
+- 운영 API를 서명 검증한 main `a26264e` digest로 교체했다. 기존 완료 결과 11건을 백업·복원했고 healthy/ready 및 외부 정상 토큰 200·미인증/변조 302를 확인했다.
+- internal 망, 전용 HTTPS 프록시, UID 10001·read-only·PID 제한을 적용했다. 기존 공유 터널은 재시작 없이 새 망을 연결했으며 다른 7개 서비스는 Up을 유지했다. 공유 VM/터널/UID까지 완전히 격리한 것은 아니다.
+- 실제 영상 다운로드·프레임·STT와 별도 DeepSeek/NAVER 호출을 검증했다. 영상은 주장 없음·전체 생성 모델 미선정으로 partial, 가상 문장 판정은 원문 미검증으로 근거 부족이다.
+- 시스템 Python 3.9의 runtime cast 오류를 `b7abf03`으로 수정(관련 221 tests pass)했고 controller initialize는 성공했다. 상시 자동 배포는 자동 승인 검토 거부로 비활성 상태이며 사용자에게 별도 승인을 요청했다. 새 패키지/runner는 설치하지 않았다.
+- 현재 서버 경로·백업·네트워크·검수·남은 공개 조건은 [현재 운영 구성](mac-mini-runtime.md)을 따른다. 아래 미배포 기록은 당시 이력이다. FE/Vercel은 미변경이며 공개 Function E2E와 작업 강제 시간 제한을 마치기 전에는 공개 게이트를 켜지 않는다.
+
 ## 2026-09-15 Turnstile 인수·격리 경로 검수
 
 - Turnstile 비밀 파일 owner·0600·Site Key 일치를 확인했다. 공식 Siteverify는 잘못된 시험 응답에 HTTP 200, `success=false`, `invalid-input-response`를 반환했다. 정상 브라우저 토큰 성공 검수는 아니며 사용자에게 같은 키를 다시 입력하도록 요청하지 않는다.

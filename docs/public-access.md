@@ -1,8 +1,8 @@
 # 일반 사용자 공개 전환
 
-2026-09-15 최신 운영 상태: 공개 보호 코드는 main에 병합됐지만 실제 운영은 472aff7이다. 특정 서비스 토큰의 Service Auth 연결과 정상/미인증/변조 인증 비교는 완료했다. 새 main 이미지의 서명 확인·다운로드·별도 컨테이너 결과 복원, 캐시 이관 및 얼굴·Whisper·ViT 오프라인 로드는 완료했다. Turnstile·운영 격리·새 이미지 교체·실영상 검수 전에는 공개 모드를 활성화하지 않는다. [최신 인수 상태](handoff.md)를 우선한다.
+2026-09-15 실제 운영은 main `a26264e`의 public mode `gateway`다. 이미지 교체·결과 이관·내부망/전용 프록시 적용 및 Service Auth 검수를 완료했다. [현재 운영 구성](mac-mini-runtime.md)에 실제 시험과 남은 보안 경계를 기록했다. FE/Vercel은 변경하지 않았고, 정상 브라우저 Turnstile+Function E2E 및 작업 강제 시간 제한 검토 전에는 공개 Function을 켜지 않는다.
 
-기준일: 2026-09-14. `feat/public-api-protection`의 **구현·로컬 검증 단계이며 미배포**다. 사용자 요구는 일반 사용자의 접근을 허용하면서 맥미니 홈서버 보호를 우선하는 것이다. 현재 이메일 Access를 없애는 변경은 실행하지 않았다. 제품의 현재 미결 사항은 [docs의 기존 추적표](https://github.com/Dynamic-Juo/docs/blob/docs/implementation-audit/project/project-plan.md)에서 관리한다.
+아래는 공개 API 구현 계약이다. 이메일 정책은 유지하고 특정 Service Token 인증 경로를 함께 적용했다. 제품 미결 사항은 [docs의 추적표](https://github.com/Dynamic-Juo/docs/blob/docs/implementation-audit/project/project-plan.md)에서 관리한다.
 
 ## 연결 구조
 

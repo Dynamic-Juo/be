@@ -4,7 +4,7 @@
 
 Turnstile 공개 Site Key: `0x4AAAAAAE0lGIUVFkIN-Rsz`. Cloudflare에서 `Chamsae AI` 위젯 생성과 관리형·호스트 `chamsae-ai.vercel.app` 한 개·사전 승인 없음을 확인했다. FE는 `action=analyze`로 사용한다. Secret Key는 백엔드 서버에 안전하게 인수했고 실제 Siteverify 부정 시험을 확인했다. 정상 브라우저 토큰과 실제 Vercel 전체 경로는 별도 검수가 필요하다. Site Key만으로 공개 활성화가 완료되지는 않는다.
 
-**2026-09-15 최신 상태: 아직 공개 연결을 켜지 않는다.** 특정 Service Token의 Cloudflare Service Auth는 적용했고 정상 토큰 health 200, 미인증·변조 토큰 302를 확인했다. 하지만 운영 백엔드는 계속 472aff7이다. 새 이미지의 서명·상태 복원 시험, 캐시 이관과 얼굴·Whisper·ViT 오프라인 로드는 성공했다. 운영 격리·Turnstile·새 이미지 전환·실영상 검수가 끝나기 전에는 `PUBLIC_GATEWAY_ENABLED=false`를 유지한다. 아래 초기 기록의 “Service Auth 미적용”은 이 최신 상태로 대체한다.
+**2026-09-15 최신 상태: API 이미지 전환 완료, 일반 공개는 검수 대기.** main `a26264e`를 배포했고 결과 11건 복원·격리 설정·외부 인증 및 실영상/제공자 검수를 확인했다. 상세 증거와 한계는 [현재 운영 구성](mac-mini-runtime.md)을 따른다. 백엔드 public mode는 gateway로 설정됐다. 정상 Turnstile+Vercel E2E와 작업 강제 시간 제한 검토 전에는 `PUBLIC_GATEWAY_ENABLED=false`를 유지한다. 아래 472aff7·Service Auth 미적용·직접 쿠키 호출 기록은 과거 이력이다.
 
 팀장님이 먼저 준비할 것은 `deploy/public-gateway`의 Function/라우팅 예제 적용, 같은 출처 `/api` 호출, Turnstile `action=analyze`, 접수 응답의 작업별 토큰 보관 및 조회 시 Bearer 전달이다. 서버 원본은 아래 주소로 정하고 비밀값은 별도 안전한 전달 후 Vercel 서버 환경변수에만 설정한다. 공개 Site Key는 위에 제공했지만 공개 활성화 확인은 아직이다. 프론트 저장소나 Vercel 설정은 이번 작업에서 변경하지 않았다.
 
