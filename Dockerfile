@@ -32,6 +32,15 @@ RUN mkdir -p deepcheck/models && \
     curl --retry 3 -fsSL -o deepcheck/models/blaze_face_short_range.tflite \
       https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite
 
+# 앱 코드는 root 소유의 읽기 전용 대상이며 모델·결과·접수 상태만 앱이 쓴다.
+RUN groupadd --gid 10001 app && useradd --uid 10001 --gid 10001 --create-home app && \
+    mkdir -p /home/app/.cache /var/lib/deepcheck /var/lib/deepcheck-results && \
+    chown -R 10001:10001 /home/app /var/lib/deepcheck /var/lib/deepcheck-results
+ENV HOME=/home/app \
+    XDG_CACHE_HOME=/home/app/.cache \
+    PYTHONDONTWRITEBYTECODE=1
+USER 10001:10001
+
 EXPOSE 8000
 
 # NOTE: exactly one uvicorn worker process. Hermes (backend/harness.py) keeps
