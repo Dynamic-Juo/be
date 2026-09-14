@@ -1,5 +1,13 @@
 # 다음 기기·에이전트를 위한 현재 상태
 
+## 2026-09-15 설치 범위·인증정보 인수 확인
+
+- 사용자가 Cloudflare Client ID/Secret을 직접 보관했다고 확인했다. 비밀값은 채팅·저장소로 받지 않았다. Service Auth 연결과 실제 인증 검수는 아직이다.
+- Homebrew 영수증에서 gh 설치는 2026-09-15 00:32 KST다. Python 3.14는 3월 23일 UTC, 호스트 cloudflared는 1월 3일 UTC, Node는 7월 12일 UTC, Node 22는 5월 10일 UTC 설치 기록이다. 이번 명령으로 직접 추가한 호스트 패키지는 gh 2.98.0 하나다.
+- GitHub Actions는 GitHub-hosted ubuntu-24.04-arm에서 Docker 빌드·테스트·게시·서명을 한다. 맥미니에는 self-hosted Actions runner를 설치하지 않았다. 사용자 LaunchAgents에서 conan/chamsae/deepcheck/github 이름의 plist는 0개다. 배포 helper의 launchd 활성화도 아직이다.
+- 격리 시험 잔여물은 `chamsae-egress:review-20260914` 이미지와 isolation-lab의 Dockerfile·squid.conf·verify_egress.py다. 시험 컨테이너는 남아 있지 않다. 기존 Hermes/Wowtalk 중지 컨테이너와 기존 다른 서비스는 삭제하지 않았다.
+- 운영 이미지의 GHCR 익명 pull 확인은 401이었다. GitHub 메타데이터용 fine-grained Actions/Contents read 토큰과 이미지 pull용 classic read:packages 토큰을 구분해 준비한다. 현재 개발용 gh 인증도 packages 조회 scope가 없어 403이었으며 권한을 임의로 넓히지 않았다.
+
 ## 2026-09-15 배포 진행 — PR 병합과 호스트 도구 설치
 
 - 사용자가 프론트 연결을 제외한 백엔드 배포 완료를 요청했다. 프론트·Vercel은 다음 날 팀장이 연결하며, 해당 저장소와 관리 설정은 수정하지 않는다.
