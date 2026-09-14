@@ -92,7 +92,7 @@ def _active_harness() -> Harness:
 
 
 app = FastAPI(
-    title="Conan AI / DeepCheck API", version="0.2.0", lifespan=lifespan,
+    title="참새 API", version="0.2.0", lifespan=lifespan,
     description=(
         "YouTube 영상 분석을 접수하고 작업 ID로 누적 결과를 조회하는 비동기 API입니다. "
         "POST /api/analyze의 HTTP 200은 분석 완료가 아니라 접수/재사용 성공입니다. "

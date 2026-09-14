@@ -1,6 +1,6 @@
-# Conan AI — 백엔드 (be)
+# 참새 — 백엔드 (be)
 
-현재 프론트 주소는 [chamsae-ai.vercel.app](https://chamsae-ai.vercel.app/)입니다. 일반 사용자용 [공개 접근 보호·FE 전달 계약](docs/public-access.md)을 준비했으며 아직 배포하지 않았습니다. 기존 이메일 Access 보호는 유지합니다. 서비스명의 정확한 한글·영문 표기는 확인 후 제목에 반영합니다.
+현재 프론트 주소는 [chamsae-ai.vercel.app](https://chamsae-ai.vercel.app/)입니다. 일반 사용자용 [공개 접근 보호·FE 전달 계약](docs/public-access.md)을 준비했으며 아직 배포하지 않았습니다. 기존 이메일 Access 보호는 유지합니다. 팀장님의 FE #13에서 확인한 서비스명 **참새**를 제목에 반영했습니다. 프론트·Vercel 변경은 팀장 담당입니다.
 
 영상 URL을 받아 **미디어 조작 가능성**과 **주장 사실성**을 분석하는 백엔드 서비스입니다.
 
