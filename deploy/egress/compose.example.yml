@@ -1,0 +1,27 @@
+# 전용 출구 설치용 예제. 운영 CD Compose와 자동으로 합치지 않는다.
+# 검증한 digest, 내부망 이름을 고정한 후 운영자가 별도로 관리한다.
+name: chamsae-egress
+services:
+  egress:
+    image: ${CHAMSAE_EGRESS_IMAGE:?verified immutable digest required}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.25
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777
+    networks:
+      private:
+        aliases: [chamsae-egress]
+      outbound: {}
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
+networks:
+  private:
+    external: true
+    name: ${CHAMSAE_PRIVATE_NETWORK:?precreated internal network required}
+  outbound: {}
