@@ -38,7 +38,7 @@ class PublicAccess:
             return None
         if mode != 'gateway':
             raise RuntimeError('DEEPCHECK_PUBLIC_MODE must be off or gateway')
-        key = os.getenv('DEEPCHECK_PUBLIC_GATEWAY_KEY', '')
+        key = os.getenv('GATEWAY_SHARED_SECRET', '')
         secret = os.getenv('DEEPCHECK_TURNSTILE_SECRET', '')
         host = os.getenv('DEEPCHECK_TURNSTILE_HOSTNAME', '')
         database = os.getenv('DEEPCHECK_PUBLIC_STATE_FILE', '')

@@ -57,8 +57,8 @@ SQLite 트랜잭션으로 동시 요청을 합산하고 재시작에도 유지�
 | 위치 | 설정 |
 | --- | --- |
 | Vercel 서버 | `PUBLIC_GATEWAY_ENABLED=false`로 먼저 설치, `PUBLIC_FRONTEND_ORIGIN=https://chamsae-ai.vercel.app`, `PRIVATE_API_ORIGIN=https://chamsae-ai-api.dotseven.cloud` |
-| Vercel 비밀 환경변수 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `PUBLIC_GATEWAY_KEY` |
-| 맥미니 비밀 환경변수 | `DEEPCHECK_PUBLIC_GATEWAY_KEY`는 Vercel 키와 동일한 무작위 32바이트 이상의 hex 문자열, `DEEPCHECK_TURNSTILE_SECRET` |
+| Vercel 비밀 환경변수 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `GATEWAY_SHARED_SECRET` |
+| 맥미니 비밀 환경변수 | `GATEWAY_SHARED_SECRET`는 Vercel 키와 동일한 무작위 32바이트 이상의 hex 문자열, `DEEPCHECK_TURNSTILE_SECRET` |
 | 맥미니 일반 설정 | `DEEPCHECK_PUBLIC_MODE=gateway`, `DEEPCHECK_TURNSTILE_HOSTNAME=chamsae-ai.vercel.app`, `DEEPCHECK_PUBLIC_STATE_FILE=/var/lib/deepcheck-results/public/quota.sqlite3` |
 | 프론트 번들 | Turnstile의 공개 site key만 포함. API base URL은 같은 출처 `/api` 계약에 맞게 설정 |
 

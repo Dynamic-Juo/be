@@ -9,7 +9,7 @@ const json = (status, code, message) => new Response(JSON.stringify({error:{code
 export async function handlePublicRequest(request, env=process.env, fetcher=fetch) {
   if (env.PUBLIC_GATEWAY_ENABLED !== 'true') return json(503,'public_unavailable','공개 접수를 준비 중입니다.');
   const frontend = env.PUBLIC_FRONTEND_ORIGIN;
-  const secret = env.PUBLIC_GATEWAY_KEY;
+  const secret = env.GATEWAY_SHARED_SECRET;
   let origin;
   try {
     origin = new URL(env.PRIVATE_API_ORIGIN);
