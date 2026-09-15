@@ -15,7 +15,7 @@ from backend.public_access import PublicAccess, PublicAccessError
 @pytest.fixture
 def policy(monkeypatch, tmp_path):
     monkeypatch.setenv('DEEPCHECK_PUBLIC_MODE', 'gateway')
-    monkeypatch.setenv('DEEPCHECK_PUBLIC_GATEWAY_KEY', 'a' * 64)
+    monkeypatch.setenv('GATEWAY_SHARED_SECRET', 'a' * 64)
     monkeypatch.setenv('DEEPCHECK_TURNSTILE_SECRET', 'test-secret')
     monkeypatch.setenv('DEEPCHECK_TURNSTILE_HOSTNAME', 'chamsae-ai.vercel.app')
     monkeypatch.setenv('DEEPCHECK_PUBLIC_STATE_FILE', str(tmp_path / 'quota.sqlite3'))
@@ -23,7 +23,7 @@ def policy(monkeypatch, tmp_path):
 
 
 def test_missing_config_fails_closed(policy, monkeypatch):
-    monkeypatch.delenv('DEEPCHECK_PUBLIC_GATEWAY_KEY')
+    monkeypatch.delenv('GATEWAY_SHARED_SECRET')
     with pytest.raises(RuntimeError):
         PublicAccess.from_env()
     monkeypatch.setenv('DEEPCHECK_PUBLIC_MODE', 'off')

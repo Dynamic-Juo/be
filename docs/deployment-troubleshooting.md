@@ -35,7 +35,7 @@
 | CF `CF-Access-Client-Id` / `CF-Access-Client-Secret` | Vercel 서버가 Cloudflare Access 통과 | Vercel 서버 환경변수, 원본 인증 검수용 서버 비밀 파일 |
 | Turnstile `Site Key` | 브라우저 봇 검증 위젯 표시 | 프론트 공개 설정. 비밀값이 아님 |
 | Turnstile `Secret Key` | 백엔드가 Siteverify 호출 | 백엔드 전용. CF Access Secret과 교환해 쓰지 않음 |
-| `PUBLIC_GATEWAY_KEY` | 백엔드 전달 인증·작업 조회 토큰 서명 | Vercel 서버와 백엔드만 공유. 생성·배포 인수 상태를 별도 확인 |
+| `GATEWAY_SHARED_SECRET` | 백엔드 전달 인증·작업 조회 토큰 서명 | Vercel 서버와 백엔드만 공유. 생성·배포 인수 상태를 별도 확인 |
 
 비밀값은 표·Git·PR·로그에 적지 않는다. 사용자가 입력 완료를 알려주면 존재·권한·검증 결과를 확인하며 같은 키를 다시 입력하게 하지 않는다.
 

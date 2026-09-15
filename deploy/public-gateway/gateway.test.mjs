@@ -4,7 +4,7 @@ import { handlePublicRequest } from './gateway.mjs';
 
 const env = {
   PUBLIC_GATEWAY_ENABLED: 'true', PUBLIC_FRONTEND_ORIGIN: 'https://chamsae-ai.vercel.app',
-  PRIVATE_API_ORIGIN: 'https://api.example.com', PUBLIC_GATEWAY_KEY: 'a'.repeat(64),
+  PRIVATE_API_ORIGIN: 'https://api.example.com', GATEWAY_SHARED_SECRET: 'a'.repeat(64),
   CF_ACCESS_CLIENT_ID: 'server-id', CF_ACCESS_CLIENT_SECRET: 'server-secret',
 };
 const payload = {url:'https://youtu.be/cYRkZmBuDqI', turnstile_token:'one-time-token'};
