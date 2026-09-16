@@ -790,7 +790,14 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
         if not sentence:
             raise ClaimExtractionError(f"LLM 주장 {index}번의 text가 비어 있다")
         if _normalize_for_quote(sentence) not in haystack:
-            raise ClaimExtractionError(f"LLM 주장 {index}번이 발언 전문에 없다")
+            # 발언하지 않은 문장을 검증 대상에 올리면 그 자체가 허위 정보이므로 이
+            # 항목은 버린다. 다만 이것 하나 때문에 이미 원문 대조를 통과한 다른
+            # 주장들까지 전부 버리지는 않는다 — 2026-09-16/17 실사용(예능 영상
+            # 13건 중 1번, 뉴스 영상 5건 중 5번)에서 응답 하나의 항목 하나가
+            # 어긋나 전체 추출이 통째로 실패하는 걸 두 번 확인했다.
+            logger.warning("LLM 주장 %d번이 발언 전문에 없어 건너뜀: %r",
+                           index, sentence[:60])
+            continue
         if any(_is_duplicate(sentence, [c.text]) for c in claims):
             continue
         claim = Claim(text=sentence)
@@ -805,7 +812,9 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
             claim.context = context
             claim.mentions.append({"context": context})
         elif context:
-            raise ClaimExtractionError(f"LLM 주장 {index}번의 context가 발언 전문에 없다")
+            # 주장 문장 자체는 이미 원문 대조를 통과했으니, 문맥만 못 미더우면
+            # 문맥 없이 주장은 그대로 살린다(항목 전체를 버리지 않는다).
+            logger.warning("LLM 주장 %d번의 context가 발언 전문에 없어 무시함", index)
         if repeat > 1:
             claim.mentions.append({"repeat": repeat})
         claims.append(claim)

@@ -488,14 +488,18 @@ _TRANSCRIPT = (
 )
 
 
-def test_LLM이_원문에_없는_문장을_지어내면_추출_실패다():
+def test_LLM이_원문에_없는_문장을_지어내면_그_항목만_버려진다():
+    # 2026-09-16/17 실사용에서 응답 13건 중 1건, 26건 중 1건이 원문과 안 맞아
+    # 전체 추출이 통째로 실패하는 걸 두 번 겪었다. 지어낸 항목 하나는 버리되
+    # 이미 원문 대조를 통과한 나머지는 살아남아야 한다.
     fake = FakeLLM({"claims": [
         {"text": "소비자물가 상승률이 6.0%를 넘었습니다.", "repeat": 1},
         {"text": "실업률이 3.2%로 떨어졌습니다.", "repeat": 1},  # 원문에 없음
     ]})
 
-    with pytest.raises(claims.ClaimExtractionError):
-        claims.extract_claims_llm(_TRANSCRIPT, [], 0, fake)
+    result = claims.extract_claims_llm(_TRANSCRIPT, [], 0, fake)
+    assert len(result) == 1
+    assert result[0].text == "소비자물가 상승률이 6.0%를 넘었습니다."
 
 
 def test_LLM_추출_호출이_실패하면_명시적_추출_실패다():

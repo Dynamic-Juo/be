@@ -96,11 +96,15 @@ def test_context_must_be_found_in_transcript():
     assert result[0].context == "가상시가 지원금을 발표했다."
 
 
-def test_context_outside_transcript_is_an_extraction_failure():
+def test_context_outside_transcript_is_ignored_but_claim_survives():
+    # 주장 문장 자체는 원문 대조를 통과했으니, 지어낸 문맥 하나 때문에 이
+    # 주장까지 통째로 버리지는 않는다(context는 그냥 비워진다).
     text = "가상시가 지원금을 발표했다. 올해는 10만원을 줍니다."
-    with pytest.raises(claims.ClaimExtractionError):
-        claims.extract_claims_llm(text, [], 0, FakeLLM({"claims": [{
-            "text": "올해는 10만원을 줍니다.", "context": "다른도시의 통계청이다."}]}))
+    result = claims.extract_claims_llm(text, [], 0, FakeLLM({"claims": [{
+        "text": "올해는 10만원을 줍니다.", "context": "다른도시의 통계청이다."}]}))
+    assert len(result) == 1
+    assert result[0].text == "올해는 10만원을 줍니다."
+    assert result[0].context == ""
 
 
 def test_extraction_does_not_silently_drop_the_end_of_transcript():
