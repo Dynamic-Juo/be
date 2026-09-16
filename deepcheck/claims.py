@@ -1295,7 +1295,12 @@ def _verify_one_claim_inner(claim: Claim, providers: list[EvidenceProvider],
     per_claim = evidence_per_claim or config.evidence_per_claim
     claim.status = VERIFYING
 
-    query = _search_query(f"{claim.text} {claim.context}")
+    # 영상 제목을 검색어 후보에 함께 넣는다. STT가 같은 고유명사를 문장마다
+    # 다르게 인식하는 사례를 실사용에서 반복 확인했다(예: "백일섭"이 한 문장에선
+    # "백일석", 다른 문장에선 "101섭"으로 인식됨 — 2026-09-16). 발화 원문은 그대로
+    # 두되(인용 검증 때문에 고칠 수 없다), 검색어에는 보통 정확히 표기되는 제목의
+    # 이름도 후보로 곁들여 검색 실패 확률을 낮춘다.
+    query = _search_query(f"{claim.text} {claim.context} {claim.video_title or ''}")
     collected: list[Evidence] = []
     provider_failures: list[str] = []
     for provider in providers:

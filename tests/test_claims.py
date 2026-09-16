@@ -161,6 +161,19 @@ class TestVerification:
         query = provider.queries[0].split()
         assert "여러분" not in query and "매우" not in query
 
+    def test_검색어에_영상_제목의_고유명사도_들어간다(self):
+        # STT가 같은 이름을 문장마다 다르게 인식하는 걸 실사용에서 확인했다
+        # (백일섭 -> 101섭, 2026-09-16). 발화 원문은 인용 검증 때문에 고칠 수
+        # 없지만, 검색어에는 보통 정확히 표기되는 영상 제목도 곁들여서 이런
+        # 경우의 검색 실패 확률을 낮춘다.
+        provider = FakeProvider("wiki", [])
+        claim = claims.Claim(
+            text="최근 몇 년 사이 101섭은 허리와 무릎의 만성질환을 앓았다",
+            video_title="배우 백일섭, 향년 80세로 별세",
+        )
+        claims.verify_claims([claim], providers=[provider])
+        assert "백일섭" in provider.queries[0]
+
 
 class TestProviderSelection:
     def _config(self, **overrides):
