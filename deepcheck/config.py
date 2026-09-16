@@ -116,6 +116,11 @@ class Config:
     # --- 모델 ---
     classifier_model: str = "dima806/deepfake_vs_real_image_detection"
     whisper_model_size: str = "small"
+    # 자동 언어 감지는 앞 30초의 배경음악·효과음만으로도 오판할 수 있다(실측:
+    # 한국어 뉴스 영상을 영어 48% 신뢰도로 오판해 1단어만 인식). 서비스가 한국어
+    # 영상에 최적화한다는 R-01 방향에 맞춰 기본값을 고정한다. 빈 문자열이면
+    # Whisper의 자동 감지로 되돌아간다.
+    whisper_language: str = "ko"
     # VLM은 교체 가능하다(deepcheck/vlm.py). 지금 구현된 제공자는 ollama뿐이다.
     vlm_provider: str = "ollama"
     ollama_url: str = "http://localhost:11434"
@@ -256,6 +261,7 @@ def load_config() -> Config:
     return Config(
         classifier_model=_env_str("CLASSIFIER_MODEL", Config.classifier_model),
         whisper_model_size=_env_str("WHISPER_MODEL_SIZE", Config.whisper_model_size),
+        whisper_language=_env_str("WHISPER_LANGUAGE", Config.whisper_language),
         vlm_provider=_env_str("VLM_PROVIDER", Config.vlm_provider),
         ollama_url=_env_str("OLLAMA_URL", Config.ollama_url).rstrip("/"),
         frame_aggregation=_env_str("FRAME_AGGREGATION", Config.frame_aggregation).lower(),

@@ -380,7 +380,9 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
     started = time.monotonic()
     audio = media.audio_path or media.video_path
     try:
-        result = transcriber.transcribe(audio, model_size=opts.model_size)
+        result = transcriber.transcribe(
+            audio, model_size=opts.model_size, language=config.whisper_language or None
+        )
     except Exception as e:
         # STT가 실패해도 영상 분석 결과는 돌려줄 수 있다. 다만 "무음 영상"과
         # 구분되도록 실패 사실을 stages에 남긴다.

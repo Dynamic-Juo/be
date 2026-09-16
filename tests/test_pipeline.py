@@ -51,7 +51,7 @@ class _EmptyEvidenceProvider:
         return []
 
 
-def _fake_transcribe(source, model_size=None):
+def _fake_transcribe(source, model_size=None, language=None):
     # 사실 확인이 가능한 문장 하나(연도+퍼센트)를 준다 — extract_claims가 정확히
     # 1건을 뽑도록.
     text = "2024년 실업률이 3.2% 감소했다고 통계청이 발표했다."
@@ -248,6 +248,22 @@ class TestFailureIsolation:
             pipeline.StageTracker(),
         )
         assert result.source == "stt"
+
+    def test_stt_pins_language_to_config_default(self, monkeypatch):
+        # 자동 언어 감지는 배경음악·효과음만으로도 오판할 수 있어 config.whisper_language
+        # 로 고정한다. 이 배선이 조용히 끊기면 다시 자동 감지로 되돌아간다.
+        _wire_fast_pipeline(monkeypatch)
+        seen = {}
+
+        def spy_transcribe(source, model_size=None, language=None):
+            seen["language"] = language
+            return _fake_transcribe(source, model_size, language)
+
+        monkeypatch.setattr(transcriber, "transcribe", spy_transcribe)
+        pipeline._collect_transcript(
+            _fake_media(), pipeline.AnalysisOptions(), pipeline.StageTracker(),
+        )
+        assert seen["language"] == pipeline.config.whisper_language
 
     def test_manual_option_uses_captions_and_skips_stt(self, monkeypatch):
         _wire_fast_pipeline(monkeypatch)
