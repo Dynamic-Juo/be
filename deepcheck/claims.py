@@ -34,6 +34,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, field
 from typing import Protocol
 
+from . import article_fetch
 from .config import config
 from .prompts import EXTRACT_SYSTEM, VERDICT_SYSTEM, PROMPT_VERSION
 
@@ -976,6 +977,38 @@ def _search_query(claim_text: str) -> str:
     return " ".join(_key_tokens(claim_text)[:6])
 
 
+def _confirm_original_sources(relevant: list[Evidence]) -> None:
+    """관련성 필터를 통과한 근거 중 일부의 실제 원문을 확보해 검증 표시를 채운다.
+
+    검색 제공자는 발췌문만 주므로 이대로면 `_decision_evidence_is_sufficient`가
+    항상 실패해 모든 판정이 근거 부족으로 끝난다(2026-09-16 백일섭 오보 영상에서
+    확인). 앞에서부터 최대 `evidence_fetch_max_per_claim`건만 열어 지연·부하를
+    제한한다 — 판정에 실제로 쓰일 근거는 인용 검증(`_apply_citations`) 이후 소수이기
+    때문에 전부 열 필요가 없다.
+
+    신뢰 도메인의 원문을 확보한 자료끼리는 도메인을 `independence_group`으로 써서
+    "1차 출처가 없으면 서로 다른 독립 출처 두 개 이상" 조건(evidence-policy.md)의
+    분모가 되게 한다. 네이버 뉴스 결과는 항상 source_type=news라 `is_primary`가
+    거의 나오지 않으므로, 이 값이 없으면 그 조건도 영원히 채울 수 없다.
+    """
+    if not config.evidence_fetch_original:
+        return
+    limit = max(0, config.evidence_fetch_max_per_claim)
+    for item in relevant[:limit]:
+        fetched = article_fetch.fetch_article_text(item.url)
+        if fetched is None:
+            continue
+        if not article_fetch.is_trusted_domain(fetched.domain):
+            logger.info("원문은 확보했지만 신뢰 도메인이 아니라 검증 표시를 안 함: %s",
+                       fetched.domain)
+            continue
+        item.content = fetched.text
+        item.content_scope = ORIGINAL
+        item.provenance_verified = True
+        item.independence_group = fetched.domain
+        logger.info("원문 확보 및 검증: %s (%d자)", fetched.domain, len(fetched.text))
+
+
 def _build_provider(name: str, cfg) -> EvidenceProvider | None:
     if name == "wikipedia":
         return WikipediaProvider("ko", cfg.evidence_timeout_sec)
@@ -1224,6 +1257,25 @@ def _set_verdict(claim: Claim, verdict: str, reason: str,
 def verify_one_claim(claim: Claim, providers: list[EvidenceProvider],
                      evidence_per_claim: int | None = None,
                      llm_provider=None) -> Claim:
+    """`_verify_one_claim_inner`를 실행하고 반환 전에 확보한 원문 전체를 지운다.
+
+    `_confirm_original_sources`가 신뢰 도메인의 기사 본문(수천 자 단위)을
+    `Evidence.content`에 채우는데, 이 필드는 `backend/schemas.py`의 API 응답
+    스키마에도 그대로 노출된다. 인용 검증(`_quote_found_in`)과 LLM 판정 입력에는
+    전체 본문이 필요하지만, 그게 끝난 뒤에도 원문 전체를 사용자 응답에 남기면
+    언론사 기사 전문을 그대로 재배포하는 셈이라 저작권 문제가 된다. 화면에는
+    서버가 인용 검증을 통과시킨 짧은 발췌(`quote`)만 남아야 한다.
+    """
+    try:
+        return _verify_one_claim_inner(claim, providers, evidence_per_claim, llm_provider)
+    finally:
+        for item in claim.evidence:
+            item.content = None
+
+
+def _verify_one_claim_inner(claim: Claim, providers: list[EvidenceProvider],
+                            evidence_per_claim: int | None = None,
+                            llm_provider=None) -> Claim:
     """주장 하나에 근거를 모으고 판정한다. 카드를 하나씩 갱신해야 하는 파이프라인이
     직접 부르는 단위. `claim.status`를 VERIFYING → DONE으로 바꾸고 반환한다.
 
@@ -1265,6 +1317,7 @@ def verify_one_claim(claim: Claim, providers: list[EvidenceProvider],
         logger.info("무관한 검색 결과 %d건 제외 (남은 근거 %d건)", dropped, len(relevant))
     # 판정에 보낸 자료를 응답에서 자르면 인용이나 충돌 출처가 사라진다.
     claim.evidence = relevant
+    _confirm_original_sources(relevant)
 
     # 검색 API의 구조화된 ClaimReview도 원문 자체가 아니며 첫 rating을 그대로 옮기지
     # 않는다. 다만 같은 주장에 대한 명시적 판정들이 서로 충돌하면 그 사실만은 서버가

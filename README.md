@@ -58,9 +58,17 @@
 1차 출처 하나 또는 서로 다른 검증된 원문 계보 두 개 이상의 충분성 조건을 적용합니다.
 이 검증은 `DEEPCHECK_LLM_QUOTE_CHECK=false`로 끌 수 없습니다.
 
-**현재 검색 제공자는 제목·발췌만 수집하며 원문 수집·출처 검증기는 미구현입니다.** 따라서 현재
-실제 검색 경로의 자료만으로는 이 조건을 통과할 수 없고 `근거 부족`으로 유보합니다.
-모의 원문으로 검증한 코드 경로와 실제 원문 확보 성공을 구분해야 합니다.
+검색 제공자(네이버·위키백과·FactCheck) 자체는 제목·발췌만 줍니다. 관련성 필터를 통과한
+근거 중 일부(주장당 최대 `DEEPCHECK_EVIDENCE_FETCH_MAX_PER_CLAIM`건)는 [`deepcheck/article_fetch.py`](deepcheck/article_fetch.py)가
+실제 URL을 안전하게 열어(SSRF 방어: 사설망 차단, 리다이렉트마다 재검증, 응답 크기 제한)
+본문을 확보합니다. 도착한 도메인이 `DEEPCHECK_TRUSTED_NEWS_DOMAINS`(기본값: 주요
+통신사·방송사·종합일간지)에 있을 때만 `content_scope=original`·`provenance_verified=true`를
+주고, 그 도메인을 `independence_group`으로 써서 서로 다른 신뢰 출처 두 곳이면 1차 출처
+없이도 충분성 조건을 채울 수 있게 합니다. 2026-09-16 실사용(연예인 사망 오보 영상)에서
+핵심 주장에 근거 6건을 확보하고도 전부 발췌문뿐이라 근거 부족으로 강제 강등된 것을 계기로
+추가했습니다. 원문 확보에 실패하거나 신뢰 도메인이 아니면 기존처럼 발췌문만 남아 근거
+부족으로 유보되며, `DEEPCHECK_EVIDENCE_FETCH_ORIGINAL=false`로 이 단계 전체를 끌 수
+있습니다.
 
 - 검색 결과가 없다는 이유만으로 주장을 거짓으로 판정하지 않습니다.
 - 근거가 부족하거나 서로 충돌하면 판단을 유보합니다.
@@ -96,6 +104,13 @@
 등록 CC라는 분류만으로 사람 작성·정확성·발언 전문을 보증하지 않습니다.
 기존 서버 환경에 `manual`이 명시돼 있다면 코드 기본값 변경만으로 전환되지 않습니다.
 실제 환경 변경·배포는 별도 승인 후 진행합니다. [FE 인수 조건](docs/frontend-integration.md#먼저-구분할-상태)을 확인하세요.
+
+STT는 언어 자동 감지 대신 `DEEPCHECK_WHISPER_LANGUAGE`(기본 `ko`)로 고정합니다. 자동 감지는
+오디오 앞부분의 배경음악·효과음만으로도 오판할 수 있습니다(실측: 한국어 뉴스 영상을 영어
+48% 신뢰도로 오판해 1단어만 인식). `caption_policy`가 `off`여서 자막을 아예 받지 않은
+경우에도, STT 단어 밀도가 비정상적으로 낮으면(`DEEPCHECK_CAPTION_QUALITY_FALLBACK`, 기본
+켜짐) 자막이 있는지 뒤늦게 한 번 더 확인해 있으면 대체합니다. 이건 "자막을 기본 소스로
+쓸지"의 정책과는 별개로, STT가 사실상 실패했을 때의 안전망입니다.
 
 과거 한국어 뉴스 표본에서는 `small` 약 88초, `tiny` 약 53초와 수치·고유명사 오인식이 기록됐습니다.
 이는 당시 별도 실행 결과이지 현재 수정안의 성능이나 한국어 전반의 정확도 보증이 아닙니다.
@@ -432,8 +447,13 @@ DEEPCHECK_GOOGLE_FACTCHECK_API_KEY=...
 | `DEEPCHECK_FRAME_AGGREGATION` | trimmed_mean | 얼굴 분류에 성공한 점수만 절사평균. 임계값 재검증은 별도 |
 | `DEEPCHECK_EVIDENCE_PER_CLAIM` | 3 | 주장당 근거 검색 건수 |
 | `DEEPCHECK_EVIDENCE_TIMEOUT_SEC` | 8 | 근거 검색 요청 타임아웃 |
-| `DEEPCHECK_EVIDENCE_PROVIDERS` | factcheck,naver_news,naver_encyc,wikipedia,wikipedia_en | 자격 정보 없는 수단은 제외 |
+| `DEEPCHECK_EVIDENCE_PROVIDERS` | factcheck,naver_news,naver_encyc | 자격 정보 없는 수단은 제외. 위키백과는 실사용에서 정확도가 낮아 2026-09-16 기본에서 뺐다 |
 | `DEEPCHECK_GOOGLE_FACTCHECK_API_KEY` | (없음) | 있으면 전문 기관 판정 검색 사용 |
+| `DEEPCHECK_EVIDENCE_FETCH_ORIGINAL` | true | 관련성 필터를 통과한 근거의 실제 원문을 열어 확보할지 |
+| `DEEPCHECK_EVIDENCE_FETCH_TIMEOUT_SEC` | 8 | 원문 요청 타임아웃 |
+| `DEEPCHECK_EVIDENCE_FETCH_MAX_BYTES` | 1500000 | 원문 응답 크기 상한 |
+| `DEEPCHECK_EVIDENCE_FETCH_MAX_PER_CLAIM` | 3 | 주장 하나당 원문 확보를 시도할 근거 개수 상한 |
+| `DEEPCHECK_TRUSTED_NEWS_DOMAINS` | 주요 통신사·방송사·종합일간지 (쉼표 구분) | 이 목록의 도메인에서만 `provenance_verified=true` |
 | `DEEPCHECK_LEVEL_HIGH` / `_MODERATE` / `_CAUTION` | 70 / 45 / 25 | 등급 경계 |
 
 로그에는 `request_id`와 `job_id`가 함께 붙어(`[req:ab12 job:cd34]`) 동시에 여러 분석이
@@ -442,18 +462,21 @@ DEEPCHECK_GOOGLE_FACTCHECK_API_KEY=...
 ### 근거 검색 수단
 
 `DEEPCHECK_EVIDENCE_PROVIDERS`에 쓴 순서대로 조회합니다
-(기본 `factcheck,naver_news,naver_encyc,wikipedia,wikipedia_en`).
+(기본 `factcheck,naver_news,naver_encyc`).
 
 | 이름 | 키 필요 | 비고 |
 |---|---|---|
 | `factcheck` | 필요 | Google Fact Check Tools. 판정 문자열도 참고 자료이며 직접 지지·반박으로 옮기지 않음 |
 | `naver_news` / `naver_encyc` | 필요 | NAVER 뉴스·백과 검색. API 키는 백엔드 환경에만 보관 |
-| `wikipedia` / `wikipedia_en` | 불필요 | 한국어·영어 위키백과 검색 발췌 |
+| `wikipedia` / `wikipedia_en` | 불필요 | 한국어·영어 위키백과 검색 발췌. 실사용에서 무관한 문서가 자주 섞여 기본에서는 뺐다(설정으로 다시 켤 수 있음) |
 | `gdelt` | 불필요 | 기본 비활성. 과거 실측에서 16초 이상·429가 기록됨; 현재 재검증 아님 |
 
 팩트체크 키 유무만으로 판정 가능 여부가 정해지지 않습니다. 검증된 원문을 확보하지 못하면
 어떤 검색 수단이든 자료는 참고로 표시하고 유보합니다. 제공자가 정상 조회했지만 결과가 없는 경우와
 조회 자체가 실패한 경우도 구분하며, 후자는 성공적인 `no_source`로 표시하지 않습니다.
+
+검색 제공자가 돌려준 URL 중 관련성 필터를 통과한 일부는 [`article_fetch.py`](deepcheck/article_fetch.py)가
+실제로 열어 원문 확보를 시도합니다. 위 "판정에 대한 태도"의 원문 확보 문단을 참고하세요.
 
 ## 선택 구성 요소
 

@@ -3,6 +3,20 @@ import socket
 
 import pytest
 
+from deepcheck import article_fetch
+
+
+@pytest.fixture(autouse=True)
+def stub_article_fetch(monkeypatch):
+    """근거 원문 확보(`article_fetch.fetch_article_text`)는 기본적으로 "못 찾음"으로 둔다.
+
+    이 함수는 실제 네트워크 요청을 시도하므로 block_network 픽스처에 바로 걸린다.
+    대부분의 테스트는 원문 확보 자체를 검증하려는 게 아니라 검증 로직을 보는
+    거라 기본값을 안전하게 둔다. 이 동작 자체를 검증하는 테스트는 각자
+    `monkeypatch.setattr(article_fetch, "fetch_article_text", ...)`로 다시 덮어쓴다.
+    """
+    monkeypatch.setattr(article_fetch, "fetch_article_text", lambda url: None)
+
 
 @pytest.fixture(autouse=True, scope="session")
 def block_network():

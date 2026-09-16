@@ -8,7 +8,7 @@
 import time
 from dataclasses import replace
 
-from deepcheck import claims
+from deepcheck import article_fetch, claims
 from deepcheck.config import config
 
 
@@ -166,11 +166,13 @@ class TestProviderSelection:
     def _config(self, **overrides):
         return replace(config, **overrides)
 
-    def test_기본_제공자에_gdelt는_없다(self):
-        # 실측 16초 이상 + 429가 잦아 기본에서 뺐다. 주장 5건이면 80초를 버린다.
+    def test_기본_제공자에_gdelt와_위키백과는_없다(self):
+        # gdelt: 실측 16초 이상 + 429가 잦아 기본에서 뺐다. 주장 5건이면 80초를 버린다.
+        # wikipedia: 실사용(백일섭 오보 영상)에서 무관한 문서가 자주 섞여 뺐다.
         names = [p.name for p in claims.default_providers()]
         assert "gdelt" not in names
-        assert "wikipedia" in names
+        assert "wikipedia" not in names
+        assert "wikipedia_en" not in names
 
     def test_설정으로_제공자를_바꿀_수_있다(self):
         cfg = self._config(evidence_providers="gdelt")
@@ -339,3 +341,84 @@ class TestKoreanExtraction:
                      "text": "-(기자) 지난달 소비자 물가 상승률이  6.0%로 집계됐습니다"}]
         found = claims.extract_claims(text, segments)
         assert found[0].start == 31.0
+
+
+class TestOriginVerification:
+    """`_confirm_original_sources` — 검색 발췌만으로는 채울 수 없는 content_scope=
+    original·provenance_verified·independence_group을 실제 원문 확보로 채운다.
+    2026-09-16 백일섭 오보 영상 실사용에서, 핵심 주장에 근거 6건을 확보하고도
+    전부 발췌문뿐이라 근거 부족으로 강등된 것을 확인하고 만들었다.
+    """
+
+    def _evidence(self, url="https://yna.co.kr/a/1"):
+        return claims.Evidence(title="기사", url=url, source="naver_news",
+                               snippet="발췌문", source_type=claims.NEWS)
+
+    def test_신뢰_도메인의_원문을_확보하면_검증_표시를_채운다(self, monkeypatch):
+        monkeypatch.setattr(
+            claims.article_fetch, "fetch_article_text",
+            lambda url: article_fetch.FetchedArticle(
+                text="실제 기사 본문입니다.", final_url=url, domain="yna.co.kr"),
+        )
+        monkeypatch.setattr(claims.article_fetch, "is_trusted_domain", lambda d: True)
+        item = self._evidence()
+        claims._confirm_original_sources([item])
+        assert item.content == "실제 기사 본문입니다."
+        assert item.content_scope == claims.ORIGINAL
+        assert item.provenance_verified is True
+        assert item.independence_group == "yna.co.kr"
+
+    def test_신뢰_도메인이_아니면_검증_표시를_안_채운다(self, monkeypatch):
+        monkeypatch.setattr(
+            claims.article_fetch, "fetch_article_text",
+            lambda url: article_fetch.FetchedArticle(
+                text="본문", final_url=url, domain="출처불명.example"),
+        )
+        monkeypatch.setattr(claims.article_fetch, "is_trusted_domain", lambda d: False)
+        item = self._evidence()
+        claims._confirm_original_sources([item])
+        assert item.content_scope == claims.SEARCH_EXCERPT
+        assert item.provenance_verified is False
+
+    def test_원문을_못_찾으면_그대로_둔다(self, monkeypatch):
+        monkeypatch.setattr(claims.article_fetch, "fetch_article_text", lambda url: None)
+        item = self._evidence()
+        claims._confirm_original_sources([item])
+        assert item.content_scope == claims.SEARCH_EXCERPT
+        assert item.provenance_verified is False
+
+    def test_주장당_상한을_넘는_근거는_열지_않는다(self, monkeypatch):
+        monkeypatch.setattr(claims, "config",
+                            replace(config, evidence_fetch_max_per_claim=1))
+        seen = []
+
+        def fake_fetch(url):
+            seen.append(url)
+            return None
+        monkeypatch.setattr(claims.article_fetch, "fetch_article_text", fake_fetch)
+        items = [self._evidence("https://yna.co.kr/1"), self._evidence("https://ytn.co.kr/2")]
+        claims._confirm_original_sources(items)
+        assert seen == ["https://yna.co.kr/1"]
+
+    def test_기능을_끄면_시도하지_않는다(self, monkeypatch):
+        monkeypatch.setattr(claims, "config",
+                            replace(config, evidence_fetch_original=False))
+
+        def forbidden(url):
+            raise AssertionError("evidence_fetch_original=False면 시도하면 안 된다")
+        monkeypatch.setattr(claims.article_fetch, "fetch_article_text", forbidden)
+        claims._confirm_original_sources([self._evidence()])
+
+    def test_서로_다른_두_신뢰_출처가_있으면_독립_출처_두_개로_계산된다(self, monkeypatch):
+        # is_primary가 없는 일반 언론 보도(source_type=news)는 1차 출처가 아니므로,
+        # 서로 다른 independence_group 두 개가 있어야만 충분성 조건을 통과한다.
+        domains = {"https://yna.co.kr/1": "yna.co.kr", "https://ytn.co.kr/2": "ytn.co.kr"}
+        monkeypatch.setattr(
+            claims.article_fetch, "fetch_article_text",
+            lambda url: article_fetch.FetchedArticle(
+                text="본문", final_url=url, domain=domains[url]),
+        )
+        monkeypatch.setattr(claims.article_fetch, "is_trusted_domain", lambda d: True)
+        items = [self._evidence(u) for u in domains]
+        claims._confirm_original_sources(items)
+        assert claims._decision_evidence_is_sufficient(items) is True

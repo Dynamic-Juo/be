@@ -13,7 +13,7 @@ from dataclasses import replace
 
 import pytest
 
-from deepcheck import claims, llm
+from deepcheck import article_fetch, claims, llm
 from deepcheck.config import config
 
 
@@ -153,6 +153,110 @@ def test_LLM이_인용까지_맞으면_판정이_그대로_반영된다():
     assert used.cited is True
     assert used.cite_reason == "같은 기간 수치를 그대로 제시한다."
     assert used.quote == "소비자물가 상승률은 6.0%로 집계됐다."
+
+
+def test_검색_발췌만_있어도_신뢰_도메인_원문_두_건이면_불일치가_유지된다(monkeypatch):
+    """2026-09-16 백일섭 오보 영상에서 실제로 겪은 문제의 회귀 테스트.
+
+    네이버뉴스가 핵심 주장("백일섭 별세")에 근거 6건을 찾아줬는데도, 검색
+    제공자가 발췌문만 줄 뿐 원문을 안 줘서 content_scope=original·
+    provenance_verified 조건을 채울 수 없었다. 그래서 LLM이 불일치를 제안해도
+    서버가 무조건 근거 부족으로 강등했다(claims.py의 _decision_evidence_is_sufficient).
+    이 테스트는 verify_one_claim이 내부적으로 원문을 확보(_confirm_original_sources)
+    했을 때, 서로 다른 신뢰 도메인 두 곳이면 그 강등이 풀리는지 확인한다.
+    """
+    quote = "배우 백일섭은 8일 방송에 출연해 근황을 전했다."
+    domains = {"https://yna.co.kr/a/1": "yna.co.kr", "https://ytn.co.kr/a/2": "ytn.co.kr"}
+    monkeypatch.setattr(
+        claims.article_fetch, "fetch_article_text",
+        lambda url: article_fetch.FetchedArticle(text=quote, final_url=url, domain=domains[url]),
+    )
+    monkeypatch.setattr(claims.article_fetch, "is_trusted_domain", lambda d: True)
+
+    # 검색 제공자가 실제로 돌려주는 모양 그대로: 발췌문만 있고 원문은 없다.
+    evidence = [
+        claims.Evidence(title="백일섭 근황", url=url, source="naver_news",
+                        snippet="배우 백일섭 근황", source_type=claims.NEWS)
+        for url in domains
+    ]
+    fake = FakeLLM({
+        "verdict": "불일치",
+        "reason": "두 언론사 모두 최근 방송 출연을 보도해 별세 주장과 배치된다.",
+        "cited": [
+            {"index": 1, "quote": quote, "reason": "사망 주장과 달리 최근 방송 출연을 보도한다."},
+            {"index": 2, "quote": quote, "reason": "다른 언론사도 동일한 최근 활동을 보도한다."},
+        ],
+    })
+    claim = claims.Claim(text="국민 배우 백일섭이 향년 80세의 나이로 별세했다")
+
+    claims.verify_one_claim(claim, [StubProvider(evidence)], llm_provider=fake)
+
+    assert claim.verdict == claims.REFUTED
+    assert claim.insufficient_reason is None
+
+
+def test_원문을_한_곳에서만_확보하면_여전히_근거부족이다(monkeypatch):
+    """독립 출처 하나만으로는 evidence-policy.md의 충분성 조건을 못 채운다 —
+    1차 출처가 아닌 이상 서로 다른 두 출처가 필요하다."""
+    quote = "배우 백일섭은 8일 방송에 출연해 근황을 전했다."
+    monkeypatch.setattr(
+        claims.article_fetch, "fetch_article_text",
+        lambda url: article_fetch.FetchedArticle(text=quote, final_url=url, domain="yna.co.kr"),
+    )
+    monkeypatch.setattr(claims.article_fetch, "is_trusted_domain", lambda d: True)
+
+    evidence = [claims.Evidence(title="백일섭 근황", url="https://yna.co.kr/a/1",
+                                source="naver_news", snippet="배우 백일섭 근황",
+                                source_type=claims.NEWS)]
+    fake = FakeLLM({
+        "verdict": "불일치",
+        "reason": "최근 방송 출연 보도와 배치된다.",
+        "cited": [{"index": 1, "quote": quote, "reason": "사망 주장과 배치된다."}],
+    })
+    claim = claims.Claim(text="국민 배우 백일섭이 향년 80세의 나이로 별세했다")
+
+    claims.verify_one_claim(claim, [StubProvider(evidence)], llm_provider=fake)
+
+    assert claim.verdict == claims.UNVERIFIED
+    assert claim.insufficient_reason == claims.WEAK_SOURCE
+
+
+def test_확보한_기사_원문_전체는_반환값에_남지_않는다(monkeypatch):
+    """저작권 문제: EvidenceResult(backend/schemas.py)의 content 필드는 API 응답에
+    그대로 노출된다. 원문 확보는 인용 검증에만 쓰고, 반환 전에는 지워야
+    언론사 기사 전문을 사용자에게 그대로 재배포하는 사고를 막는다."""
+    quote = "배우 백일섭은 8일 방송에 출연해 근황을 전했다."
+    full_article = quote + " " * 3 + "이하 생략된 나머지 기사 본문 수천 자." * 50
+    domains = {"https://yna.co.kr/a/1": "yna.co.kr", "https://ytn.co.kr/a/2": "ytn.co.kr"}
+    monkeypatch.setattr(
+        claims.article_fetch, "fetch_article_text",
+        lambda url: article_fetch.FetchedArticle(
+            text=full_article, final_url=url, domain=domains[url]),
+    )
+    monkeypatch.setattr(claims.article_fetch, "is_trusted_domain", lambda d: True)
+
+    evidence = [
+        claims.Evidence(title="백일섭 근황", url=url, source="naver_news",
+                        snippet="배우 백일섭 근황", source_type=claims.NEWS)
+        for url in domains
+    ]
+    fake = FakeLLM({
+        "verdict": "불일치",
+        "reason": "최근 방송 출연 보도와 배치된다.",
+        "cited": [
+            {"index": 1, "quote": quote, "reason": "사망 주장과 배치된다."},
+            {"index": 2, "quote": quote, "reason": "다른 언론사도 동일하게 보도한다."},
+        ],
+    })
+    claim = claims.Claim(text="국민 배우 백일섭이 향년 80세의 나이로 별세했다")
+
+    claims.verify_one_claim(claim, [StubProvider(evidence)], llm_provider=fake)
+
+    assert claim.verdict == claims.REFUTED  # 판정 자체는 정상적으로 살아 있어야 한다
+    for item in claim.evidence:
+        assert item.content is None
+    # 대표 인용은 화면 표시용으로 남아 있어야 한다 — content만 지운다.
+    assert claim.quote == quote
 
 
 def test_검색_요약에_인용이_있어도_양성_판정은_근거부족으로_강등한다():

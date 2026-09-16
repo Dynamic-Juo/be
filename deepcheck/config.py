@@ -156,6 +156,10 @@ class Config:
     # manual=업로더 등록 CC만, any=자동 CC도 허용, off=항상 STT.
     # 등록 CC라는 분류가 사람 작성·전문·정확성을 보증하지는 않는다.
     caption_policy: str = "off"
+    # caption_policy와 별개다. STT가 거의 아무것도 인식하지 못했을 때만(단어 밀도가
+    # 매우 낮을 때) 자막이 있는지 뒤늦게 확인해 대체한다. off로 두면 STT 결과를
+    # 품질과 무관하게 그대로 쓴다.
+    caption_quality_fallback: bool = True
 
     # --- LLM (주장 추출·판정) ---
     # off면 전부 규칙 기반으로 동작한다. deepseek/openai_compatible/ollama 지원.
@@ -195,9 +199,11 @@ class Config:
     evidence_budget_sec: int = 30
     # 사용할 근거 검색 수단(쉼표 구분, 앞에서부터 순서대로 조회).
     # gdelt는 실측에서 16초 이상 걸리고 429가 잦아 기본에서 제외했다.
-    # 조회 순서대로 적는다. naver_* 는 NAVER API HUB의 검색 카테고리다
-    # (news / encyc / webkr). 자격 정보가 없는 항목은 자동으로 빠진다.
-    evidence_providers: str = "factcheck,naver_news,naver_encyc,wikipedia,wikipedia_en"
+    # wikipedia/wikipedia_en도 실사용(백일섭 오보 영상)에서 관련 없는 문서가 자주
+    # 섞여 정확도가 낮다고 판단해 2026-09-16 기본에서 뺐다. 필요하면 환경변수로
+    # 다시 켤 수 있다. 조회 순서대로 적는다. naver_* 는 NAVER API HUB의 검색
+    # 카테고리다(news / encyc / webkr). 자격 정보가 없는 항목은 자동으로 빠진다.
+    evidence_providers: str = "factcheck,naver_news,naver_encyc"
     # NAVER API HUB. 2026-07-31에 기존 개발자센터 검색 API가 종료되고 이관됐다.
     # 콘솔에서 발급한 Client ID/Secret을 그대로 넣는다.
     naver_client_id: str = ""
@@ -205,6 +211,30 @@ class Config:
     naver_base_url: str = "https://naverapihub.apigw.ntruss.com"
     # 전문 기관의 공개 판정 검색(Google Fact Check Tools). 키가 있을 때만 사용한다.
     google_factcheck_api_key: str = ""
+
+    # --- 근거 원문 확보 ---
+    # 검색 제공자는 발췌문만 준다. evidence-policy.md(Accepted)의 일치·불일치
+    # 판정은 검증된 원문(content_scope=original + provenance_verified=true)을
+    # 요구하는데, 발췌문만으로는 이 조건을 절대 못 채워 모든 판정이 근거 부족으로
+    # 강등됐다(2026-09-16 실사용 확인). 관련성 필터를 통과한 근거의 실제 URL을
+    # 열어 본문을 확보해 이 공백을 메운다. 실패해도 기존처럼 search_excerpt로
+    # 남을 뿐이라 이 기능을 꺼도 이전 동작으로 돌아간다.
+    evidence_fetch_original: bool = True
+    evidence_fetch_timeout_sec: int = 8
+    evidence_fetch_max_bytes: int = 1_500_000
+    # 주장 하나당 원문 확보를 시도할 근거 개수 상한. 관련성 필터를 통과한 근거
+    # 전부를 열면 지연·부하가 커지므로 앞에서부터(제공자 조회 순서) 일부만 연다.
+    evidence_fetch_max_per_claim: int = 3
+    # 실제 도착한 도메인이 이 목록에 있어야 provenance_verified=true를 준다.
+    # 서브도메인도 포함한다(news.kbs.co.kr는 kbs.co.kr 하위로 인정). 주요
+    # 통신사·방송사·종합일간지부터 시작한 목록이며 완전하지 않다.
+    trusted_news_domains: str = (
+        "yna.co.kr,ytn.co.kr,kbs.co.kr,imbc.com,sbs.co.kr,jtbc.co.kr,"
+        "chosun.com,joongang.co.kr,joins.com,hani.co.kr,khan.co.kr,donga.com,"
+        "news1.kr,newsis.com,nocutnews.co.kr,mbn.co.kr,hankyung.com,mk.co.kr,"
+        "ohmynews.com,pressian.com,kmib.co.kr,seoul.co.kr,munhwa.com,"
+        "segye.com,hankookilbo.com"
+    )
 
     # --- 실행 ---
     # M-02: YouTube가 Shorts로 분류하는 최대 길이가 3분이다. 0이면 검사하지 않는다.
@@ -278,6 +308,9 @@ def load_config() -> Config:
         level_moderate=_env_float("LEVEL_MODERATE", Config.level_moderate),
         level_caution=_env_float("LEVEL_CAUTION", Config.level_caution),
         caption_policy=_env_str("CAPTION_POLICY", Config.caption_policy).lower(),
+        caption_quality_fallback=_env_bool(
+            "CAPTION_QUALITY_FALLBACK", Config.caption_quality_fallback
+        ),
         llm_provider=_env_str("LLM_PROVIDER", Config.llm_provider).lower(),
         llm_model=_env_str("LLM_MODEL", Config.llm_model),
         llm_base_url=_env_str("LLM_BASE_URL", Config.llm_base_url),
@@ -301,6 +334,21 @@ def load_config() -> Config:
         evidence_budget_sec=_env_int("EVIDENCE_BUDGET_SEC", Config.evidence_budget_sec),
         google_factcheck_api_key=_env_str(
             "GOOGLE_FACTCHECK_API_KEY", Config.google_factcheck_api_key
+        ),
+        evidence_fetch_original=_env_bool(
+            "EVIDENCE_FETCH_ORIGINAL", Config.evidence_fetch_original
+        ),
+        evidence_fetch_timeout_sec=_env_int(
+            "EVIDENCE_FETCH_TIMEOUT_SEC", Config.evidence_fetch_timeout_sec
+        ),
+        evidence_fetch_max_bytes=_env_int(
+            "EVIDENCE_FETCH_MAX_BYTES", Config.evidence_fetch_max_bytes
+        ),
+        evidence_fetch_max_per_claim=_env_int(
+            "EVIDENCE_FETCH_MAX_PER_CLAIM", Config.evidence_fetch_max_per_claim
+        ),
+        trusted_news_domains=_env_str(
+            "TRUSTED_NEWS_DOMAINS", Config.trusted_news_domains
         ),
         max_video_sec=_env_int("MAX_VIDEO_SEC", Config.max_video_sec),
         max_frames=_env_int("MAX_FRAMES", Config.max_frames),

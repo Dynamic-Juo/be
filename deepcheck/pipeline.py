@@ -354,24 +354,73 @@ def _collect_transcript(media: downloader.VideoMedia, opts: AnalysisOptions,
             media.caption_path, media.caption_language or "", media.caption_source or "manual"
         )
         if track:
-            coverage_pct = None
-            if media.duration and track.duration:
-                coverage_pct = round(min(track.duration, media.duration) / media.duration * 100, 1)
             tracker.mark(
                 "transcript", StageState.OK,
                 f"자막 사용({media.caption_source}/{media.caption_language}), "
                 f"{track.word_count}단어",
                 round(time.monotonic() - started, 2),
             )
-            return TranscriptResult(track.text, track.language, coverage_pct,
-                                   track.segments, source="caption",
-                                   coverage_basis="caption_last_timestamp",
-                                   segment_coverage_pct=transcriber.segment_coverage_pct(
-                                       track.segments, media.duration),
-                                   coverage_detail="마지막 자막 시점의 비율이며 발언 완전성·정확도를 뜻하지 않는다.")
+            return _caption_transcript_result(track, media)
         logger.info("자막을 읽지 못해 STT로 넘어간다")
 
     return _transcribe(media, opts, tracker)
+
+
+def _caption_transcript_result(track: "captions.CaptionTrack",
+                               media: downloader.VideoMedia) -> TranscriptResult:
+    coverage_pct = None
+    if media.duration and track.duration:
+        coverage_pct = round(min(track.duration, media.duration) / media.duration * 100, 1)
+    return TranscriptResult(
+        track.text, track.language, coverage_pct, track.segments, source="caption",
+        coverage_basis="caption_last_timestamp",
+        segment_coverage_pct=transcriber.segment_coverage_pct(track.segments, media.duration),
+        coverage_detail="마지막 자막 시점의 비율이며 발언 완전성·정확도를 뜻하지 않는다.",
+    )
+
+
+def _stt_looks_broken(result: transcriber.Transcript, duration: float | None) -> bool:
+    """실제 발화가 있을 법한데 STT가 거의 아무것도 인식하지 못했는지 본다.
+
+    coverage_pct(입력 오디오 길이 비율)는 품질 지표가 아니라 이 판단에 쓰지
+    않는다. 실측(예능 79단어/34.5초 vs 뉴스 1단어/57.6초)에 근거해 단어 밀도만
+    본다. 언어를 ko로 고정한 뒤로는 자동 감지 신뢰도가 항상 1에 가까워 이제는
+    신호로 쓸 수 없다.
+    """
+    if not duration or duration < 5:
+        return False
+    return (result.word_count / duration) < 0.3
+
+
+def _try_caption_fallback(media: downloader.VideoMedia, stt_result: transcriber.Transcript,
+                          tracker: StageTracker, started: float) -> TranscriptResult | None:
+    """STT가 부실할 때만 시도하는 자막 대체. 실패해도 예외를 올리지 않고 None을 돌려준다.
+
+    caption_policy가 이미 자막을 시도했다가 없었던 경우는 media.caption_path가
+    비어 있어도 호출부에서 걸러진다 — 여기서는 자동 자막(any)까지 넓혀 한 번 더
+    시도한다.
+    """
+    try:
+        cap_path, cap_lang, cap_source = downloader.fetch_fallback_captions(media, policy="any")
+    except Exception as e:
+        logger.warning("STT 대체용 자막 조회 실패: %s", e)
+        return None
+    if not cap_path:
+        return None
+    track = captions.load_track(cap_path, cap_lang or "", cap_source or "automatic")
+    if not track or track.word_count <= stt_result.word_count:
+        return None
+    logger.info(
+        "STT 결과가 부실해(%d단어) 자막으로 대체한다: %d단어(%s/%s)",
+        stt_result.word_count, track.word_count, cap_lang, cap_source,
+    )
+    tracker.mark(
+        "transcript", StageState.OK,
+        f"STT {stt_result.word_count}단어가 부실해 자막으로 대체({cap_source}/{cap_lang}), "
+        f"{track.word_count}단어",
+        round(time.monotonic() - started, 2),
+    )
+    return _caption_transcript_result(track, media)
 
 
 def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
@@ -391,6 +440,12 @@ def _transcribe(media: downloader.VideoMedia, opts: AnalysisOptions,
                      round(time.monotonic() - started, 2), error=error)
         logger.error("STT 실패 (%s)", error["code"], exc_info=True)
         return TranscriptResult()
+
+    if (config.caption_quality_fallback and not media.caption_path
+            and _stt_looks_broken(result, media.duration)):
+        fallback = _try_caption_fallback(media, result, tracker, started)
+        if fallback is not None:
+            return fallback
 
     coverage_pct = None
     if media.duration and result.duration:

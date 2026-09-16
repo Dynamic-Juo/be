@@ -95,6 +95,22 @@ def _check_download_metadata(info: dict, *, incomplete: bool = False) -> None:
     return None
 
 
+def _base_ytdlp_opts() -> dict[str, Any]:
+    """download()와 자막 재시도가 공유하는 공통 yt-dlp 옵션."""
+    return {
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "retries": 3,
+        "socket_timeout": 30,
+        "nocheckcertificate": False,
+        "cachedir": False,
+        "allowed_extractors": ["youtube$"],
+        "match_filter": _check_download_metadata,
+    }
+
+
 def download(url: str, workdir: str, max_height: int | None = None,
              caption_policy: str | None = None) -> VideoMedia:
     """Download best available mp4 (video+audio merged) for a URL.
@@ -118,18 +134,7 @@ def download(url: str, workdir: str, max_height: int | None = None,
         # combined format, we fetch each stream independently and feed it to the
         # stage that needs it (frames ← video, STT ← audio). This works with just
         # PyAV — no system ffmpeg required.
-        base: dict[str, Any] = {
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "noprogress": True,
-            "retries": 3,
-            "socket_timeout": 30,
-            "nocheckcertificate": False,
-            "cachedir": False,
-            "allowed_extractors": ["youtube$"],
-            "match_filter": _check_download_metadata,
-        }
+        base = _base_ytdlp_opts()
 
         video_tmpl = os.path.join(workdir, "%(id)s.v.%(ext)s")
         audio_tmpl = os.path.join(workdir, "%(id)s.a.%(ext)s")
@@ -245,6 +250,17 @@ def _fetch_captions(url: str, workdir: str, info: dict, base_opts: dict, policy:
     path = os.path.join(workdir, matches[0])
     logger.info("자막 확보: %s (%s, %s)", os.path.basename(path), language, source)
     return path, language, source
+
+
+def fetch_fallback_captions(media: "VideoMedia", policy: str = "any"
+                            ) -> tuple[str | None, str | None, str | None]:
+    """STT 결과가 부실해 보일 때만 쓰는 뒤늦은 자막 시도.
+
+    caption_policy=off로 다운로드해서 자막을 아예 안 받았거나, manual만 찾다가
+    없었던 경우를 위한 구조다. 새로 영상을 받지 않고 download() 때 이미 받아 둔
+    media.info(yt-dlp 메타데이터)를 재사용해 자막 트랙만 추가로 요청한다.
+    """
+    return _fetch_captions(media.url, media.workdir, media.info, _base_ytdlp_opts(), policy)
 
 
 def _find(workdir: str, video_id: str | None, marker: str) -> str | None:

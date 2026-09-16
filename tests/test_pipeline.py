@@ -5,7 +5,10 @@
 카드가 pending으로 먼저 나타났다가 done으로 바뀌는지.
 """
 
+from dataclasses import replace
+
 from deepcheck import claims, deepfake, downloader, pipeline, transcriber
+from deepcheck.config import config
 
 
 def _fake_media(**overrides) -> downloader.VideoMedia:
@@ -295,5 +298,83 @@ class TestFailureIsolation:
         result = pipeline._collect_transcript(
             _fake_media(caption_path="unusable.vtt"),
             pipeline.AnalysisOptions(caption_policy="manual"), pipeline.StageTracker(),
+        )
+        assert result.source == "stt"
+
+
+def _broken_transcript(word_count: int = 1, duration: float = 30.0) -> transcriber.Transcript:
+    text = " ".join(["어"] * word_count)
+    return transcriber.Transcript(
+        text=text, language="ko", language_probability=0.5,
+        segments=[{"start": 0.0, "end": duration, "text": text}] if word_count else [],
+        duration=duration,
+    )
+
+
+class TestCaptionQualityFallback:
+    """STT가 부실할 때만 뒤늦게 자막을 시도하는지 확인한다.
+
+    caption_policy=off(기본값)에서도 이 대체는 동작해야 한다 — 정책은 "자막을
+    기본 소스로 쓸지"를 정할 뿐, "STT가 사실상 실패했을 때 포기할지"는 별개다.
+    """
+
+    def test_broken_stt_is_replaced_by_richer_caption(self, monkeypatch):
+        from deepcheck import captions
+
+        monkeypatch.setattr(transcriber, "transcribe",
+                            lambda *a, **k: _broken_transcript(word_count=1, duration=57.6))
+        monkeypatch.setattr(downloader, "fetch_fallback_captions",
+                            lambda media, policy="any": ("fixture.vtt", "ko", "automatic"))
+        track = captions.CaptionTrack(
+            text="실제 발언이 여기 열 단어쯤 들어 있는 자막이다 그렇다",
+            language="ko", source="automatic",
+            segments=[{"start": 0.0, "end": 57.6, "text": "..."}],
+        )
+        monkeypatch.setattr(captions, "load_track", lambda *args: track)
+
+        result = pipeline._transcribe(
+            _fake_media(duration=57.6), pipeline.AnalysisOptions(), pipeline.StageTracker(),
+        )
+        assert result.source == "caption"
+        assert result.text == track.text
+
+    def test_broken_stt_without_available_caption_keeps_stt_result(self, monkeypatch):
+        broken = _broken_transcript(word_count=1, duration=57.6)
+        monkeypatch.setattr(transcriber, "transcribe", lambda *a, **k: broken)
+        monkeypatch.setattr(downloader, "fetch_fallback_captions",
+                            lambda media, policy="any": (None, None, None))
+
+        result = pipeline._transcribe(
+            _fake_media(duration=57.6), pipeline.AnalysisOptions(), pipeline.StageTracker(),
+        )
+        assert result.source == "stt"
+        assert result.text == broken.text
+
+    def test_healthy_stt_never_triggers_caption_lookup(self, monkeypatch):
+        monkeypatch.setattr(transcriber, "transcribe", _fake_transcribe)
+
+        def reject(media, policy="any"):
+            raise AssertionError("정상 STT 결과에는 자막을 다시 조회하면 안 된다")
+
+        monkeypatch.setattr(downloader, "fetch_fallback_captions", reject)
+
+        result = pipeline._transcribe(
+            _fake_media(duration=5.0), pipeline.AnalysisOptions(), pipeline.StageTracker(),
+        )
+        assert result.source == "stt"
+
+    def test_fallback_disabled_by_config_skips_lookup(self, monkeypatch):
+        monkeypatch.setattr(transcriber, "transcribe",
+                            lambda *a, **k: _broken_transcript(word_count=1, duration=57.6))
+        monkeypatch.setattr(pipeline, "config",
+                            replace(config, caption_quality_fallback=False))
+
+        def reject(media, policy="any"):
+            raise AssertionError("caption_quality_fallback=False면 조회하면 안 된다")
+
+        monkeypatch.setattr(downloader, "fetch_fallback_captions", reject)
+
+        result = pipeline._transcribe(
+            _fake_media(duration=57.6), pipeline.AnalysisOptions(), pipeline.StageTracker(),
         )
         assert result.source == "stt"

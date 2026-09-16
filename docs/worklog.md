@@ -1,5 +1,41 @@
 # 작업 로그
 
+## 2026-09-16 근거 원문 확보(article_fetch) 추가 — 근거부족 강제 강등 문제 해소
+
+- 실사용(연예인 사망 오보 YouTube 쇼츠, "국민 배우 백일섭이 향년 80세의 나이로 별세했다")에서
+  네이버뉴스가 핵심 주장에 근거 6건을 찾아줬는데도 전부 `unverified`로 끝난 것을 로그로 확인했다.
+  원인은 `_decision_evidence_is_sufficient`(evidence-policy.md의 Accepted 조건)가 일치·불일치
+  판정 모두에 `content_scope=original`+`provenance_verified=true`를 요구하는데, 검색 제공자는
+  발췌문(`search_excerpt`)만 주고 원문 수집기가 없어 이 조건을 구조적으로 채울 수 없었던 것이다.
+  판정 게이트 자체는 의도대로 동작했다 — 원문이 없는 걸 확인했다는 뜻이다.
+- `deepcheck/article_fetch.py`를 새로 만들었다. 관련성 필터를 통과한 근거 중 최대
+  `DEEPCHECK_EVIDENCE_FETCH_MAX_PER_CLAIM`(기본 3)건의 실제 URL을 열어 `trafilatura`로 본문을
+  뽑는다. SSRF 방어(스킴 https 고정, DNS 조회한 모든 IP가 공인망인지 확인, 리다이렉트마다 재검증,
+  응답 크기 상한)와 `DEEPCHECK_TRUSTED_NEWS_DOMAINS`(주요 통신사·방송사·종합일간지) 확인을 모두
+  통과해야 `provenance_verified=true`를 준다. 이 두 가지를 분리해서 "안전하게 열었다"와 "믿을
+  만하다"를 섞지 않았다.
+- `claims.py::_confirm_original_sources`가 신뢰 도메인 원문을 확보한 근거의 도메인을
+  `independence_group`으로 쓴다. 네이버뉴스 결과는 늘 `source_type=news`라 `is_primary`가 거의
+  안 나오므로, 이게 없으면 "1차 출처 없으면 독립 출처 두 개 이상" 조건도 영원히 못 채웠다.
+- 라이선스 확인(T-13 절차대로): trafilatura·courlan·htmldate는 Apache-2.0, lxml·lxml-html-clean·
+  babel은 BSD-3-Clause, justext는 BSD-2-Clause, dateparser는 BSD-3-Clause, charset-normalizer는
+  MIT, tld는 MPL-1.1/GPL-2.0/LGPL-2.1 중 선택(허가형으로 해석). GPL 단독 의존성 없음.
+- 실제 공개 URL(한국어 위키백과 문서)로 end-to-end 확인: SSRF 통과, HTTP 200, trafilatura가
+  61,428자 본문 추출 성공. `https://localhost/admin`은 사설 IP로 해석돼 차단됨을 별도 확인.
+  네이버 실API·실제 뉴스 기사 원문 추출 성공률은 아직 측정하지 않았다.
+- 신규 단위·회귀 테스트 37개(`tests/test_article_fetch.py` 29개, `test_claims.py`/
+  `test_llm_verdict.py` 각각 6개·2개): SSRF 차단 경계값, 신뢰 도메인 판단, 독립 출처 2곳이면
+  불일치가 유지되는지, 1곳뿐이면 여전히 근거부족인지. 전체 회귀 774 passed, 2 skipped.
+- 부수 변경: `DEEPCHECK_EVIDENCE_PROVIDERS` 기본값에서 `wikipedia`/`wikipedia_en` 제외(같은
+  백일섭 영상 분석에서 무관한 문서가 자주 섞인 것을 확인). `DEEPCHECK_WHISPER_LANGUAGE=ko`로
+  STT 언어를 고정(자동 감지가 배경음악만으로 영어 48% 신뢰도 오판, 58초 영상에서 1단어만
+  인식한 사례 확인). STT 단어 밀도가 비정상적으로 낮으면(`DEEPCHECK_CAPTION_QUALITY_FALLBACK`,
+  기본 켜짐) 업로더가 단 자막이 있는지 뒤늦게 한 번 더 확인해 대체하는 안전망도 추가했다.
+- 남은 것: 주장 추출이 핵심 주장과 부연 서사 문장을 구분하지 못해 한 영상이 10개 이상의 카드로
+  쪼개지는 문제(같은 백일섭 로그에서 13건 추출, 그중 다수가 근거 자체가 없는 서사문)는 아직
+  손대지 않았다. 실제 배포·실사용 재검증 전까지는 이번 변경으로 판정 정확도가 개선됐다고
+  선언하지 않는다.
+
 ## 2026-09-15 전달 비밀키 이름 통일
 
 - 사용자 요청으로 Vercel Function과 백엔드의 공유 키 환경변수를 `GATEWAY_SHARED_SECRET`으로 통일했다. 키 값·전달 헤더·결과 토큰 서명 방식은 변경하지 않는다. PUBLIC_GATEWAY_ENABLED는 별개의 활성화 설정으로 유지한다.
