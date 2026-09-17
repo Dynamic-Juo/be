@@ -174,6 +174,22 @@ class TestVerification:
         claims.verify_claims([claim], providers=[provider])
         assert "백일섭" in provider.queries[0]
 
+    def test_영상_제목의_해시태그_블록은_검색어에서_제외된다(self):
+        # 공백 없이 이어붙은 해시태그 블록("#백일섭충격사망#마지막인터뷰...")이
+        # 길이 기반 토큰 점수에서 실제 이름을 밀어내 검색어에 이름이 아예 안
+        # 들어가는 걸 실측으로 확인했다(2026-09-17). 해시태그는 검색어를 만들 때
+        # 미리 떼어낸다.
+        provider = FakeProvider("wiki", [])
+        claim = claims.Claim(
+            text="국민 배우 백일섭이 향년 80세의 나이로 별세했다.",
+            video_title=("배우 백일섭, 향년 80세로 갑작스럽게 별세… 사망원인 속속 밝혀져!"
+                         "#백일섭충격사망#사망원인미스터리#마지막인터뷰숨겨진진실"
+                         "#꽃보다할배의눈물#가족과의갈등끝내화해못해#심장질환은핑계였나"),
+        )
+        claims.verify_claims([claim], providers=[provider])
+        assert "백일섭" in provider.queries[0]
+        assert "#" not in provider.queries[0]
+
 
 class TestProviderSelection:
     def _config(self, **overrides):

@@ -894,6 +894,16 @@ _QUERY_STOPWORDS = {
     "for", "but", "not", "you", "they", "what", "when", "which", "there", "their",
 }
 _PARTICLE_RE = re.compile(r"(이|가|은|는|을|를|의|에|에서|으로|로|와|과|도|만|보다|처럼|까지)$")
+# 쇼츠 제목 끝에 붙는 "#해시태그#해시태그..." 블록은 공백 없이 이어붙은 긴 한국어
+# 낱말 덩어리라, _key_tokens의 길이 기반 점수에서 실제 고유명사(예: "백일섭")를
+# 밀어내고 검색어 자리를 전부 차지한다(2026-09-17 실측: 검색어에 이름이 하나도
+# 안 들어간 채 전송됨). 검색어를 만들 때는 제목에서 해시태그 블록을 먼저 떼어낸다.
+_HASHTAG_RE = re.compile(r"#\S+")
+# "발표했습니다", "감소했다고"처럼 조사 제거로는 안 걸러지는 긴 서술어 활용형.
+# 순수 길이 기반 점수에서 이런 낱말이 "실업률" 같은 진짜 핵심 명사보다 높게
+# 매겨져 검색어 자리를 차지하는 걸 실측으로 확인했다(2026-09-17). 명사가 아닌
+# 서술어는 길어도 가산점을 주지 않는다.
+_PREDICATE_TAIL_RE = re.compile(r"(했다고|됐다고|라고|했습니다|됐습니다|습니다|했다|됐다|한다|된다|이다)$")
 
 
 def _key_tokens(claim_text: str) -> list[str]:
@@ -911,12 +921,13 @@ def _key_tokens(claim_text: str) -> list[str]:
             continue
         seen.add(lowered)
 
-        score = float(len(word))
+        is_predicate = bool(_PREDICATE_TAIL_RE.search(word))
+        score = len(word) * 0.3 if is_predicate else float(len(word))
         if _NUMERIC_RE.search(word):
             score += 6  # 연도·수치는 사실 확인의 핵심이다
         if re.match(r"[A-Z]", word):
             score += 4  # 고유명사
-        if len(word) >= 3 and re.search(r"[가-힣]", word):
+        if not is_predicate and len(word) >= 3 and re.search(r"[가-힣]", word):
             score += 2  # 긴 한국어 낱말은 대체로 명사다
         scored.append((score, word))
 
@@ -977,13 +988,33 @@ def _is_relevant(claim_text: str, evidence: Evidence, context: str = "") -> bool
     return False
 
 
-def _search_query(claim_text: str) -> str:
+def _search_query(claim_text: str, anchor_text: str = "") -> str:
     """주장 문장을 검색어로 줄인다.
 
     문장을 통째로 넣으면 검색 엔진이 매칭할 것을 찾지 못한다. 고유명사와 수치처럼
     식별력이 높은 낱말만 남겨 짧은 질의를 만든다.
+
+    토큰을 너무 많이 AND로 묶으면 검색 결과가 0건이 되기 쉽다는 걸 실측으로
+    확인했다(2026-09-17, 백일섭 사례: 같은 낱말 집합인데 5~6개를 넣으면 0건,
+    2~4개면 결과가 나옴). 그래서 토큰 수를 적게 유지한다. 또한 `_key_tokens`의
+    점수는 낱말 길이 위주라 "백일섭" 같은 짧은 고유명사가 "갑작스럽게" 같은 긴
+    서술어보다 낮은 순위로 밀려 상위 몇 개에서 잘리는 문제가 있었다. `anchor_text`
+    (보통 영상 제목)에도 나오는 낱말은 실제 핵심 주어일 확률이 높으므로 우선순위를
+    앞으로 당긴다.
     """
-    return " ".join(_key_tokens(claim_text)[:6])
+    tokens = _key_tokens(claim_text)
+    if anchor_text:
+        anchor_tokens = _key_tokens(anchor_text)
+        anchor_set = {t.lower() for t in anchor_tokens}
+        text_set = {t.lower() for t in tokens}
+        # 우선순위: (1) 발화와 제목 양쪽에 다 나오는 낱말(핵심 주어일 확률이
+        # 가장 높다) → (2) 제목에만 있는 낱말(STT가 이름을 다르게 인식해
+        # 발화 쪽에서 안 잡힌 경우를 보충) → (3) 나머지 발화 낱말.
+        matched = [t for t in tokens if t.lower() in anchor_set]
+        anchor_only = [t for t in anchor_tokens if t.lower() not in text_set]
+        rest = [t for t in tokens if t.lower() not in anchor_set]
+        tokens = matched + anchor_only + rest
+    return " ".join(tokens[:4])
 
 
 def _confirm_original_sources(relevant: list[Evidence]) -> None:
@@ -1295,12 +1326,13 @@ def _verify_one_claim_inner(claim: Claim, providers: list[EvidenceProvider],
     per_claim = evidence_per_claim or config.evidence_per_claim
     claim.status = VERIFYING
 
-    # 영상 제목을 검색어 후보에 함께 넣는다. STT가 같은 고유명사를 문장마다
+    # 영상 제목을 검색어 앵커로 함께 넣는다. STT가 같은 고유명사를 문장마다
     # 다르게 인식하는 사례를 실사용에서 반복 확인했다(예: "백일섭"이 한 문장에선
     # "백일석", 다른 문장에선 "101섭"으로 인식됨 — 2026-09-16). 발화 원문은 그대로
     # 두되(인용 검증 때문에 고칠 수 없다), 검색어에는 보통 정확히 표기되는 제목의
-    # 이름도 후보로 곁들여 검색 실패 확률을 낮춘다.
-    query = _search_query(f"{claim.text} {claim.context} {claim.video_title or ''}")
+    # 이름도 우선 반영해 검색 실패 확률을 낮춘다. 해시태그 블록은 제외한다(위 설명).
+    title_for_search = _HASHTAG_RE.sub(" ", claim.video_title or "")
+    query = _search_query(f"{claim.text} {claim.context}", title_for_search)
     collected: list[Evidence] = []
     provider_failures: list[str] = []
     for provider in providers:
