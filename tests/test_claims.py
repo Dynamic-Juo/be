@@ -345,6 +345,35 @@ class TestKoreanExtraction:
         query = claims._search_query("지난달 소비자 물가 상승률이 6.0%로 집계됐습니다")
         assert "6.0%" in query or "6.0" in query
 
+    def test_숫자_뒤_단위_만억조는_조사로_잘리지_않는다(self):
+        # "30만"(300,000)의 "만"을 조사 "~만"(only)으로 오인해 "30"으로 자르면
+        # 수치가 통째로 바뀐다. 실측에서 이렇게 잘린 "30"이 "30대"(나이) 같은
+        # 무관한 기사와 우연히 매칭되는 사고로 이어졌다(2026-09-17).
+        tokens = claims._key_tokens("30만 회에 가까운 조회수를 올린")
+        assert "30만" in tokens
+        assert "30" not in tokens
+
+    def test_흔한_접속부사는_관련성_판단에서_제외된다(self):
+        # "이렇게"처럼 어디에나 나오는 접속부사가 관련성 토큰으로 살아남으면,
+        # 완전히 무관한 기사가 우연히 그 낱말 하나로 근거인 것처럼 통과한다.
+        evidence = claims.Evidence(
+            title="냉동창고 살인 사건", url="https://example.com/a", source="fixture",
+            snippet="그러니까 그것을 이렇게 오독이 된 것 같다는 생각도 들고",
+        )
+        assert not claims._is_relevant("환경부는 분리배출 단속 강화가 사실무근이라고 밝혔다", evidence)
+
+    def test_영상_제목이_주장과_무관하면_검색어를_가로채지_않는다(self):
+        # 영상 제목이 방송사명·장르 라벨뿐이면(예: "...#shorts / YTN") 주장
+        # 내용과 아무 관련이 없다. 제목 전용 낱말이 검색어 전부를 차지해 완전히
+        # 엉뚱한 자사 기사를 근거로 끌어온 사고를 실측으로 확인했다(2026-09-17,
+        # 쓰레기 분리배출 가짜뉴스 주장에 냉동창고 살인 기사가 딸려옴).
+        query = claims._search_query(
+            "환경부는 분리 배출 지침 개정이 올해는 없고 단속 강화 요청도 사실무근이라고 밝혔다",
+            "알고 보니 'AI 가짜뉴스' / YTN",
+        )
+        assert "ytn" not in query.lower()
+        assert "분리" in query or "환경부" in query or "단속" in query
+
     def test_한_대목에_쏠리지_않고_영상_전체에_분산된다(self):
         # 숫자가 몰린 문장이 슬롯을 다 차지하면 뒷부분 내용이 통째로 누락된다.
         found = claims.extract_claims(self.NEWS, max_claims=3)

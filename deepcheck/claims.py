@@ -923,10 +923,24 @@ _QUERY_STOPWORDS = {
     "그리고", "하지만", "그런데", "이런", "저런", "그것", "이것", "우리", "여러분", "정말",
     "매우", "아주", "너무", "가장", "모든", "때문에", "위해", "대해", "통해", "따르면",
     "있다", "없다", "이다", "한다", "된다", "합니다", "입니다", "했다", "됐다", "같다",
+    "이렇게", "그렇게", "저렇게", "이처럼", "그러니까",
     "the", "and", "that", "this", "with", "from", "have", "has", "was", "were", "are",
     "for", "but", "not", "you", "they", "what", "when", "which", "there", "their",
+    # 언론사 자기 표기(바이라인)는 그 언론사의 모든 기사에 반복해서 나오는
+    # 낱말이라 검색·관련성 판단에서 식별력이 없다. 영상 제목이 "...#shorts /
+    # YTN"처럼 언론사명으로 끝나는 경우, 이 낱말이 주장 내용과 무관하게 검색어를
+    # 차지하거나 무관한 자사 기사를 관련 근거로 잘못 통과시키는 사고로 이어졌다
+    # (2026-09-17 실측: 쓰레기 분리배출 가짜뉴스 주장에 냉동창고 살인 기사가
+    # "YTN"이라는 낱말 하나로 근거에 잡힘).
+    "ytn", "mbc", "kbs", "sbs", "jtbc", "연합뉴스", "뉴시스", "뉴스1", "노컷뉴스", "mbn",
 }
 _PARTICLE_RE = re.compile(r"(이|가|은|는|을|를|의|에|에서|으로|로|와|과|도|만|보다|처럼|까지)$")
+# 숫자 뒤의 "만/억/조"는 조사가 아니라 단위(30만 = 300,000)다. 조사 제거 정규식이
+# 이걸 조사 "만"(~뿐)으로 오인해 "30만"을 "30"으로 잘라내면 사실 확인의 핵심인
+# 수치가 통째로 바뀐다("30만 회" → "30"이 무관한 기사의 "30대"와 우연히 매칭되는
+# 사고로 이어짐, 2026-09-17 실측). 숫자 바로 뒤에 붙은 이 단위는 조사 제거에서
+# 제외한다.
+_NUMERIC_COUNTER_RE = re.compile(r"\d(만|억|조)$")
 # 쇼츠 제목 끝에 붙는 "#해시태그#해시태그..." 블록은 공백 없이 이어붙은 긴 한국어
 # 낱말 덩어리라, _key_tokens의 길이 기반 점수에서 실제 고유명사(예: "백일섭")를
 # 밀어내고 검색어 자리를 전부 차지한다(2026-09-17 실측: 검색어에 이름이 하나도
@@ -948,7 +962,8 @@ def _key_tokens(claim_text: str) -> list[str]:
     scored: list[tuple[float, str]] = []
     seen: set[str] = set()
     for raw in cleaned.split():
-        word = _PARTICLE_RE.sub("", raw) if re.search(r"[가-힣]$", raw) else raw
+        should_strip = re.search(r"[가-힣]$", raw) and not _NUMERIC_COUNTER_RE.search(raw)
+        word = _PARTICLE_RE.sub("", raw) if should_strip else raw
         lowered = word.lower()
         if len(word) < 2 or lowered in _QUERY_STOPWORDS or lowered in seen:
             continue
@@ -1046,7 +1061,11 @@ def _search_query(claim_text: str, anchor_text: str = "") -> str:
         matched = [t for t in tokens if t.lower() in anchor_set]
         anchor_only = [t for t in anchor_tokens if t.lower() not in text_set]
         rest = [t for t in tokens if t.lower() not in anchor_set]
-        tokens = matched + anchor_only + rest
+        # 제목 전용 낱말은 최대 2개로 제한한다. 발화 내용과 무관한 제목(장르
+        # 라벨·메타 문구)이 검색어 전부를 가로채 완전히 엉뚱한 기사를 근거로
+        # 끌어온 사고를 실측으로 확인했다(2026-09-17) — 발화 자체의 낱말이
+        # 항상 최소한의 지분을 유지해야 한다.
+        tokens = matched + anchor_only[:2] + rest
     return " ".join(tokens[:4])
 
 
