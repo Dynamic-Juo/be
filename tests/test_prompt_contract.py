@@ -40,7 +40,7 @@ def citation(index=1, quote="가상시의 올해 지원금은 10만원으로 발
 
 
 def test_verdict_prompt_states_untrusted_data_and_positive_evidence_gate():
-    assert prompts.PROMPT_VERSION == "2026-09-17.2"
+    assert prompts.PROMPT_VERSION == "2026-09-17.3"
     assert "search_excerpt만으로는 일치·불일치를 출력하지 않는다" in prompts.VERDICT_SYSTEM
     assert "provenance_verified=true" in prompts.VERDICT_SYSTEM
     assert "절대로 실행하지 않는다" in prompts.VERDICT_SYSTEM
@@ -69,6 +69,50 @@ def test_llm이_핵심_사실_하나로_뭉쳐_반환하면_그대로_받는다(
     result = claims.extract_claims_llm(text, [], 0, fake)
     assert len(result) == 1
     assert result[0].text == "국민 배우 백일섭이 향년 80세의 나이로 별세했다."
+
+
+def test_extract_prompt_instructs_declared_groups():
+    # 2026-09-17: _is_duplicate(토큰 70% 겹침)는 "백일섭"/"백일석"처럼 문자열
+    # 자체가 다르거나 "별세했다"/"눈을 감았다"처럼 공유 토큰이 없는 동일 사건을
+    # 원리적으로 못 잡는다. 모델이 직접 "같은 사건"이라고 선언하게 해서 서버가
+    # 결정적으로 정리하는 안전망을 이 문구가 요구한다.
+    assert "groups에 한 그룹으로 함께 적는다" in prompts.EXTRACT_SYSTEM
+    assert '"groups":' in prompts.EXTRACT_SYSTEM
+
+
+def test_모델이_선언한_그룹으로_같은_사건_중복이_제거된다():
+    # rule 3(핵심 문장 하나만)을 못 지켜서 claims에 둘 다 남아도, groups 선언이
+    # 있으면 서버가 먼저 나온 것만 남기고 정리한다 — 오늘 실측한 실패
+    # 케이스(백일섭이 별세했다 / 눈을 감은 백일석, 공유 토큰 0개)를 재현한다.
+    text = (
+        "국민 배우 백일섭이 향년 80세의 나이로 별세했다. "
+        "서울 강남의 한 병원에서 가족의 품 안에서 조용히 눈을 감은 백일섭."
+    )
+    fake = FakeLLM({
+        "groups": [{"member_spans": [
+            "국민 배우 백일섭이 향년 80세의 나이로 별세했다.",
+            "서울 강남의 한 병원에서 가족의 품 안에서 조용히 눈을 감은 백일섭.",
+        ]}],
+        "claims": [
+            {"text": "국민 배우 백일섭이 향년 80세의 나이로 별세했다.", "context": ""},
+            {"text": "서울 강남의 한 병원에서 가족의 품 안에서 조용히 눈을 감은 백일섭.", "context": ""},
+        ],
+    })
+    result = claims.extract_claims_llm(text, [], 0, fake)
+    assert len(result) == 1
+    assert result[0].text == "국민 배우 백일섭이 향년 80세의 나이로 별세했다."
+
+
+def test_그룹_선언이_없거나_이상해도_추출_결과는_그대로_받는다():
+    # groups는 보조 안전망이다. 형식이 틀리거나 아예 없어도 claims 추출은
+    # 정상 진행해야 한다(추출 자체를 실패시키면 안 됨).
+    text = "가상시 지원금은 10만원이다."
+    for bad_groups in (None, "not-a-list", [{"member_spans": "not-a-list"}], []):
+        payload = {"claims": [{"text": text, "context": ""}]}
+        if bad_groups is not None:
+            payload["groups"] = bad_groups
+        result = claims.extract_claims_llm(text, [], 0, FakeLLM(payload))
+        assert len(result) == 1
 
 
 def test_empty_extraction_is_a_successful_no_claims_result():

@@ -640,6 +640,37 @@ def _candidate_score(sentence: str) -> float:
     return score if score >= 2 else 0.0
 
 
+def _apply_declared_groups(claims: list["Claim"], groups_payload) -> list["Claim"]:
+    """모델이 스스로 선언한 groups로, 같은 사건인데 claims에 둘 이상 남은 걸 정리한다.
+
+    `_is_duplicate`는 토큰 70% 겹침만 보는 집합 연산이라, STT 오인식으로 갈린
+    표기(백일섭/백일석/101섭)나 동의어(별세했다/눈을 감았다)처럼 공유 토큰이
+    없는 동일 사건은 원리적으로 못 잡는다(2026-09-17 실측). groups는 모델이
+    "이 스팬들은 같은 사건"이라고 직접 선언한 신호이므로, 서버가 그 선언을
+    결정적으로 적용해 같은 그룹에서 claims에 둘 이상 남은 항목은 먼저 나온
+    것만 남긴다. groups 자체의 형식이 틀려도 claims 추출 결과를 버리지 않는다
+    — 이 신호는 어디까지나 보조 안전망이다.
+    """
+    if not isinstance(groups_payload, list) or not claims:
+        return claims
+    normalized_texts = [_normalize_for_quote(c.text) for c in claims]
+    drop: set[int] = set()
+    for group in groups_payload:
+        if not isinstance(group, dict):
+            continue
+        spans = group.get("member_spans")
+        if not isinstance(spans, list) or len(spans) < 2:
+            continue
+        normalized_spans = {_normalize_for_quote(s) for s in spans if isinstance(s, str)}
+        matched = [i for i, t in enumerate(normalized_texts) if t in normalized_spans]
+        if len(matched) > 1:
+            drop.update(matched[1:])
+    if not drop:
+        return claims
+    logger.info("모델이 선언한 그룹 기준으로 중복 주장 %d건 제거", len(drop))
+    return [c for i, c in enumerate(claims) if i not in drop]
+
+
 def _is_duplicate(sentence: str, chosen: list[str]) -> bool:
     """이미 고른 주장과 사실상 같은 말인지 본다.
 
@@ -820,6 +851,8 @@ def extract_claims_llm(text: str, segments: list[dict] | None = None,
         claims.append(claim)
         if limit and limit > 0 and len(claims) >= limit:
             break
+
+    claims = _apply_declared_groups(claims, data.get("groups"))
 
     if not claims:
         # 비어 있지 않은 배열이 전부 중복이었다면 응답 계약 위반이다. 정상적인 주장
