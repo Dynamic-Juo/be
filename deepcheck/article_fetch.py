@@ -37,7 +37,7 @@ try:
 except ImportError:  # pragma: no cover
     trafilatura = None
 
-_USER_AGENT = "ConanAI/0.2 (hackathon fact-check; https://github.com/Dynamic-Juo)"
+_USER_AGENT = "ChamsaeAI/0.2 (hackathon fact-check; https://github.com/chamsae-ai)"
 # 이보다 짧으면 봇 차단·로그인 요구·페이월 안내 페이지일 가능성이 높다. 실제 기사
 # 본문이면 200자는 보통 한두 문장을 넘는다.
 _MIN_TEXT_CHARS = 200

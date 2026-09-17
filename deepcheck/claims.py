@@ -340,7 +340,7 @@ def _http_get_json(url: str, timeout: int, headers: dict | None = None) -> dict:
     host = urllib.parse.urlparse(url).netloc
     merged = {
         # 위키미디어는 연락처가 없는 요청을 더 강하게 제한한다.
-        "User-Agent": "ConanAI/0.2 (hackathon research; https://github.com/Dynamic-Juo)",
+        "User-Agent": "ChamsaeAI/0.2 (hackathon research; https://github.com/chamsae-ai)",
         "Accept": "application/json",
     }
     if headers:
