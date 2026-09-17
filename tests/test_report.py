@@ -253,6 +253,53 @@ class TestBuild:
         # 두 축은 끝까지 분리된 채로 남는다. 주장 검증 결과가 조작 축에 섞이지 않는다.
         assert r.face_manipulation.signals["combined_risk"] == 10.0
 
+    def test_클릭베이트_높고_전부_근거부족이면_안내문구가_붙는다(self):
+        # 제미나이는 "유명인인데 보도가 없다" 같은 배경지식 추론으로 확신에 찬
+        # 답을 냈지만, 우리는 검증되지 않은 걸 지어내지 않는다는 원칙을 지킨다.
+        # 대신 이미 계산해 둔 클릭베이트 신호만 곁들여 사용자가 더 신중하게
+        # 판단하도록 돕는다(2026-09-18, 백일섭 오보 영상 실측 clickbait=24).
+        cv = report.ClaimVerification(
+            status=report.AxisStatus.ANALYZED.value,
+            claims=[{"status": "done", "verdict": "unverified"}],
+            summary={"total": 1, "done": 1, "supported": 0, "refuted": 0, "unverified": 1},
+            detail="확보한 근거로 주장을 지지하거나 반박할 수 없어 판단을 유보했다.",
+        )
+        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(clickbait=24),
+                         self._stages(), claim_verification=cv)
+        assert "클릭베이트 24/100" in r.claim_verification.detail
+        assert "확보한 근거로 주장을 지지하거나 반박할 수 없어" in r.claim_verification.detail
+
+    def test_지지나_반박이_하나라도_있으면_안내문구를_안_붙인다(self):
+        # 실제 근거로 판단이 난 경우엔 클릭베이트 점수와 무관하게 안내가 필요 없다.
+        cv = report.ClaimVerification(
+            status=report.AxisStatus.ANALYZED.value,
+            claims=[{"status": "done", "verdict": "refuted"}],
+            summary={"total": 1, "done": 1, "supported": 0, "refuted": 1, "unverified": 0},
+            detail="원본 판정",
+        )
+        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(clickbait=90),
+                         self._stages(), claim_verification=cv)
+        assert r.claim_verification.detail == "원본 판정"
+
+    def test_클릭베이트_점수가_낮으면_안내문구를_안_붙인다(self):
+        cv = report.ClaimVerification(
+            status=report.AxisStatus.ANALYZED.value,
+            claims=[{"status": "done", "verdict": "unverified"}],
+            summary={"total": 1, "done": 1, "supported": 0, "refuted": 0, "unverified": 1},
+            detail="원본 판정",
+        )
+        r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(clickbait=5),
+                         self._stages(), claim_verification=cv)
+        assert r.claim_verification.detail == "원본 판정"
+
+    def test_검증할_주장이_없으면_안내문구를_안_붙인다(self):
+        r = report.build(
+            {"url": "u"}, _deepfake(avg=10.0), _text(clickbait=90), self._stages(),
+            claim_verification=report.ClaimVerification(status=report.AxisStatus.NO_CLAIMS.value,
+                                                         detail="원본 판정"),
+        )
+        assert r.claim_verification.detail == "원본 판정"
+
     def test_응답_스키마_필수_키(self):
         r = report.build({"url": "u"}, _deepfake(avg=10.0), _text(), self._stages())
         payload = r.to_dict()
