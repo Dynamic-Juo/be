@@ -19,7 +19,7 @@ AI로 만든 영상의 발언이 사실일 수도 있으므로 결과를 하나�
 from __future__ import annotations
 
 import html
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from urllib.parse import urlsplit
 
@@ -338,35 +338,6 @@ _MEDIA_KEYS = (
 )
 
 
-# 클릭베이트 점수가 이 값 이상이면 "자극적인 표현 신호가 있다"는 안내를 곁들인다.
-# 백일섭 오보 영상 실측값(24)을 기준으로 여유를 두고 잡았다(2026-09-18).
-_CONTENT_ADVISORY_CLICKBAIT_THRESHOLD = 15
-
-
-def _content_advisory(claims: ClaimVerification, clickbait_risk: int) -> str | None:
-    """주장 검증이 전부 근거부족으로 끝났고 클릭베이트 신호도 높으면 안내 문구를 덧붙인다.
-
-    LLM이 "근거로 확인 못 했다"는 것과 별개로, 우리가 이미 계산해 둔 다른 신호
-    (클릭베이트 점수)로 "더 신중하게 보라"는 힌트를 주는 것뿐이다 — 판정 자체를
-    바꾸거나 새로운 추론을 더하지 않는다. 지지·반박이 하나라도 있으면 이미 실제
-    근거로 판단이 났으므로 이 안내는 붙이지 않는다.
-
-    롤백: 이 함수를 호출하는 build()의 두 줄만 지우면 이전 동작으로 완전히
-    되돌아간다. 판정 로직이나 근거 검색에는 손대지 않았다.
-    """
-    if claims.status != AxisStatus.ANALYZED.value:
-        return None
-    summary = claims.summary or {}
-    if summary.get("supported", 0) or summary.get("refuted", 0):
-        return None
-    if not summary.get("done", 0):
-        return None
-    if clickbait_risk < _CONTENT_ADVISORY_CLICKBAIT_THRESHOLD:
-        return None
-    return (f"참고: 이 영상은 제목·문구에서 자극적인 표현 신호가 있다"
-            f"(클릭베이트 {clickbait_risk}/100). 근거로 확인되지 않은 주장이니 더 신중하게 판단하라.")
-
-
 def build(meta: dict, deepfake: dict, text: dict, stages: dict,
           claim_verification: ClaimVerification | None = None) -> AnalysisReport:
     face_manipulation = build_face_manipulation(deepfake, text)
@@ -375,9 +346,6 @@ def build(meta: dict, deepfake: dict, text: dict, stages: dict,
         status=AxisStatus.UNAVAILABLE.value,
         detail="주장 사실성 검증을 수행하지 않았다.",
     )
-    advisory = _content_advisory(claims, text.get("clickbait_risk", 0))
-    if advisory:
-        claims = replace(claims, detail=f"{claims.detail} {advisory}".strip())
 
     stage_payload = {
         name: (asdict(s) if isinstance(s, StageStatus) else s) for name, s in stages.items()
