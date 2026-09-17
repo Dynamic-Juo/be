@@ -24,7 +24,7 @@ services:
       DEEPCHECK_LLM_PROVIDER: "${DEEPCHECK_LLM_PROVIDER:-off}"
       DEEPCHECK_LLM_MODEL: "${DEEPCHECK_LLM_MODEL:-deepseek-chat}"
       DEEPCHECK_CLAIM_EXTRACTOR: "${DEEPCHECK_CLAIM_EXTRACTOR:-rule}"
-      DEEPCHECK_EVIDENCE_PROVIDERS: "${DEEPCHECK_EVIDENCE_PROVIDERS:-factcheck,naver_news,naver_encyc,wikipedia,wikipedia_en}"
+      DEEPCHECK_EVIDENCE_PROVIDERS: "${DEEPCHECK_EVIDENCE_PROVIDERS:-factcheck,naver_news,naver_encyc}"
       HF_TOKEN: "${HF_TOKEN:-}"
       DEEPCHECK_START_DRAINED: "${DEEPCHECK_START_DRAINED:-}"
       DEEPCHECK_DEPLOYMENT_STATE_FILE: /var/lib/deepcheck/deployment-admission.json
